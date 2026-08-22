@@ -185,7 +185,7 @@ module LittleGhost
     end
 
     # :call-seq:
-    #   generate(model:, messages:, result_schema: nil, settings: {}, cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
+    #   generate(model:, messages:, result_schema: nil, settings: {}, structured_result_repair_attempts: 1, cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
     #
     # Generates one response through this Runtime's model resolver.
     #

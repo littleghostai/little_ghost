@@ -168,7 +168,11 @@ response.output
 ```
 
 LittleGhost checks the result against the schema and gives the model one repair
-attempt. Read the checked value through `response.output`. If both attempts are
+attempt by default. Add `structured_result_repair_attempts: 3` to the call
+above when a checked result warrants additional attempts. The setting accepts
+integers from zero through three.
+
+Read the checked value through `response.output`. If every permitted attempt is
 invalid, the call raises `LittleGhost::StructuredResultError`.
 
 A schema checks the shape of a value, not whether your application should act

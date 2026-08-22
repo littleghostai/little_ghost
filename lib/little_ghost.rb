@@ -155,14 +155,16 @@ module LittleGhost
     def model_resolver = configuration.model_resolver
 
     # :call-seq:
-    #   LittleGhost.generate(model:, messages:, result_schema: nil, settings: {}, cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
+    #   LittleGhost.generate(model:, messages:, result_schema: nil, settings: {}, structured_result_repair_attempts: 1, cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
     #
     # Generates one model response and returns a RunResult.
     #
     # Use this entrypoint when application code owns the workflow and does not
     # need Tools, Sessions, delegation, or agent callbacks. +model+ and
     # +settings+ are trusted application controls. A +result_schema+ checks one
-    # object result and permits one repair attempt.
+    # object result. When the result is invalid, the default permits one repair
+    # attempt. Set +structured_result_repair_attempts+ to an integer from zero
+    # through three when a checked result warrants additional attempts.
     def generate(...) = runtime.generate(...)
 
     # :call-seq:
