@@ -169,6 +169,41 @@ class ModelOperationsTest < Minitest::Test
     assert_equal 2, provider.requests.length
   end
 
+  def test_repairs_a_structured_result_until_the_configured_limit
+    provider = Provider.new(responses: [
+      model_response("bad"),
+      model_response("still bad"),
+      model_response('{"answer":"yes"}')
+    ])
+
+    result = operations_for(provider).generate(
+      model: :writer,
+      messages: [],
+      result_schema: result_schema,
+      structured_result_repair_attempts: 2
+    )
+
+    assert_equal({"answer" => "yes"}, result.output)
+    assert_equal 3, provider.requests.length
+    assert_includes provider.requests[1].messages.last.text, "2 repair attempts remaining"
+    assert_includes provider.requests.last.messages.last.text, "one repair attempt remaining"
+  end
+
+  def test_rejects_out_of_range_or_non_integer_structured_result_repair_attempts
+    [-1, 4, 1.5].each do |attempts|
+      error = assert_raises(ArgumentError) do
+        operations_for(Provider.new).generate(
+          model: :writer,
+          messages: [],
+          result_schema: result_schema,
+          structured_result_repair_attempts: attempts
+        )
+      end
+
+      assert_equal "structured_result_repair_attempts must be an integer from zero through 3", error.message
+    end
+  end
+
   def test_embeds_with_profile_settings_and_preserves_order
     response = LittleGhost::Embeddings::Response.new(vectors: [[1, 0], [0, 1]], usage: LittleGhost::Usage.new(input_tokens: 3))
     provider = Provider.new(embedding_response: response)

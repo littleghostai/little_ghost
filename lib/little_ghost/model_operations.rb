@@ -8,14 +8,16 @@ module LittleGhost
     MAX_STRUCTURED_RESULT_BYTES = 1_000_000
     MAX_STRUCTURED_RESULT_DEPTH = 64
     MAX_STRUCTURED_RESULT_NODES = 100_000
+    MAX_STRUCTURED_RESULT_REPAIR_ATTEMPTS = 3
 
     def initialize(model_resolver:)
       @model_resolver = model_resolver
     end
 
-    def generate(model:, messages:, result_schema: nil, settings: {}, cancellation_token: Support::CancellationToken.new, deadline: nil)
+    def generate(model:, messages:, result_schema: nil, settings: {}, structured_result_repair_attempts: 1, cancellation_token: Support::CancellationToken.new, deadline: nil)
       resolved = @model_resolver.resolve(model)
       schema = normalize_schema(result_schema)
+      repair_attempts = normalize_repair_attempts(structured_result_repair_attempts) if schema
       strategy = StructuredOutput.resolve(schema, model: resolved, ordinary_tools: []) if schema
       handle = Instrumentation.start(:generation, model_provider: resolved.target.provider, model_id: resolved.model_id, model_role: resolved.role, structured: !schema.nil?)
       usage = Usage.new
@@ -24,16 +26,18 @@ module LittleGhost
       usage += response.usage
       output, errors = schema ? parse_structured_response(response.message, schema, strategy) : [response.message.text, []]
       conversation << (schema ? redact_structured_response(response.message, schema, strategy) : response.message)
-      if schema && !errors.empty?
-        conversation << structured_repair_message(response.message, strategy)
+      repairs_remaining = repair_attempts
+      while schema && !errors.empty? && repairs_remaining.positive?
+        conversation << structured_repair_message(response.message, strategy, repairs_remaining:)
         response = complete(resolved, messages: conversation, settings:, schema:, strategy:, repair: true, cancellation_token:, deadline:)
         usage += response.usage
         output, errors = parse_structured_response(response.message, schema, strategy)
         conversation << redact_structured_response(response.message, schema, strategy)
+        repairs_remaining -= 1
       end
       unless errors.empty?
         raise StructuredResultError.new(
-          "The model did not return a valid structured result after its repair attempt",
+          "The model did not return a valid structured result after its repair attempts",
           schema_name: schema.fetch(:name), validation_errors: errors
         )
       end
@@ -131,7 +135,7 @@ module LittleGhost
       [nil, [error.message]]
     end
 
-    def structured_repair_message(message, strategy)
+    def structured_repair_message(message, strategy, repairs_remaining:)
       tool_uses = message.content.grep(Content::ToolUse)
       if strategy.tool? && !tool_uses.empty?
         return Message.new(
@@ -147,7 +151,14 @@ module LittleGhost
       end
 
       requirement = strategy.tool? ? "Call #{strategy.schema_name} exactly once as your only tool call." : "Return only JSON matching the configured output schema."
-      Message.new(role: :user, content: "#{requirement} You have one repair attempt. The previous structured result was invalid.")
+      attempts_description = (repairs_remaining == 1) ? "one repair attempt" : "#{repairs_remaining} repair attempts"
+      Message.new(role: :user, content: "#{requirement} You have #{attempts_description} remaining. The previous structured result was invalid.")
+    end
+
+    def normalize_repair_attempts(value)
+      return value if value.is_a?(Integer) && value.between?(0, MAX_STRUCTURED_RESULT_REPAIR_ATTEMPTS)
+
+      raise ArgumentError, "structured_result_repair_attempts must be an integer from zero through #{MAX_STRUCTURED_RESULT_REPAIR_ATTEMPTS}"
     end
 
     def validate_complexity!(value, schema_name)
