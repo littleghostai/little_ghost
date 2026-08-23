@@ -330,7 +330,7 @@ module LittleGhost
         tool_spec = {
           name: definition.fetch(:name),
           description: definition[:description],
-          input_schema: {json: definition[:input_schema] || {}}
+          input_schema: {json: bedrock_tool_schema(definition[:input_schema] || {})}
         }
         {
           tool_spec: {
@@ -343,6 +343,18 @@ module LittleGhost
         return {any: {}} if choice == :required
 
         {tool: {name: choice.fetch(:name).to_s}}
+      end
+
+      def bedrock_tool_schema(schema)
+        return schema unless nova_model?
+
+        schema.to_h.each_with_object({}) do |(key, value), result|
+          result[key] = value if %w[type properties required].include?(key.to_s)
+        end
+      end
+
+      def nova_model?
+        model.match?(/(?:^|\.)amazon\.nova(?:[-.])/)
       end
 
       def extract_settings(settings, keys)

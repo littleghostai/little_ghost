@@ -272,6 +272,37 @@ class BedrockTest < Minitest::Test
     )
   end
 
+  def test_strips_unsupported_top_level_tool_schema_keywords_for_nova
+    client = FakeClient.new([
+      {message_start: {role: "assistant"}},
+      {message_stop: {stop_reason: "end_turn"}}
+    ])
+    provider = LittleGhost::Providers::Bedrock.new(model: "us.amazon.nova-2-lite-v1:0", client:)
+
+    provider.stream(
+      LittleGhost::ModelRequest.new(
+        messages: [],
+        tools: [{
+          name: "submit_result",
+          input_schema: {
+            type: "object",
+            properties: {answer: {type: "string"}},
+            required: ["answer"],
+            additionalProperties: false
+          }
+        }]
+      )
+    ).to_a
+
+    schema = client.parameters.dig(:tool_config, :tools, 0, :tool_spec, :input_schema, :json)
+
+    assert_equal({
+      type: "object",
+      properties: {answer: {type: "string"}},
+      required: ["answer"]
+    }, schema)
+  end
+
   def test_serializes_required_tool_choice_as_any
     client = FakeClient.new([
       {message_start: {role: "assistant"}},
