@@ -109,7 +109,7 @@ class ModelOperationsTest < Minitest::Test
 
     assert_equal({"answer" => "yes"}, result.output)
     assert_nil provider.requests.first.output_schema
-    assert_equal :required, provider.requests.first.tool_choice
+    assert_equal({name: "answer"}, provider.requests.first.tool_choice)
     assert_equal %i[tools tool_choice], provider.requests.first.required_capabilities
     assert_equal ["answer"], provider.requests.first.tools.map { |tool| tool.fetch(:name) }
     assert_equal true, provider.requests.first.tools.first.fetch(:strict)
@@ -129,6 +129,7 @@ class ModelOperationsTest < Minitest::Test
     )
 
     assert_equal({"answer" => "yes"}, result.output)
+    assert_equal({name: "answer"}, provider.requests.first.tool_choice)
     assert_equal({name: "answer"}, provider.requests.last.tool_choice)
     repair_tool_uses = provider.requests.last.messages[-2].content.grep(LittleGhost::Content::ToolUse)
     assert_equal ["tool-1"], repair_tool_uses.map(&:id)
@@ -136,6 +137,9 @@ class ModelOperationsTest < Minitest::Test
     repair_results = provider.requests.last.messages.last.content.grep(LittleGhost::Content::ToolResult)
     assert_equal ["tool-1"], repair_results.map(&:tool_use_id)
     assert repair_results.all? { |result| result.status == :error }
+    assert_includes repair_results.first.content, "$.answer is required"
+    assert_includes repair_results.first.content, "$.wrong is not allowed"
+    refute_includes repair_results.first.content, "value"
   end
 
   def test_repairs_a_missing_terminal_tool_result_once

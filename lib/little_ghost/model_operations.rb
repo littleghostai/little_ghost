@@ -28,7 +28,7 @@ module LittleGhost
       conversation << (schema ? redact_structured_response(response.message, schema, strategy) : response.message)
       repairs_remaining = repair_attempts
       while schema && !errors.empty? && repairs_remaining.positive?
-        conversation << structured_repair_message(response.message, strategy, repairs_remaining:)
+        conversation << structured_repair_message(response.message, strategy, errors:, repairs_remaining:)
         response = complete(resolved, messages: conversation, settings:, schema:, strategy:, repair: true, cancellation_token:, deadline:)
         usage += response.usage
         output, errors = parse_structured_response(response.message, schema, strategy)
@@ -79,7 +79,7 @@ module LittleGhost
         messages:, settings:,
         tools: strategy ? strategy.tools([]) : [],
         output_schema: strategy&.output_schema,
-        tool_choice: strategy&.tool_choice(repair:),
+        tool_choice: direct_generation_tool_choice(strategy, repair:),
         required_capabilities: strategy ? strategy.required_capabilities : [],
         cancellation_token:, deadline:
       )
@@ -135,15 +135,16 @@ module LittleGhost
       [nil, [error.message]]
     end
 
-    def structured_repair_message(message, strategy, repairs_remaining:)
+    def structured_repair_message(message, strategy, errors:, repairs_remaining:)
       tool_uses = message.content.grep(Content::ToolUse)
+      feedback = "The structured result did not match the required schema: #{errors.join("; ")}. Submit it again using the required schema."
       if strategy.tool? && !tool_uses.empty?
         return Message.new(
           role: :tool,
           content: tool_uses.map do |tool_use|
             Content::ToolResult.new(
               tool_use_id: tool_use.id,
-              content: "The structured result was invalid. Submit it again using the required schema.",
+              content: feedback,
               status: :error
             )
           end
@@ -152,7 +153,14 @@ module LittleGhost
 
       requirement = strategy.tool? ? "Call #{strategy.schema_name} exactly once as your only tool call." : "Return only JSON matching the configured output schema."
       attempts_description = (repairs_remaining == 1) ? "one repair attempt" : "#{repairs_remaining} repair attempts"
-      Message.new(role: :user, content: "#{requirement} You have #{attempts_description} remaining. The previous structured result was invalid.")
+      Message.new(role: :user, content: "#{requirement} You have #{attempts_description} remaining. #{feedback}")
+    end
+
+    def direct_generation_tool_choice(strategy, repair:)
+      return unless strategy
+      return {name: strategy.schema_name}.freeze if strategy.tool?
+
+      strategy.tool_choice(repair:)
     end
 
     def normalize_repair_attempts(value)
