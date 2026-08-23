@@ -398,6 +398,15 @@ class BedrockTest < Minitest::Test
     assert_includes error.message, "invalid tool call"
   end
 
+  def test_rejects_bedrock_malformed_tool_use_stop_with_a_specific_error
+    events = [{message_stop: {stop_reason: "malformed_tool_use"}}]
+    provider = LittleGhost::Providers::Bedrock.new(model: "test", client: FakeClient.new(events))
+
+    error = assert_raises(LittleGhost::MalformedToolCallError) { provider.stream(request).to_a }
+
+    assert_includes error.message, "malformed_tool_use"
+  end
+
   def test_cancellation_interrupts_a_stalled_stream
     stalled = StalledEvents.new
     token = LittleGhost::Support::CancellationToken.new
