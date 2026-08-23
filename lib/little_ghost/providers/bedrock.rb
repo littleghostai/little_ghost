@@ -489,6 +489,10 @@ module LittleGhost
           raise ProtocolError, "Bedrock stream ended before message_stop" unless @terminal
 
           @finished = true
+          if @stop_reason == :malformed_tool_use
+            raise MalformedToolCallError, "Bedrock returned malformed_tool_use"
+          end
+
           blocks = []
           @reasoning_blocks.sort.each do |_index, reasoning|
             if !reasoning[:redacted_content].empty?
@@ -583,6 +587,7 @@ module LittleGhost
         def normalize_stop(value)
           case value
           when "tool_use" then :tool_use
+          when "malformed_tool_use" then :malformed_tool_use
           when "max_tokens" then :max_tokens
           when "guardrail_intervened", "content_filtered" then :content_filter
           else :end_turn
