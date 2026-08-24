@@ -99,6 +99,8 @@ do not carry into a later `exec`. Within one program, the model can use:
   order.
 - `ALL_TOOLS` to inspect the complete runtime catalog.
 - `text(value)` to add user-visible output.
+- Ordinary Ruby output from `puts`, `print`, `printf`, and `p`, which is
+  captured as user-visible output and combined into bounded chunks.
 - The program's final expression as the completed value returned by `exec` or
   a later `wait`.
 - `finish(value)` to complete early.
