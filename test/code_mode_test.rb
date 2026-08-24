@@ -326,11 +326,23 @@ class CodeModeTest < Minitest::Test
   end
 
   def test_wait_observes_the_same_program_and_returns_incremental_output
-    registry = LittleGhost::ToolRegistry.new([])
+    entered = Queue.new
+    release = Queue.new
+    tool = LittleGhost::Tool.define(name: "pause", description: "Wait for release.") do
+      entered << true
+      release.pop
+      nil
+    end
+    registry = LittleGhost::ToolRegistry.new([tool])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
     session = ruby_session(broker:, observation_seconds: 0.1)
 
-    first = session.execute(source: 'text("before"); sleep(0.2); text("after"); 4', catalog: [])
+    first = session.execute(
+      source: 'text("before"); tools.pause; text("after"); 4',
+      catalog: broker.catalog
+    )
+    Timeout.timeout(5) { entered.pop }
+    release << true
     observations = [first]
     observations << session.wait while observations.last.still_working?
     completed = observations.last
@@ -340,6 +352,7 @@ class CodeModeTest < Minitest::Test
     assert_equal "after", observations.drop(1).map(&:output).join
     assert_equal 4, completed.value
   ensure
+    release << true if release && release.empty?
     session&.close
     registry&.close
   end
