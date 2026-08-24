@@ -58,6 +58,7 @@ module LittleGhost
           Output and completion:
           - The final Ruby expression becomes the completed program value.
           - Use `text(value)` for user-visible output.
+          - Ordinary `puts`, `print`, `printf`, and `p` output is captured and combined into bounded chunks.
           - Use `finish(value)` to complete early with a value.
 
           The Sandbox controls filesystem, network, subprocess, and optional-library access. Do not assume host

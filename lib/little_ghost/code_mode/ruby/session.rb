@@ -31,6 +31,7 @@ module LittleGhost
           @call_mutex = Mutex.new
           @call_tasks = []
           @call_errors = []
+          @tool_calls = 0
           @closing_marker = {closing: false}
           @lifecycle_mutex = Mutex.new
           @lifecycle_condition = ConditionVariable.new
@@ -191,6 +192,7 @@ module LittleGhost
           @output = +""
           @output_bytes = 0
           @buffer = +""
+          @call_mutex.synchronize { @tool_calls = 0 }
           @lifecycle_mutex.synchronize { @generation = generation }
           start_watchdog(generation, @deadline)
           [generation, @session]
@@ -272,6 +274,8 @@ module LittleGhost
           @call_mutex.synchronize do
             active = @call_tasks.count(&:alive?)
             raise ProtocolError, "code-mode concurrent tool call limit exceeded" if active >= @limits.fetch(:concurrency)
+            @tool_calls += 1
+            raise ToolError, "tool call limit exceeded" if @tool_calls > @limits.fetch(:tool_calls)
 
             call_errors = @call_errors
             closing_marker = @closing_marker

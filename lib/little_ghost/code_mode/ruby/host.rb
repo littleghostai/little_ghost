@@ -6,6 +6,9 @@ module LittleGhost
       module Host # :nodoc:
         SOURCE = <<~'RUBY'
             require "json"
+            protocol_output = STDOUT.dup
+            protocol_output.sync = true
+            STDOUT.reopen(STDERR)
             STDOUT.sync = true
             begin
             read_exactly = lambda do |length|
@@ -21,9 +24,9 @@ module LittleGhost
             write_frame = lambda do |value|
               payload = JSON.generate(value)
               raise "protocol frame too large" if payload.bytesize > 64 * 1024 * 1024
-              STDOUT.write([payload.bytesize].pack("N"))
-              STDOUT.write(payload)
-              STDOUT.flush
+              protocol_output.write([payload.bytesize].pack("N"))
+              protocol_output.write(payload)
+              protocol_output.flush
             end
             request = read_frame.call
             catalog = request.fetch("catalog")
@@ -32,7 +35,40 @@ module LittleGhost
             response_queues = {}
             calls = 0
             max_calls = request.fetch("tool_calls")
-            emit = ->(value) { write_lock.synchronize { write_frame.call(value) } }
+            output_buffer = +""
+            flush_output = lambda do
+              unless output_buffer.empty?
+                value = output_buffer.dup
+                output_buffer.clear
+                write_frame.call(type: "text", value: value)
+              end
+            end
+            emit = lambda do |value|
+              write_lock.synchronize do
+                flush_output.call
+                write_frame.call(value)
+              end
+            end
+            program_output = Object.new
+            program_output.define_singleton_method(:write) do |value|
+              value = String(value)
+              write_lock.synchronize do
+                output_buffer << value
+                flush_output.call if output_buffer.bytesize >= 16_384 || value.include?("\n")
+              end
+              value.bytesize
+            end
+            program_output.define_singleton_method(:flush) do
+              write_lock.synchronize { flush_output.call }
+              self
+            end
+            program_output.define_singleton_method(:sync) { false }
+            program_output.define_singleton_method(:sync=) do |value|
+              flush if value
+              value
+            end
+            program_output.define_singleton_method(:tty?) { false }
+            $stdout = program_output
             reader = Thread.new do
               loop do
                 response = read_frame.call
@@ -51,9 +87,7 @@ module LittleGhost
                 response_queues[id] = queue
                 [id, queue]
               end
-              write_lock.synchronize do
-                write_frame.call(type: "call", id: id, name: name, arguments: arguments)
-              end
+              emit.call(type: "call", id: id, name: name, arguments: arguments)
               response = queue.pop
               queues_lock.synchronize { response_queues.delete(id) }
               raise response.fetch("error") if response["error"]
@@ -75,7 +109,12 @@ module LittleGhost
             end
             Object.const_set(:ALL_TOOLS, catalog.freeze) unless Object.const_defined?(:ALL_TOOLS)
             Object.const_set(:FRAME, request["frame"].freeze) if request["frame"] && !Object.const_defined?(:FRAME)
-            context = Object.new
+            evaluation_context = Class.new do
+              def evaluate(source)
+                instance_eval(source, "(code-mode)", 1)
+              end
+            end
+            context = evaluation_context.new
             finished = false
             finish_value = nil
             context.define_singleton_method(:tools) { tools }
@@ -85,14 +124,15 @@ module LittleGhost
               finish_value = value
               throw :little_ghost_finish
             end
-            value = catch(:little_ghost_finish) { context.instance_eval(request.fetch("source"), "(code-mode)", 1) }
+            value = catch(:little_ghost_finish) { context.evaluate(request.fetch("source")) }
             value = finish_value if finished
             emit.call(type: "done", value: value)
           rescue SignalException
             exit 0
           rescue Exception => error
             STDERR.puts("#{error.class}: #{error.message}")
-            write_frame&.call(type: "error", error: "#{error.class}: #{error.message}")
+            error_frame = {type: "error", error: "#{error.class}: #{error.message}"}
+            emit ? emit.call(error_frame) : write_frame&.call(error_frame)
             exit 1
             end
         RUBY
