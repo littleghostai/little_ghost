@@ -372,7 +372,7 @@ people read.
   `<link rel="alternate" type="text/markdown">` and an absolute, visually
   hidden pointer. The pointer is `aria-hidden="true"`; it is machine discovery
   metadata, not duplicate navigation for assistive technology.
-- Canonical URLs use `https://mattyr.github.io/little_ghost/`, the published
+- Canonical URLs use `https://littleghostai.org/`, the published
   GitHub Pages site. Each Markdown representation has its own stable `.md` URL;
   request-time content negotiation is not required.
 - A versioned page links only to content generated from the same release. Current
