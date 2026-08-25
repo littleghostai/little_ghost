@@ -44,7 +44,7 @@ class LittleGhostDocsTest < Minitest::Test
 
     assert_includes intro, '<a class="agent-docs-link" href="./llms.txt">For coding agents →</a>'
     assert_includes intro, "Ruby 3.3+"
-    refute_includes intro, "https://mattyr.github.io/little_ghost/llms.txt"
+    refute_includes intro, "https://littleghostai.org/llms.txt"
     refute_includes intro, "OpenRouter API key"
   end
 
@@ -75,12 +75,12 @@ class LittleGhostDocsTest < Minitest::Test
       agent = File.read(File.join(site, "docs", "LittleGhost", "Agent.html"))
       assert_includes homepage, 'data-current-version="edge"'
       assert_includes homepage, 'data-versions-url="versions.json"'
-      assert_includes homepage, '<link rel="alternate" type="text/markdown" href="https://mattyr.github.io/little_ghost/index.md">'
+      assert_includes homepage, '<link rel="alternate" type="text/markdown" href="https://littleghostai.org/index.md">'
       assert_includes homepage, 'class="docs-markdown-link visually-hidden"'
       refute_includes homepage, "data-docs-version-notice"
       assert_includes agent, 'data-current-page="docs/LittleGhost/Agent.html"'
       assert_includes agent, 'data-versions-url="../../versions.json"'
-      assert_includes agent, '<link rel="canonical" href="https://mattyr.github.io/little_ghost/docs/LittleGhost/Agent.html">'
+      assert_includes agent, '<link rel="canonical" href="https://littleghostai.org/docs/LittleGhost/Agent.html">'
       assert_path_exists File.join(site, "assets", "version-selector.css")
       assert_path_exists File.join(site, "assets", "version-selector.js")
     end
@@ -96,10 +96,10 @@ class LittleGhostDocsTest < Minitest::Test
       agent = File.read(File.join(site, "docs", "LittleGhost", "Agent.html"))
       assert_includes homepage, 'data-current-version="0.2.0"'
       assert_includes homepage, 'data-versions-url="../../versions.json"'
-      assert_includes homepage, "https://mattyr.github.io/little_ghost/versions/0.2.0/"
-      assert_includes homepage, 'href="https://mattyr.github.io/little_ghost/versions/0.2.0/index.md"'
+      assert_includes homepage, "https://littleghostai.org/versions/0.2.0/"
+      assert_includes homepage, 'href="https://littleghostai.org/versions/0.2.0/index.md"'
       assert_includes agent, 'data-versions-url="../../../../versions.json"'
-      assert_includes agent, '<link rel="canonical" href="https://mattyr.github.io/little_ghost/versions/0.2.0/docs/LittleGhost/Agent.html">'
+      assert_includes agent, '<link rel="canonical" href="https://littleghostai.org/versions/0.2.0/docs/LittleGhost/Agent.html">'
     end
   end
 
@@ -211,8 +211,8 @@ class LittleGhostDocsTest < Minitest::Test
 
       assert_equal first, second
       assert_equal second, third
-      assert_includes second, '<link rel="alternate" type="text/markdown" href="https://mattyr.github.io/little_ghost/versions/1.0.0/docs/LittleGhost/Agent.md">'
-      assert_includes second, 'href="https://mattyr.github.io/little_ghost/versions/1.0.0/docs/LittleGhost/Agent.md" aria-hidden="true"'
+      assert_includes second, '<link rel="alternate" type="text/markdown" href="https://littleghostai.org/versions/1.0.0/docs/LittleGhost/Agent.md">'
+      assert_includes second, 'href="https://littleghostai.org/versions/1.0.0/docs/LittleGhost/Agent.md" aria-hidden="true"'
     end
   end
 
@@ -363,7 +363,7 @@ class LittleGhostDocsTest < Minitest::Test
     commands = []
     responses = [
       ["", ""],
-      ["git@github.com:mattyr/little_ghost.git\n", ""],
+      ["git@github.com:littleghostai/little_ghost.git\n", ""],
       ["v0.3.0\n", ""],
       [JSON.generate(
         "author" => {"login" => "github-actions[bot]"},
@@ -392,11 +392,11 @@ class LittleGhostDocsTest < Minitest::Test
     assert_equal [
       ["git", "fetch", "origin", "main:refs/remotes/origin/main", "--tags"],
       ["git", "remote", "get-url", "origin"],
-      ["gh", "api", "--paginate", "repos/mattyr/little_ghost/releases", "--jq",
+      ["gh", "api", "--paginate", "repos/littleghostai/little_ghost/releases", "--jq",
         ".[] | select(.draft == false and .prerelease == false) | .tag_name"],
-      ["gh", "api", "repos/mattyr/little_ghost/releases/tags/v0.3.0"],
+      ["gh", "api", "repos/littleghostai/little_ghost/releases/tags/v0.3.0"],
       ["git", "rev-parse", "--verify", "refs/tags/v0.3.0^{tag}"],
-      ["gh", "api", "repos/mattyr/little_ghost/git/tags/tag-object"],
+      ["gh", "api", "repos/littleghostai/little_ghost/git/tags/tag-object"],
       ["git", "merge-base", "--is-ancestor", "release-commit", "refs/remotes/origin/main"],
       ["git", "show", "release-commit:lib/little_ghost/version.rb"]
     ], commands.map(&:first)
@@ -519,8 +519,8 @@ class LittleGhostDocsTest < Minitest::Test
       assert_equal 1, docs_home.scan(/^# /).length
       assert_equal 1, getting_started.scan(/^# /).length
       assert_includes docs_home, "(getting_started.md)"
-      assert_includes docs_home, "Canonical HTML: https://mattyr.github.io/little_ghost/versions/0.1.0/docs/"
-      assert_includes homepage_markdown, "https://mattyr.github.io/little_ghost/versions/0.1.0/llms.txt"
+      assert_includes docs_home, "Canonical HTML: https://littleghostai.org/versions/0.1.0/docs/"
+      assert_includes homepage_markdown, "https://littleghostai.org/versions/0.1.0/llms.txt"
       assert_includes homepage_markdown, "](llms.txt)"
       assert_includes docs_home, "(legacy_guide.md)"
       assert_includes docs_home, "(LittleGhost/Agent.md)"
@@ -528,17 +528,17 @@ class LittleGhostDocsTest < Minitest::Test
       assert_includes agent, '<a id="method-i-ask"></a>'
       assert_includes agent, "#ask(message)"
       assert_includes api_index_html, 'data-current-page="docs/api.html"'
-      assert_includes api_index_html, 'href="https://mattyr.github.io/little_ghost/versions/0.1.0/docs/api.md"'
-      refute_includes api_index_html, 'href="https://mattyr.github.io/little_ghost/versions/0.1.0/docs/index.md"'
+      assert_includes api_index_html, 'href="https://littleghostai.org/versions/0.1.0/docs/api.md"'
+      refute_includes api_index_html, 'href="https://littleghostai.org/versions/0.1.0/docs/index.md"'
       assert_includes api_index_html, 'name="description" content="Browse LittleGhost&#39;s public classes, modules, methods, and signatures."'
       assert_includes api_index_html, 'property="og:title" content="LittleGhost API index"'
       assert_includes api_index_html, 'name="twitter:title" content="LittleGhost API index"'
-      assert_includes discovery, "https://mattyr.github.io/little_ghost/versions/0.1.0/docs/LittleGhost/Agent.md"
+      assert_includes discovery, "https://littleghostai.org/versions/0.1.0/docs/LittleGhost/Agent.md"
       assert_equal first_full_text, File.read(File.join(site, "llms-full.txt"))
-      assert_equal 1, first_full_text.scan("Source: https://mattyr.github.io/little_ghost/versions/0.1.0/docs/LittleGhost/Agent.md").length
+      assert_equal 1, first_full_text.scan("Source: https://littleghostai.org/versions/0.1.0/docs/LittleGhost/Agent.md").length
       assert_path_exists File.join(site, "docs", "legacy_guide.md")
       assert_includes File.read(File.join(site, "docs", "getting_started.md")), "(legacy_guide.md)"
-      assert_includes first_full_text, "Source: https://mattyr.github.io/little_ghost/versions/0.1.0/docs/legacy_guide.md"
+      assert_includes first_full_text, "Source: https://littleghostai.org/versions/0.1.0/docs/legacy_guide.md"
     end
   end
 
@@ -582,12 +582,12 @@ class LittleGhostDocsTest < Minitest::Test
   end
 
   def test_public_documentation_urls_stop_at_markdown_link_delimiters
-    markdown = "[full docs](https://mattyr.github.io/little_ghost/versions/0.1.0/llms.txt) " \
-      "[`llms.txt`](https://mattyr.github.io/little_ghost/versions/0.1.0/llms.txt)"
+    markdown = "[full docs](https://littleghostai.org/versions/0.1.0/llms.txt) " \
+      "[`llms.txt`](https://littleghostai.org/versions/0.1.0/llms.txt)"
 
     assert_equal [
-      "https://mattyr.github.io/little_ghost/versions/0.1.0/llms.txt",
-      "https://mattyr.github.io/little_ghost/versions/0.1.0/llms.txt"
+      "https://littleghostai.org/versions/0.1.0/llms.txt",
+      "https://littleghostai.org/versions/0.1.0/llms.txt"
     ], markdown.scan(LittleGhostDocs::PUBLIC_DOCUMENTATION_URL_PATTERN)
   end
 

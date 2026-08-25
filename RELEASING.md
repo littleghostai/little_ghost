@@ -18,7 +18,7 @@ Run `bundle exec rake site:serve_all` to build and browse the same versioned sit
 
 Register a trusted publisher for the existing `little_ghost` gem on RubyGems.org with these values:
 
-- Repository owner: `mattyr`
+- Repository owner: `littleghostai`
 - Repository name: `little_ghost`
 - Workflow filename: `release.yml`
 - Environment: `release`

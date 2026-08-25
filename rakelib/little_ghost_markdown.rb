@@ -282,7 +282,7 @@ module LittleGhostDocs
       text << "\n## Optional\n\n"
       text << "- [Complete API index](#{public_url("docs/api.md")})\n" if available["docs/api.md"]
       text << "- [Version catalog](#{URI.join(SITE_URL, "versions.json")})\n"
-      text << "- [GitHub source](https://github.com/mattyr/little_ghost)\n"
+      text << "- [GitHub source](#{REPOSITORY_URL})\n"
       text
     end
 

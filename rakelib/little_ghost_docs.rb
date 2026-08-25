@@ -15,7 +15,12 @@ require "uri"
 module LittleGhostDocs
   class Error < StandardError; end
 
-  SITE_URL = "https://mattyr.github.io/little_ghost/"
+  SITE_URL = "https://littleghostai.org/"
+  REPOSITORY_URL = "https://github.com/littleghostai/little_ghost"
+  LEGACY_PUBLIC_URL_REPLACEMENTS = {
+    "https://mattyr.github.io/little_ghost/" => SITE_URL,
+    "https://github.com/mattyr/little_ghost" => REPOSITORY_URL
+  }.freeze
   PUBLIC_DOCUMENTATION_URL_PATTERN = %r{#{Regexp.escape(SITE_URL)}[^\s"'\[\]()`<>]+}
   UNVERSIONED_SITE_URL_PATTERN = %r{#{Regexp.escape(SITE_URL)}(?!versions(?:/|\.json))}
   EDGE_ID = "edge"
@@ -47,6 +52,16 @@ module LittleGhostDocs
   end.freeze
 
   module_function
+
+  def rewrite_public_urls(contents, base_path:)
+    rewritten = LEGACY_PUBLIC_URL_REPLACEMENTS.reduce(contents) do |text, (legacy_url, public_url)|
+      text.gsub(legacy_url, public_url)
+    end
+    return rewritten if base_path.to_s.empty? || base_path.to_s == "."
+
+    deployed_url = URI.join(SITE_URL, "#{base_path}/").to_s
+    rewritten.gsub(UNVERSIONED_SITE_URL_PATTERN, deployed_url)
+  end
 
   def stable_version!(value)
     version = Gem::Version.new(value.to_s)
@@ -102,6 +117,7 @@ module LittleGhostDocs
 
       picker_added = false
       html_pages.each { |page| picker_added = decorate_page(page) || picker_added }
+      rewrite_public_text_files!
       copy_selector_assets if picker_added
       ensure_selector_assets
       root.glob("**/created.rid").each(&:delete)
@@ -132,6 +148,20 @@ module LittleGhostDocs
 
     def html_pages
       root.glob("**/*.html").sort
+    end
+
+    def public_text_files
+      root.glob("**/*").select do |path|
+        path.file? && %w[.html .json .md .txt].include?(path.extname)
+      end.sort
+    end
+
+    def rewrite_public_text_files!
+      public_text_files.each do |page|
+        contents = page.read
+        rewritten = rewrite_public_urls(contents)
+        page.write(rewritten) unless rewritten == contents
+      end
     end
 
     def decorate_page(page)
@@ -250,10 +280,7 @@ module LittleGhostDocs
     end
 
     def rewrite_public_urls(html)
-      return html if base_path.to_s.empty? || base_path.to_s == "."
-
-      deployed_url = URI.join(SITE_URL, "#{base_path}/").to_s
-      html.gsub(UNVERSIONED_SITE_URL_PATTERN, deployed_url)
+      LittleGhostDocs.rewrite_public_urls(html, base_path:)
     end
   end
 

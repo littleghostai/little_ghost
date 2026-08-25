@@ -128,7 +128,7 @@ class LittleGhostReleaseTest < Minitest::Test
     captures = capture_runner(
       [["git", "branch", "--show-current"], ["main\n", true]],
       [["git", "status", "--porcelain"], ["", true]],
-      [["git", "remote", "get-url", "origin"], ["git@github.com:mattyr/little_ghost.git\n", true]],
+      [["git", "remote", "get-url", "origin"], ["git@github.com:littleghostai/little_ghost.git\n", true]],
       [["git", "rev-parse", "HEAD"], ["commit\n", true]],
       [["git", "rev-parse", "origin/main"], ["commit\n", true]],
       [["git", "rev-parse", "HEAD"], ["release-head\n", true]],
@@ -140,25 +140,25 @@ class LittleGhostReleaseTest < Minitest::Test
           assert_includes File.read(body_path), "prepare LittleGhost 1.2.3 for release"
           true
         end,
-        ["https://github.com/mattyr/little_ghost/pull/123\n", true]
+        ["https://github.com/littleghostai/little_ghost/pull/123\n", true]
       ],
       [
         [
-          "gh", "pr", "view", "123", "--repo", "mattyr/little_ghost",
+          "gh", "pr", "view", "123", "--repo", "littleghostai/little_ghost",
           "--json", "statusCheckRollup", "--jq", ".statusCheckRollup | length"
         ],
         ["3\n", true]
       ],
       [
         [
-          "gh", "pr", "view", "123", "--repo", "mattyr/little_ghost",
+          "gh", "pr", "view", "123", "--repo", "littleghostai/little_ghost",
           "--json", "state,headRefOid,files", "--jq", '[.state,.headRefOid,([.files[].path] | sort | join(","))] | @tsv'
         ],
         ["OPEN\trelease-head\tGemfile.lock,lib/little_ghost/version.rb,test/little_ghost_test.rb\n", true]
       ],
       [
         [
-          "gh", "pr", "view", "123", "--repo", "mattyr/little_ghost",
+          "gh", "pr", "view", "123", "--repo", "littleghostai/little_ghost",
           "--json", "state,headRefOid,files", "--jq", '[.state,.headRefOid,([.files[].path] | sort | join(","))] | @tsv'
         ],
         ["MERGED\trelease-head\tGemfile.lock,lib/little_ghost/version.rb,test/little_ghost_test.rb\n", true]
@@ -171,9 +171,9 @@ class LittleGhostReleaseTest < Minitest::Test
 
     assert_includes commands, ["git", "switch", "-c", "release-1.2.3"]
     assert_includes commands, ["bundle", "exec", "rake", "release:prepare[1.2.3]"]
-    assert_includes commands, ["gh", "pr", "checks", "123", "--repo", "mattyr/little_ghost", "--watch", "--interval", "10"]
+    assert_includes commands, ["gh", "pr", "checks", "123", "--repo", "littleghostai/little_ghost", "--watch", "--interval", "10"]
     assert_includes commands, [
-      "gh", "pr", "merge", "123", "--repo", "mattyr/little_ghost",
+      "gh", "pr", "merge", "123", "--repo", "littleghostai/little_ghost",
       "--squash", "--match-head-commit", "release-head"
     ]
     assert_equal ["git", "branch", "-D", "release-1.2.3"], commands.last
@@ -195,7 +195,7 @@ class LittleGhostReleaseTest < Minitest::Test
     captures = capture_runner(
       [["git", "branch", "--show-current"], ["main\n", true]],
       [["git", "status", "--porcelain"], ["", true]],
-      [["git", "remote", "get-url", "origin"], ["https://github.com/mattyr/little_ghost.git\n", true]],
+      [["git", "remote", "get-url", "origin"], ["https://github.com/littleghostai/little_ghost.git\n", true]],
       [["git", "rev-parse", "HEAD"], ["commit\n", true]],
       [["git", "rev-parse", "origin/main"], ["commit\n", true]],
       [["git", "rev-parse", "--verify", "refs/tags/v1.2.3"], ["", false]],
@@ -204,14 +204,14 @@ class LittleGhostReleaseTest < Minitest::Test
       [["git", "rev-parse", "refs/tags/v1.2.3^{commit}"], ["commit\n", true]],
       [
         [
-          "gh", "api", "repos/mattyr/little_ghost/git/tags/tag-object",
+          "gh", "api", "repos/littleghostai/little_ghost/git/tags/tag-object",
           "--jq", "[.verification.verified,.object.type,.object.sha] | @tsv"
         ],
         ["true\tcommit\tcommit\n", true]
       ],
       [
         [
-          "gh", "run", "list", "--repo", "mattyr/little_ghost", "--workflow", "release.yml",
+          "gh", "run", "list", "--repo", "littleghostai/little_ghost", "--workflow", "release.yml",
           "--branch", "v1.2.3", "--event", "push", "--limit", "10", "--json", "databaseId,headSha"
         ],
         [JSON.generate([{"databaseId" => 12345, "headSha" => "commit"}]), true]
@@ -228,7 +228,7 @@ class LittleGhostReleaseTest < Minitest::Test
       ["git", "fetch", "origin", "main", "--tags"],
       ["bundle", "exec", "rake", "release:tag"],
       ["git", "push", "origin", "v1.2.3"],
-      ["gh", "run", "watch", "12345", "--repo", "mattyr/little_ghost", "--exit-status"]
+      ["gh", "run", "watch", "12345", "--repo", "littleghostai/little_ghost", "--exit-status"]
     ], commands
   end
 
@@ -236,7 +236,7 @@ class LittleGhostReleaseTest < Minitest::Test
     captures = capture_runner(
       [["git", "branch", "--show-current"], ["main\n", true]],
       [["git", "status", "--porcelain"], ["", true]],
-      [["git", "remote", "get-url", "origin"], ["git@github.com:mattyr/little_ghost.git\n", true]],
+      [["git", "remote", "get-url", "origin"], ["git@github.com:littleghostai/little_ghost.git\n", true]],
       [["git", "rev-parse", "HEAD"], ["commit\n", true]],
       [["git", "rev-parse", "origin/main"], ["commit\n", true]],
       [["git", "rev-parse", "--verify", "refs/tags/v1.2.3"], ["tag-object\n", true]],
@@ -246,14 +246,14 @@ class LittleGhostReleaseTest < Minitest::Test
       [["git", "rev-parse", "HEAD"], ["commit\n", true]],
       [
         [
-          "gh", "api", "repos/mattyr/little_ghost/git/tags/tag-object",
+          "gh", "api", "repos/littleghostai/little_ghost/git/tags/tag-object",
           "--jq", "[.verification.verified,.object.type,.object.sha] | @tsv"
         ],
         ["true\tcommit\tcommit\n", true]
       ],
       [
         [
-          "gh", "run", "list", "--repo", "mattyr/little_ghost", "--workflow", "release.yml",
+          "gh", "run", "list", "--repo", "littleghostai/little_ghost", "--workflow", "release.yml",
           "--branch", "v1.2.3", "--event", "push", "--limit", "10", "--json", "databaseId,headSha"
         ],
         [JSON.generate([{"databaseId" => 12345, "headSha" => "commit"}]), true]
@@ -268,7 +268,7 @@ class LittleGhostReleaseTest < Minitest::Test
 
     refute_includes commands, ["bundle", "exec", "rake", "release:tag"]
     refute_includes commands, ["git", "push", "origin", "v1.2.3"]
-    assert_equal ["gh", "run", "watch", "12345", "--repo", "mattyr/little_ghost", "--exit-status"], commands.last
+    assert_equal ["gh", "run", "watch", "12345", "--repo", "littleghostai/little_ghost", "--exit-status"], commands.last
   end
 
   def test_current_gem_package_has_the_release_contract

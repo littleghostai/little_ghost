@@ -1,8 +1,8 @@
 # Build AI features that feel at home in Ruby
 
 > **Using a coding agent?** Start with
-> [`llms.txt`](https://mattyr.github.io/little_ghost/llms.txt) for a concise map
-> of the guides and API. [`llms-full.txt`](https://mattyr.github.io/little_ghost/llms-full.txt)
+> [`llms.txt`](https://littleghostai.org/llms.txt) for a concise map
+> of the guides and API. [`llms-full.txt`](https://littleghostai.org/llms-full.txt)
 > contains the complete documentation in one file.
 
 LittleGhost is a Ruby library for building AI features with agents and composable assemblies. With `OPENROUTER_API_KEY` set, start with one class, give it a prompt, and call it like the rest of your application code:
@@ -134,7 +134,7 @@ upgrading, because interfaces may change between releases.
 
 ### For contributors
 
-See the [contributing guide](https://github.com/mattyr/little_ghost/blob/main/CONTRIBUTING.md), [Code of Conduct](https://github.com/mattyr/little_ghost/blob/main/CODE_OF_CONDUCT.md), and [security policy](https://github.com/mattyr/little_ghost/blob/main/SECURITY.md).
+See the [contributing guide](https://github.com/littleghostai/little_ghost/blob/main/CONTRIBUTING.md), [Code of Conduct](https://github.com/littleghostai/little_ghost/blob/main/CODE_OF_CONDUCT.md), and [security policy](https://github.com/littleghostai/little_ghost/blob/main/SECURITY.md).
 
 ```sh
 $ bundle install

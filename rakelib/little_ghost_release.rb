@@ -15,8 +15,8 @@ module LittleGhostRelease
   class Error < StandardError; end
 
   class Workflow
-    REPOSITORY = "mattyr/little_ghost"
-    PULL_REQUEST_URL_PATTERN = %r{\Ahttps://github\.com/mattyr/little_ghost/pull/(\d+)\z}
+    REPOSITORY = "littleghostai/little_ghost"
+    PULL_REQUEST_URL_PATTERN = %r{\Ahttps://github\.com/littleghostai/little_ghost/pull/(\d+)\z}
     RELEASE_GATE = [
       %w[bundle exec rake test],
       %w[bundle exec standardrb --no-fix],

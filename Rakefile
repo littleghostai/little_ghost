@@ -201,6 +201,7 @@ class LittleGhostSiteChecker
 
   def check
     check_required_paths
+    check_legacy_public_urls
     check_landing_page
     check_getting_started_page
     check_api_index_metadata
@@ -227,6 +228,21 @@ class LittleGhostSiteChecker
     errors << "CNAME must not be published" if site_root.join("CNAME").exist?
     errors << "RDoc templates must not be published" if site_root.glob("**/*.rhtml").any?
     errors << "Legacy RDoc guide pages must not be published" if site_root.glob("docs/**/*_md.html").any?
+  end
+
+  def check_legacy_public_urls
+    public_files = site_root.glob("**/*").select do |path|
+      path.file? && %w[.html .json .md .txt].include?(path.extname)
+    end
+
+    public_files.each do |page|
+      contents = page.read
+      LittleGhostDocs::LEGACY_PUBLIC_URL_REPLACEMENTS.each_key do |legacy_url|
+        next unless contents.include?(legacy_url)
+
+        errors << "#{page.relative_path_from(site_root)} contains legacy public URL #{legacy_url}"
+      end
+    end
   end
 
   def check_landing_page
@@ -374,7 +390,7 @@ class LittleGhostSiteChecker
       check_local_navigation_target(page, relative_page, links, "Docs", site_root.join("docs/index.html"))
     end
 
-    if required_labels.include?("GitHub") && links.dig("GitHub", :href) != "https://github.com/mattyr/little_ghost"
+    if required_labels.include?("GitHub") && links.dig("GitHub", :href) != LittleGhostDocs::REPOSITORY_URL
       errors << "#{relative_page} has the wrong GitHub navigation target"
     end
 

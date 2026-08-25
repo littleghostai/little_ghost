@@ -10,14 +10,14 @@ Gem::Specification.new do |spec|
 
   spec.summary = "A Ruby framework for AI features with agents and composable assemblies"
   spec.description = "Add agents, tools, workflows, swarms, and graphs to existing Ruby systems or dedicated AI services."
-  spec.homepage = "https://github.com/mattyr/little_ghost"
+  spec.homepage = "https://github.com/littleghostai/little_ghost"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.3"
 
   spec.metadata = {
     "bug_tracker_uri" => "#{spec.homepage}/issues",
     "changelog_uri" => "#{spec.homepage}/releases",
-    "documentation_uri" => "https://mattyr.github.io/little_ghost/docs/",
+    "documentation_uri" => "https://littleghostai.org/docs/",
     "source_code_uri" => spec.homepage,
     "allowed_push_host" => "https://rubygems.org",
     "rubygems_mfa_required" => "true"
