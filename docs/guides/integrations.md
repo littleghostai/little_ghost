@@ -1,8 +1,8 @@
-# Connect interfaces and tracing
+# Connect Runs to interfaces and tracing
 
-Send the same Run through an interactive interface and a tracing system without
-changing the Agent that produced it. The AG-UI adapter translates Run events
-for a client, while the OpenTelemetry subscriber publishes operational traces.
+Use AG-UI to stream Run events to an interactive client. Use OpenTelemetry to
+publish traces to the backend your application already uses. Neither changes
+the Agent that produced the Run.
 
 ## Send a Run stream through AG-UI
 
@@ -27,13 +27,13 @@ events = LittleGhost::AGUI::Adapter.new.stream(
 events.each { |event| websocket.write(JSON.generate(event)) }
 ```
 
-The adapter translates text, reasoning, Tool activity, usage, retries, trace
-context, subagent activity, and terminal outcomes. It is stateless between
-calls. Your application still owns the connection, backpressure, disconnect
-behavior, and any request state its callbacks need.
+The adapter translates the full Run, including model output, Tool activity,
+retries, subagent activity, and the final outcome. It does not keep state between
+calls. Your application owns the connection, backpressure, disconnect behavior,
+and any request state its callbacks need.
 
-LittleGhost also emits namespaced custom events. Consumers should preserve or
-deliberately ignore event types they don't recognize. See the [AG-UI event
+LittleGhost may emit event types beyond the core AG-UI set. Decide whether the
+client preserves or ignores types it does not recognize. See the [AG-UI event
 documentation](https://docs.ag-ui.com/concepts/events) when implementing the
 client.
 
@@ -42,8 +42,8 @@ client.
 > see the complete Run, then filter fields before sending or storing events.
 
 Calling `each` drives the source stream on the caller's fiber or thread. When a
-client disconnects, stop enumerating and apply the cancellation behavior your
-application needs. Closing the socket can't undo Tool work that already ran.
+client disconnects, stop enumerating and decide whether the application should
+cancel the Run. Closing the socket cannot undo Tool work that already ran.
 
 ## Trace Runs with OpenTelemetry
 
@@ -56,9 +56,9 @@ LittleGhost.configure do |config|
 end
 ```
 
-LittleGhost depends on `opentelemetry-api`, leaving the SDK, processor, and
-exporter up to the application. It emits spans and events for Runs, Agents,
-model calls, Tools, assemblies, sessions, usage, and failures. Active operations
+LittleGhost includes the `opentelemetry-api` integration. Your application
+chooses the SDK, processor, and exporter. The subscriber emits spans and events
+for Runs, model calls, Tools, assemblies, sessions, usage, and failures, and it
 can propagate W3C `traceparent` and `tracestate` fields.
 
 Prompts, messages, responses, Tool arguments, and exception content are omitted
@@ -68,9 +68,9 @@ Avoid putting raw user, order, session, or request IDs in span attributes.
 
 Attribute names follow the evolving [OpenTelemetry GenAI semantic
 conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) where they
-apply. Flush or shut down `LittleGhost::Instrumentation` during application
-shutdown when your backend buffers data.
+apply. If the tracing backend buffers data, flush or shut down
+`LittleGhost::Instrumentation` before the application exits.
 
 See [Running in Production](production.md) for startup, shutdown, and
-observability, [MCP Tools](mcp.md) for operations published by remote servers,
+observability, [MCP](mcp.md) for operations published by remote servers,
 and [Workspaces and Sandboxes](sandboxing.md) for child processes and files.

@@ -37,7 +37,7 @@ module LittleGhostDocs
     {source: "docs/guides/models_and_providers.md", output: "models_and_providers.html", title: "Models and Providers", section: "Learn"},
     {source: "docs/guides/prompt_views.md", output: "prompt_views.html", title: "Prompts as Views", section: "Build with agents"},
     {source: "docs/guides/tools.md", output: "tools.html", title: "Tools", section: "Build with agents"},
-    {source: "docs/guides/mcp.md", output: "mcp.html", title: "MCP Tools", section: "Build with agents"},
+    {source: "docs/guides/mcp.md", output: "mcp.html", title: "MCP", section: "Build with agents"},
     {source: "docs/guides/structured_outputs_and_content.md", output: "structured_outputs_and_content.html", title: "Structured Results and Content", section: "Build with agents"},
     {source: "docs/guides/assemblies.md", output: "assemblies.html", title: "Compose Agents", section: "Build with agents"},
     {source: "docs/guides/skills.md", output: "skills.html", title: "Skills", section: "Build with agents"},

@@ -131,7 +131,7 @@ rewrite it in approachable language rather than hiding it in a late disclaimer.
 | Assembly guide | “How do I compose several participants?” | Connected, runnable examples of Workflow, Swarm, Graph, nesting, trajectories, and builders. |
 | Prompts as Views | “Where do growing instructions and shared prompt pieces live?” | Move one inline prompt into a conventional ERB view, then introduce locals, partials, and lookup. |
 | Tools | “What can an agent do, where does that code run, and where is it authorized?” | Tool definition and binding, trusted context, direct application authority, sandbox delegation, concurrency, retries, failures, and the bridge to code mode. |
-| MCP Tools | “How do I give an Agent operations published by an MCP server?” | One HTTP Toolset, optional dependencies, client ownership, stdio, selection and result mapping, protocol scope, concurrency, cancellation, and concrete authorization boundaries. |
+| MCP | “How do I give an Agent operations published by an MCP server?” | One HTTP Toolset, optional dependencies, client ownership, stdio, selection and result mapping, protocol scope, concurrency, cancellation, and concrete authorization boundaries. |
 | Structured Results and Content | “How do I receive checked values or send images and documents?” | One strict result schema, strategy selection, repair behavior, and typed content blocks. |
 | Skills | “How do I package reusable instructions and resources?” | One focused Skill, discovery, Tool pairing, optional Workspace resources, and writing guidance. |
 | Workspaces and Sandboxes | “What runs where, what persists, and which process boundaries are enforced?” | Workspace and resource lifecycle, logical paths, scoped capabilities, backend tradeoffs, networking, hosting layers, and explicit limitations. |
@@ -460,7 +460,7 @@ Check both content and generated metadata:
 - The landing-page browser title is “LittleGhost API Documentation”; guide and API page titles also include that configured project title.
 - The landing-page description begins with LittleGhost's capability, not project history or development status.
 - `README.md` is the landing page. Guides appear in this order: Getting Started,
-  Core Concepts, Models and Providers, Prompts as Views, Tools, MCP Tools,
+  Core Concepts, Models and Providers, Prompts as Views, Tools, MCP,
   Structured Results and Content, Compose Agents, Skills, Workspaces and
   Sandboxes, Code Mode, Integrations, and Running in Production. This
   contributor guideline does not appear in reader navigation.
