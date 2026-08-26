@@ -39,6 +39,10 @@ end
 
 Provider connections and model roles can also live in YAML files under `config/little_ghost`, or in files you select explicitly. Values set in Ruby take priority. An explicitly selected file comes next, followed by conventional files and environment defaults. See `LittleGhost::Configuration` when you need every supported source and override.
 
+[Provider Connections](providers.md) lists the required credentials and
+endpoint settings for hosted and local providers. Keep provider selection,
+model identifiers, and any custom endpoint headers in trusted configuration.
+
 Prompts, caller input and history, Tool results, and attachments may go to the
 selected provider. Choose configured providers that are appropriate for that
 data and its retention or residency needs.

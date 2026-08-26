@@ -12,6 +12,7 @@ module LittleGhost
     BUILT_INS = {
       "openai_compatible" => Providers::OpenAICompatible,
       "openai" => Providers::OpenAI,
+      "lm_studio" => Providers::LMStudio,
       "openrouter" => Providers::OpenRouter,
       "anthropic" => Providers::Anthropic,
       "gemini" => Providers::Gemini,

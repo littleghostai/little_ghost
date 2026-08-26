@@ -53,6 +53,7 @@ class LittleGhostDocsTest < Minitest::Test
       "Getting Started",
       "Core Concepts",
       "Models and Providers",
+      "Provider Connections",
       "Prompts as Views",
       "Tools",
       "MCP",

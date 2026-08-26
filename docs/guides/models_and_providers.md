@@ -64,9 +64,12 @@ through unchanged. Settings can affect cost, latency, and model behavior.
 
 ## Configure connections in one place
 
-LittleGhost includes adapters for OpenRouter, OpenAI-compatible APIs,
-Anthropic, Gemini, Vertex AI, and Bedrock. Connections may live in an
-initializer or in the conventional files under `config/little_ghost`.
+LittleGhost includes adapters for OpenRouter, OpenAI, OpenAI-compatible APIs,
+Anthropic, Gemini, Vertex AI, Bedrock, and LM Studio. Connections may live in
+an initializer or in the conventional files under `config/little_ghost`.
+[Provider Connections](providers.md) shows the credentials, endpoint options,
+and representative targets for each adapter, including Ollama through the
+OpenAI-compatible adapter.
 
 Keep credentials in your application's secret manager. Agents refer to a role
 or configured connection; they don't need to contain credentials. If your
@@ -209,7 +212,8 @@ retry safely.
 Embedding text is sent to the selected provider. Choose a provider that is
 appropriate for that data, just as you would for an Agent request. See
 `LittleGhost::Embeddings::Request` and your provider adapter's API reference for
-the supported settings and request bounds.
+the supported settings and request bounds. The [Provider
+Connections](providers.md) table identifies adapters with embedding support.
 
 Continue with [Prompts as Views](prompt_views.md) when an Agent's instructions
 outgrow one string. See [Structured Results and Content](structured_outputs_and_content.md)

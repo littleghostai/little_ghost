@@ -21,6 +21,120 @@ class OpenAICompatibleTest < Minitest::Test
     end
   end
 
+  def test_embeds_a_batch_and_restores_input_order
+    transport = FakeTransport.new([JSON.generate(
+      model: "local-embedding-model",
+      data: [
+        {index: 1, embedding: [0, 1]},
+        {index: 0, embedding: [1, 0]}
+      ],
+      usage: {prompt_tokens: 7}
+    )])
+
+    result = provider(transport:).embed(embedding_request(
+      inputs: ["first", "second"],
+      settings: {dimensions: 2}
+    ))
+
+    assert_equal [[1.0, 0.0], [0.0, 1.0]], result.vectors
+    assert_equal 7, result.usage.input_tokens
+    assert_equal "local-embedding-model", result.metadata.fetch(:model)
+    sent = transport.requests.fetch(0)
+    assert_equal "embeddings", sent.fetch(:path)
+    assert_equal "Bearer secret", sent.dig(:headers, "Authorization")
+    request_body = JSON.parse(sent.fetch(:body))
+    assert_equal ["first", "second"], request_body.fetch("input")
+    assert_equal "float", request_body.fetch("encoding_format")
+    assert_equal 2, request_body.fetch("dimensions")
+  end
+
+  def test_embedding_response_accepts_input_tokens_usage
+    transport = FakeTransport.new([JSON.generate(
+      data: [{index: 0, embedding: [1]}],
+      usage: {input_tokens: 3}
+    )])
+
+    result = provider(transport:).embed(embedding_request(inputs: "first"))
+
+    assert_equal 3, result.usage.input_tokens
+    assert_equal "gpt-test", result.metadata.fetch(:model)
+  end
+
+  def test_embedding_rejects_duplicate_indices
+    transport = FakeTransport.new([JSON.generate(
+      data: [{index: 0, embedding: [1]}, {index: 0, embedding: [2]}]
+    )])
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      provider(transport:).embed(embedding_request(inputs: ["first", "second"]))
+    end
+
+    assert_equal "Provider returned invalid embedding indices", error.message
+  end
+
+  def test_embedding_rejects_a_response_over_its_byte_limit
+    transport = FakeTransport.new(["x" * 6, "y" * 6])
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      provider(transport:, max_embedding_response_bytes: 10).embed(embedding_request(inputs: "first"))
+    end
+
+    assert_equal "Provider embedding response exceeded 10 bytes", error.message
+  end
+
+  def test_embedding_rejects_vectors_with_unexpected_requested_dimensions
+    transport = FakeTransport.new([JSON.generate(data: [{index: 0, embedding: [1]}])])
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      provider(transport:).embed(embedding_request(inputs: "first", settings: {dimensions: 2}))
+    end
+
+    assert_equal "Provider returned embeddings with unexpected dimensions", error.message
+  end
+
+  def test_invalid_embedding_payload_does_not_leak_provider_content
+    sentinel = "SENSITIVE_PROVIDER_FRAGMENT"
+    transport = FakeTransport.new([JSON.generate(data: [{index: sentinel, embedding: [1]}])])
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      provider(transport:).embed(embedding_request(inputs: "first"))
+    end
+
+    assert_equal "Provider returned an invalid embedding response", error.message
+    refute_includes error.message, sentinel
+  end
+
+  def test_embedding_retries_retryable_http_errors
+    failure = LittleGhost::Providers::HTTPError.new("busy", status: 429)
+    response = [JSON.generate(data: [{index: 0, embedding: [1]}])]
+    transport = FakeTransport.new(failure, response)
+    retries = []
+
+    result = provider(
+      transport:,
+      max_retries: 1,
+      on_retry: ->(*arguments) { retries << arguments }
+    ).embed(embedding_request(inputs: "first"))
+
+    assert_equal [[1.0]], result.vectors
+    assert_equal 2, transport.requests.length
+    assert_equal 1, retries.length
+    assert_equal 1, retries.first.fetch(0)
+    assert_same failure, retries.first.fetch(1)
+  end
+
+  def test_embedding_observes_cancellation_before_transport
+    token = LittleGhost::Support::CancellationToken.new
+    token.cancel
+    transport = FakeTransport.new
+
+    assert_raises(LittleGhost::CancelledError) do
+      provider(transport:).embed(embedding_request(inputs: "first", cancellation_token: token))
+    end
+
+    assert_empty transport.requests
+  end
+
   def test_responses_stream_normalizes_text_reasoning_tools_and_usage
     events = [
       {type: "response.created", response: {id: "resp_1", model: "gpt-test"}},
@@ -671,8 +785,8 @@ class OpenAICompatibleTest < Minitest::Test
 
   def provider(transport:, api: :responses, max_retries: 2,
     max_retry_delay: LittleGhost::Providers::OpenAICompatible::MAX_RETRY_DELAY,
-    sleeper: ->(_) {}, on_retry: ->(*) {})
-    LittleGhost::Providers::OpenAI.new(
+    sleeper: ->(_) {}, on_retry: ->(*) {}, **arguments)
+    LittleGhost::Providers::OpenAICompatible.new(
       api_key: "secret",
       model: "gpt-test",
       transport:,
@@ -680,8 +794,14 @@ class OpenAICompatibleTest < Minitest::Test
       max_retries:,
       max_retry_delay:,
       sleeper:,
-      on_retry:
+      on_retry:,
+      **arguments
     )
+  end
+
+  def embedding_request(inputs:, settings: {}, cancellation_token: LittleGhost::Support::CancellationToken.new,
+    deadline: nil)
+    LittleGhost::Embeddings::Request.new(inputs:, settings:, cancellation_token:, deadline:)
   end
 
   def request(messages: [{role: :user, content: "Hello"}], tools: [], settings: {}, output_schema: nil,

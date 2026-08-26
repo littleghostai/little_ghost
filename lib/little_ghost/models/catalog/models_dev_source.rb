@@ -24,11 +24,14 @@ module LittleGhost
 
         # Fetches normalized model facts, optionally for one canonical +target+.
         def refresh(target: nil)
+          providers = target ? [target.provider] : @provider_adapters.keys
+          providers.select! { |provider| NAMESPACES.key?(@provider_adapters[provider]) }
+          return {} if providers.empty?
+
           document = JSON.parse(
             Support::HTTPClient.new(open_timeout: 5, read_timeout: 30, max_response_bytes: MAX_CATALOG_BYTES)
               .request(uri: URL)
           )
-          providers = target ? [target.provider] : @provider_adapters.keys
           providers.each_with_object({}) do |provider, result|
             namespace = NAMESPACES[@provider_adapters[provider]]
             next unless namespace && document[namespace]

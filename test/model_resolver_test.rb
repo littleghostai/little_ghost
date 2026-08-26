@@ -600,6 +600,56 @@ class ModelResolverTest < Minitest::Test
     assert_equal 1.0, resolver.details("router:new/model").pricing.fetch(:input)
   end
 
+  def test_lm_studio_catalog_refresh_is_local_and_resolves_credentials_lazily
+    calls = []
+    providers = LittleGhost::Providers::Configuration.new(
+      desktop: {
+        adapter: :lm_studio,
+        base_url: "http://localhost:1234/v1/",
+        allow_insecure_http: true
+      }
+    )
+    requested_hosts = []
+    response = JSON.generate(models: [{
+      type: "llm", publisher: "google", key: "google/gemma-test", display_name: "Gemma Test",
+      size_bytes: 1, loaded_instances: [], max_context_length: 8192,
+      capabilities: {vision: false, trained_for_tool_use: true}
+    }])
+    resolver = nil
+    result = stub_http_client(lambda { |uri:, **|
+      requested_hosts << uri.host
+      response
+    }) do
+      resolver = LittleGhost::ModelResolver.new(
+        providers:,
+        profiles: {main: {target: "desktop:google/gemma-test"}},
+        credential_resolver: lambda { |provider:, **|
+          calls << provider
+          {api_key: "local-token"}
+        }
+      )
+      assert_empty calls
+      resolver.refresh!
+    end
+
+    assert_empty result.fetch(:errors)
+    assert_equal ["desktop:google/gemma-test"], result.fetch(:updated)
+    assert_equal ["desktop"], calls
+    assert_equal ["localhost"], requested_hosts
+    assert_equal 8192, resolver.details("desktop:google/gemma-test")[:max_context_length]
+  end
+
+  def test_models_dev_skips_connections_without_a_supported_namespace
+    source = LittleGhost::Models::Catalog::ModelsDevSource.new(
+      provider_adapters: {"desktop" => "lm_studio"}
+    )
+
+    LittleGhost::Support::HTTPClient.stub(:new, ->(**) { raise "unexpected external request" }) do
+      assert_empty source.refresh
+      assert_empty source.refresh(target: LittleGhost::Models::Target.parse("desktop:model"))
+    end
+  end
+
   def test_bedrock_catalog_uses_lazy_provider_credentials
     credentials = LittleGhost::Providers::Bedrock::Credentials.new(
       access_key_id: "key",
