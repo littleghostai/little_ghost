@@ -2,8 +2,24 @@
 
 module LittleGhost
   module MCP
-    # Connects one MCP server to an Agent through an application-created
-    # official MCP::Client. LittleGhost owns the client for the current run.
+    # Loads remote {Tool classes}[rdoc-ref:LittleGhost::Tool] through an
+    # application-created official MCP::Client.
+    # The client factory runs during Tool discovery with the current
+    # Tool::Binding. It must return a fresh, unconnected client without starting
+    # remote work. After the factory returns, LittleGhost connects the client,
+    # shares it among the generated Tool instances, and calls +close+ on its
+    # transport, when supported, as the owning run or ToolRegistry closes.
+    #
+    # Discovery and Tool calls carry the run's cancellation and deadline into
+    # the SDK. The official SDK executes cancellable requests on worker threads.
+    # Calls through the official HTTP transport may overlap. When the official
+    # stdio transport is supplied directly, calls are serialized and cancelling
+    # one invalidates that run's session. Custom or decorated transports own
+    # their serialization, cancellation-safe invalidation, and cleanup. SDK
+    # handlers may run on worker or listener threads, so application callbacks
+    # must support concurrent use and must not depend on the calling fiber's
+    # local state. Treat handler requests as untrusted and authorize any local
+    # work or data they can reach.
     #
     #   class HelpCenterTools < LittleGhost::MCP::Toolset
     #     client do |_binding|
@@ -33,8 +49,16 @@ module LittleGhost
       class_attribute :error_callback_value
 
       class << self
-        # Declares a factory for a fresh, unconnected official MCP::Client.
-        # Keyword arguments are forwarded to MCP::Client#connect.
+        # Declares the factory for a fresh, unconnected official MCP::Client.
+        # The factory receives the current Tool::Binding. LittleGhost forwards
+        # +connect_options+ to MCP::Client#connect, then calls +close+ on the
+        # returned transport when it exposes that method. Calling +client+
+        # without a block or options returns the inherited factory, if one is
+        # configured.
+        #
+        # :call-seq:
+        #   client() -> Proc or nil
+        #   client(**connect_options) { |binding| ... } -> Proc
         def client(**connect_options, &factory)
           return client_factory_value if !factory && connect_options.empty?
           raise ArgumentError, "client requires a factory block" unless factory
@@ -43,16 +67,31 @@ module LittleGhost
           self.client_factory_value = factory
         end
 
-        # Maps each generated Tool class. Return the class, a subclass, or nil
-        # to omit it. +mcp_tool+ is the official MCP::Client::Tool.
+        # Maps each generated Tool class before it is bound to the Agent.
+        # The block receives the generated class, the official
+        # MCP::Client::Tool as +mcp_tool:+, and the current +binding:+. Return
+        # the class, a subclass, or +nil+ to omit it. Renaming the class does not
+        # change the operation name sent to the server. With no block, returns
+        # the inherited mapping, if one is configured.
+        #
+        # :call-seq:
+        #   map_tool() -> Proc or nil
+        #   map_tool { |tool_class, mcp_tool:, binding:| ... } -> Proc
         def map_tool(&mapping)
           return tool_mapping_value unless mapping
 
           self.tool_mapping_value = mapping
         end
 
-        # Maps the default converted value. +result+ is the raw tools/call
-        # result object and +mcp_tool+ is the official MCP::Client::Tool.
+        # Maps the value produced by LittleGhost's default result conversion.
+        # The block also receives the raw <tt>tools/call</tt> +result:+ Hash, the
+        # official +mcp_tool:+, the submitted +arguments:+, and the current
+        # +binding:+. Return any Ruby value or Tool::Result. With no block,
+        # returns the inherited mapping, if one is configured.
+        #
+        # :call-seq:
+        #   map_result() -> Proc or nil
+        #   map_result { |value, result:, mcp_tool:, arguments:, binding:| ... } -> Proc
         def map_result(&mapping)
           return result_mapping_value unless mapping
 
@@ -61,7 +100,12 @@ module LittleGhost
 
         # Makes expected provider and protocol discovery failures produce no
         # tools. Configuration, cancellation, deadline, and callback failures
-        # still propagate.
+        # still propagate. With no argument, reports whether discovery is
+        # optional.
+        #
+        # :call-seq:
+        #   optional() -> true or false
+        #   optional(value) -> true or false
         def optional(value = UNSET)
           return optional_value if value.equal?(UNSET)
 
@@ -69,13 +113,29 @@ module LittleGhost
         end
 
         # Observes an expected discovery failure caught by <tt>optional true</tt>.
+        # The block receives the translated LittleGhost error and the current
+        # +binding:+. Exceptions raised by the block propagate. With no block,
+        # returns the inherited callback, if one is configured.
+        #
+        # :call-seq:
+        #   on_error() -> Proc or nil
+        #   on_error { |error, binding:| ... } -> Proc
         def on_error(&callback)
           return error_callback_value unless callback
 
           self.error_callback_value = callback
         end
 
-        # Generates Tool classes for an Agent's current binding.
+        # Connects the configured client and returns Tool classes for +binding+.
+        # When the binding has a run, the run owns the shared client session.
+        # Otherwise, the ToolRegistry that resolves the returned classes closes
+        # the session through its generated Tool instances. A caller that
+        # bypasses ToolRegistry must instantiate and close a returned class.
+        #
+        # Expected discovery failures return an empty Array when
+        # <tt>optional true</tt>. After the factory returns a client, later
+        # failures call +close+ when its transport exposes that method; failures
+        # then propagate unless they are optional.
         def tools(binding)
           context = binding.run&.context
           context&.check!

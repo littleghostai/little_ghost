@@ -116,12 +116,60 @@ limits, and transport customization. Configure those features through its
 public API so applications can adopt new SDK capabilities without waiting for a
 matching LittleGhost wrapper.
 
+Treat every server-initiated handler request as untrusted. Authorize it against
+the current run, restrict roots to intended paths, constrain model sampling and
+its cost, and return only the application data that server is allowed to receive.
+
 The factory must return a new, unconnected `MCP::Client`. Client and transport
-construction should not start remote work. LittleGhost guarantees cleanup once
-the client is returned, including connection and discovery failures. Configure
-SDK transport timeouts so construction and connection cannot wait past the
-application's intended deadline; LittleGhost bridges Run cancellation and
-deadlines to SDK cancellation tokens for Tool discovery and calls.
+construction should not start remote work. Once the client is returned,
+LittleGhost calls `close` on transports that expose it, including after
+connection or discovery fails. A custom transport owns any resource cleanup not
+covered by that method. Configure SDK transport timeouts so construction and
+connection cannot wait past the application's intended deadline; LittleGhost
+bridges Run cancellation and deadlines to SDK cancellation tokens for Tool
+discovery and calls.
+
+### Plan concurrency and cancellation
+
+The client factory and `MCP::Client#connect` run on the fiber or thread that is
+discovering the Agent's Tools. Connection does not receive an SDK cancellation
+token. Choose a scheduler-compatible transport adapter when other fibers must
+continue during connection, and always configure the transport's connection and
+read timeouts.
+
+For discovery and Tool calls, LittleGhost passes an SDK cancellation token and
+watches the Run's cancellation and deadline. The official SDK performs each
+cancellable request on a worker thread; LittleGhost uses another short-lived
+thread to watch the Run. This keeps a scheduled fiber responsive, but MCP calls
+are thread-backed rather than fiber-native. A cancelled HTTP request can leave
+the SDK's request thread waiting until the server responds or the transport
+closes.
+
+All Tools generated for one Agent run share the same client. Calls through the
+official HTTP transport may overlap when LittleGhost runs independent Tools
+concurrently. Use a Faraday adapter that permits overlapping calls. If the
+server, adapter, or a custom transport requires serialization, mark the
+generated Tools exclusive:
+
+```ruby
+map_tool do |tool_class, mcp_tool:, binding:|
+  tool_class.exclusive true
+  tool_class
+end
+```
+
+When the client uses the official `MCP::Client::Stdio` transport directly,
+LittleGhost serializes requests because one subprocess stdout stream cannot
+safely serve multiple readers. Cancelling a request closes and invalidates that
+run's session; later calls through its generated Tools fail instead of reusing a
+stream whose pending response may still arrive. A custom transport, including a
+transport that decorates stdio, must provide its own request serialization,
+cancellation-safe invalidation, and `close` behavior.
+
+SDK handlers for elicitation, sampling, roots, and server requests may run on an
+SDK worker or listener thread. Write those handlers for concurrent use, capture
+the application values they need when building the client, and do not rely on
+the current fiber's local state inside a handler.
 
 ### Select and map Tools
 
