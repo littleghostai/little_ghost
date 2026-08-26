@@ -55,6 +55,7 @@ class LittleGhostDocsTest < Minitest::Test
       "Models and Providers",
       "Prompts as Views",
       "Tools",
+      "MCP Tools",
       "Structured Results and Content",
       "Compose Agents",
       "Skills",

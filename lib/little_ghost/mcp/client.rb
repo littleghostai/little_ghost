@@ -7,6 +7,8 @@ require "json"
 module LittleGhost
   # Adapts Tools published by Model Context Protocol servers through an
   # application-provided official MCP Ruby client.
+  # See the {MCP Tools guide}[rdoc-ref:docs/guides/mcp.md] for setup, ownership,
+  # protocol scope, and operational boundaries.
   module MCP
     class CatalogValidatingTransport # :nodoc:
       MAX_SCHEMA_DEPTH = 128

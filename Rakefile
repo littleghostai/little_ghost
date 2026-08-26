@@ -175,6 +175,7 @@ class LittleGhostSiteChecker
     "docs/structured_outputs_and_content.html",
     "docs/assemblies.html",
     "docs/tools.html",
+    "docs/mcp.html",
     "docs/skills.html",
     "docs/sandboxing.html",
     "docs/code_mode.html",
@@ -206,6 +207,7 @@ class LittleGhostSiteChecker
     check_getting_started_page
     check_api_index_metadata
     check_documentation_navigation
+    check_guide_heading_outlines
     check_local_links
     check_markdown_surface
     check_discovery_files
@@ -228,6 +230,20 @@ class LittleGhostSiteChecker
     errors << "CNAME must not be published" if site_root.join("CNAME").exist?
     errors << "RDoc templates must not be published" if site_root.glob("**/*.rhtml").any?
     errors << "Legacy RDoc guide pages must not be published" if site_root.glob("docs/**/*_md.html").any?
+  end
+
+  def check_guide_heading_outlines
+    LittleGhostDocs::GUIDES.each do |guide|
+      page = site_root.join("docs", guide.fetch(:output))
+      main = page.read[/<main\b[^>]*>(.*?)<\/main>/mi, 1].to_s
+      levels = main.scan(/<h([1-6])\b/i).flatten.map(&:to_i)
+
+      levels.each_cons(2) do |previous, current|
+        next if current <= previous + 1
+
+        errors << "#{page.relative_path_from(site_root)} skips from h#{previous} to h#{current}"
+      end
+    end
   end
 
   def check_legacy_public_urls

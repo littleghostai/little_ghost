@@ -274,5 +274,5 @@ engine, but the generated program then has the same host access as the parent.
 
 See `LittleGhost::CodeMode::Engine`, `LittleGhost::CodeMode::Session`, and
 `LittleGhost::CodeMode::ProgramResult` for the extension contract. Continue
-with [Integrations](integrations.md) to connect Runs to MCP tools, AG-UI, and
-OpenTelemetry.
+with [MCP Tools](mcp.md) to add operations from a remote server, or
+[Integrations](integrations.md) to connect Runs to AG-UI and OpenTelemetry.
