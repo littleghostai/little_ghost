@@ -11,11 +11,15 @@ class OptionalIntegrationsTest < Minitest::Test
       abort if defined?(LittleGhost::SessionStores::AgentCoreMemory)
       abort if defined?(LittleGhost::Tools::Filesystem)
       abort if defined?(LittleGhost::MCP)
+      abort if defined?(MCP)
       abort if defined?(LittleGhost::EventSink)
       abort if defined?(LittleGhost::CodeMode::JavascriptEngine)
       abort if defined?(Async)
       abort if $LOADED_FEATURES.any? { |path| path.include?("/async/") || path.end_with?("async.rb") }
       abort if $LOADED_FEATURES.any? { |path| path.end_with?("mini_racer.rb") }
+      abort if $LOADED_FEATURES.any? { |path| path.include?("/mcp/") || path.end_with?("/mcp.rb") }
+      abort if $LOADED_FEATURES.any? { |path| path.include?("json_schemer") }
+      abort if $LOADED_FEATURES.any? { |path| path.include?("faraday") || path.include?("event_stream_parser") }
     RUBY
 
     _output, status = Open3.capture2e(RbConfig.ruby, "-Ilib", "-e", script, chdir: __dir__ + "/..")
@@ -87,7 +91,9 @@ class OptionalIntegrationsTest < Minitest::Test
       require "little_ghost/mcp"
 
       class RemoteTools < LittleGhost::MCP::Toolset
-        connection url: "https://mcp.example/rpc"
+        client do |_binding|
+          MCP::Client.new(transport: Object.new)
+        end
       end
 
       class RemoteAgent < LittleGhost::Agent
@@ -100,5 +106,48 @@ class OptionalIntegrationsTest < Minitest::Test
     output, status = Open3.capture2e(RbConfig.ruby, "-Ilib", "-e", script, chdir: __dir__ + "/..")
 
     assert status.success?, output
+  end
+
+  def test_mcp_entrypoint_reports_its_missing_optional_sdk
+    script = <<~RUBY
+      module Kernel
+        alias_method :little_ghost_original_require, :require
+        def require(path)
+          raise LoadError, "blocked for test" if path == "mcp"
+          little_ghost_original_require(path)
+        end
+      end
+
+      begin
+        require "little_ghost/mcp"
+      rescue LittleGhost::DependencyError => error
+        abort unless error.message.include?("mcp") && error.message.include?('gem "mcp", "~> 1.3"')
+      else
+        abort "expected dependency error"
+      end
+    RUBY
+
+    output, status = Open3.capture2e(RbConfig.ruby, "-Ilib", "-e", script, chdir: __dir__ + "/..")
+
+    assert status.success?, output
+  end
+
+  def test_mcp_entrypoint_does_not_load_transport_dependencies
+    script = <<~RUBY
+      require "little_ghost/mcp"
+      abort if defined?(Faraday)
+      abort if $LOADED_FEATURES.any? { |path| path.include?("faraday") || path.include?("event_stream_parser") }
+    RUBY
+
+    output, status = Open3.capture2e(RbConfig.ruby, "-Ilib", "-e", script, chdir: __dir__ + "/..")
+
+    assert status.success?, output
+  end
+
+  def test_published_gem_has_no_mcp_runtime_dependencies
+    specification = Gem::Specification.load(File.expand_path("../little_ghost.gemspec", __dir__))
+    runtime_dependencies = specification.runtime_dependencies.map(&:name)
+
+    assert_empty runtime_dependencies & %w[mcp json_schemer faraday event_stream_parser]
   end
 end

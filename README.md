@@ -123,12 +123,13 @@ upgrading, because interfaces may change between releases.
 - [Models and Providers](docs/guides/models_and_providers.md) gives shared model choices application-facing names.
 - [Prompts as Views](docs/guides/prompt_views.md) gives growing instructions, shared pieces, and application values a natural home.
 - [Tools](docs/guides/tools.md) explains how models call focused Ruby operations.
+- [MCP](docs/guides/mcp.md) connects agents to operations published through the Model Context Protocol.
 - [Structured Results and Content](docs/guides/structured_outputs_and_content.md) covers checked result shapes, images, and documents.
 - [Compose Agents](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
 - [Skills](docs/guides/skills.md) organizes reusable instructions and supporting resources.
 - [Workspaces and Sandboxes](docs/guides/sandboxing.md) gives files and child processes a deliberate place to run.
 - [Code Mode](docs/guides/code_mode.md) lets a model compose Tools in sandboxed Ruby or optional JavaScript.
-- [Integrations](docs/guides/integrations.md) connects MCP, AG-UI, and OpenTelemetry.
+- [Integrations](docs/guides/integrations.md) connects Run streams to AG-UI and OpenTelemetry.
 - [Running in Production](docs/guides/production.md) covers configuration, saved conversations, supervision, and observability.
 - [API reference](rdoc-ref:LittleGhost) provides exact method signatures and ownership rules.
 

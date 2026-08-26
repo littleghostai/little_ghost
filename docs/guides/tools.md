@@ -79,6 +79,8 @@ end
 Prefer `available_if` on an individual Tool when only that operation is
 conditional. Use a provider when the collection itself owns discovery,
 construction, or shared setup for an application or remote service.
+The [MCP guide](mcp.md) shows how a Model Context Protocol server provides a
+Toolset through the official Ruby client.
 
 LittleGhost does not enforce class names. A useful application convention is
 to end one model-callable operation with `Tool` and a provider of multiple

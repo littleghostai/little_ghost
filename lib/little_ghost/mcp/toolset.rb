@@ -2,22 +2,34 @@
 
 module LittleGhost
   module MCP
-    # Connects one MCP server to an Agent as a reusable Tool provider. Each Agent
-    # run gets its own connection. +map_tool+ chooses and configures the generated
-    # Tool classes; +map_result+ converts results that need application-specific
-    # handling.
+    # Loads remote {Tool classes}[rdoc-ref:LittleGhost::Tool] through an
+    # application-created official MCP::Client.
+    # The client factory runs during Tool discovery with the current
+    # Tool::Binding. It must return a fresh, unconnected client without starting
+    # remote work. After the factory returns, LittleGhost connects the client,
+    # shares it among the generated Tool instances, and calls +close+ on its
+    # transport, when supported, as the owning run or ToolRegistry closes.
+    #
+    # Discovery and Tool calls carry the run's cancellation and deadline into
+    # the SDK. The official SDK executes cancellable requests on worker threads.
+    # Calls through the official HTTP transport may overlap. When the official
+    # stdio transport is supplied directly, calls are serialized and cancelling
+    # one invalidates that run's session. Custom or decorated transports own
+    # their serialization, cancellation-safe invalidation, and cleanup. SDK
+    # handlers may run on worker or listener threads, so application callbacks
+    # must support concurrent use and must not depend on the calling fiber's
+    # local state. Treat handler requests as untrusted and authorize any local
+    # work or data they can reach.
     #
     #   class HelpCenterTools < LittleGhost::MCP::Toolset
-    #     connection url: "https://mcp.example/rpc", timeout: 20
-    #   end
-    #
-    #   class CustomerSupportAgent < LittleGhost::Agent
-    #     tools HelpCenterTools
+    #     client do |_binding|
+    #       transport = MCP::Client::HTTP.new(url: "https://mcp.example/rpc")
+    #       MCP::Client.new(transport:)
+    #     end
     #   end
     class Toolset
       extend Support::ClassAttributes
 
-      CONNECTION_OPTIONS = %i[url headers timeout signer allow_insecure_http max_response_bytes].freeze # :nodoc:
       UNSET = Object.new.freeze # :nodoc:
 
       class CallbackFailure < Error # :nodoc:
@@ -29,54 +41,57 @@ module LittleGhost
         end
       end
 
-      class_attribute :connection_value
+      class_attribute :client_factory_value
+      class_attribute :connect_options_value, default: {}.freeze
       class_attribute :tool_mapping_value
       class_attribute :result_mapping_value
       class_attribute :optional_value, default: false
       class_attribute :error_callback_value
 
       class << self
-        # Declares a static connection Hash or a block called with the current
-        # Tool::Binding. The Hash requires +url+ and may include
-        # +headers+, +timeout+, +signer+, +allow_insecure_http+, and
-        # +max_response_bytes+.
+        # Declares the factory for a fresh, unconnected official MCP::Client.
+        # The factory receives the current Tool::Binding. LittleGhost forwards
+        # +connect_options+ to MCP::Client#connect, then calls +close+ on the
+        # returned transport when it exposes that method. Calling +client+
+        # without a block or options returns the inherited factory, if one is
+        # configured.
         #
         # :call-seq:
-        #   connection() -> Hash, Proc, nil
-        #   connection(values) -> Hash
-        #   connection { |binding| ... } -> Proc
-        def connection(value = UNSET, &resolver)
-          return connection_value if value.equal?(UNSET) && !resolver
-          raise ArgumentError, "provide a connection or a block, not both" unless value.equal?(UNSET) || !resolver
+        #   client() -> Proc or nil
+        #   client(**connect_options) { |binding| ... } -> Proc
+        def client(**connect_options, &factory)
+          return client_factory_value if !factory && connect_options.empty?
+          raise ArgumentError, "client requires a factory block" unless factory
 
-          configured = resolver || value
-          unless configured.is_a?(Hash) || configured.respond_to?(:call)
-            raise ArgumentError, "connection must be a hash or callable"
-          end
-
-          self.connection_value = configured.is_a?(Hash) ? normalize_connection(configured) : configured
+          self.connect_options_value = connect_options.dup.freeze
+          self.client_factory_value = factory
         end
 
-        # Maps each generated Tool class. The block receives +definition:+ and
-        # +binding:+ keywords. Return the configured Tool class, or nil to omit
-        # it. Changing Tool#tool_name does not change the operation name sent to
-        # the MCP server.
+        # Maps each generated Tool class before it is bound to the Agent.
+        # The block receives the generated class, the official
+        # MCP::Client::Tool as +mcp_tool:+, and the current +binding:+. Return
+        # the class, a subclass, or +nil+ to omit it. Renaming the class does not
+        # change the operation name sent to the server. With no block, returns
+        # the inherited mapping, if one is configured.
         #
         # :call-seq:
-        #   map_tool() -> Proc, nil
-        #   map_tool { |tool_class, definition:, binding:| ... } -> Proc
+        #   map_tool() -> Proc or nil
+        #   map_tool { |tool_class, mcp_tool:, binding:| ... } -> Proc
         def map_tool(&mapping)
           return tool_mapping_value unless mapping
 
           self.tool_mapping_value = mapping
         end
 
-        # Maps each immutable MCP::Result. The block receives +call:+ and
-        # +binding:+ keywords and returns any Ruby value or Tool::Result.
+        # Maps the value produced by LittleGhost's default result conversion.
+        # The block also receives the raw <tt>tools/call</tt> +result:+ Hash, the
+        # official +mcp_tool:+, the submitted +arguments:+, and the current
+        # +binding:+. Return any Ruby value or Tool::Result. With no block,
+        # returns the inherited mapping, if one is configured.
         #
         # :call-seq:
-        #   map_result() -> Proc, nil
-        #   map_result { |result, call:, binding:| ... } -> Proc
+        #   map_result() -> Proc or nil
+        #   map_result { |value, result:, mcp_tool:, arguments:, binding:| ... } -> Proc
         def map_result(&mapping)
           return result_mapping_value unless mapping
 
@@ -85,7 +100,8 @@ module LittleGhost
 
         # Makes expected provider and protocol discovery failures produce no
         # tools. Configuration, cancellation, deadline, and callback failures
-        # still propagate.
+        # still propagate. With no argument, reports whether discovery is
+        # optional.
         #
         # :call-seq:
         #   optional() -> true or false
@@ -97,10 +113,12 @@ module LittleGhost
         end
 
         # Observes an expected discovery failure caught by <tt>optional true</tt>.
-        # Exceptions raised by this callback propagate.
+        # The block receives the translated LittleGhost error and the current
+        # +binding:+. Exceptions raised by the block propagate. With no block,
+        # returns the inherited callback, if one is configured.
         #
         # :call-seq:
-        #   on_error() -> Proc, nil
+        #   on_error() -> Proc or nil
         #   on_error { |error, binding:| ... } -> Proc
         def on_error(&callback)
           return error_callback_value unless callback
@@ -108,91 +126,111 @@ module LittleGhost
           self.error_callback_value = callback
         end
 
-        # Generates Tool classes for an Agent's current binding.
+        # Connects the configured client and returns Tool classes for +binding+.
+        # When the binding has a run, the run owns the shared client session.
+        # Otherwise, the ToolRegistry that resolves the returned classes closes
+        # the session through its generated Tool instances. A caller that
+        # bypasses ToolRegistry must instantiate and close a returned class.
+        #
+        # Expected discovery failures return an empty Array when
+        # <tt>optional true</tt>. After the factory returns a client, later
+        # failures call +close+ when its transport exposes that method; failures
+        # then propagate unless they are optional.
         def tools(binding)
-          options = resolved_connection(binding)
           context = binding.run&.context
-          mapper = tool_mapping_value
-          result_mapper = result_mapping_value
-          options = connection_with_wrapped_signer(options)
+          context&.check!
+          official_client = build_client(binding)
+          session = Session.new(official_client)
+          connect_client(official_client, context:)
+          binding.run&.register(session)
+
           Instrumentation.instrument(:mcp_discovery, toolset: toolset_name) do |telemetry|
-            client = Client.new(
-              transport: HTTPTransport.new(**options),
+            adapter = Adapter.new(
+              client: official_client,
+              session:,
               name: toolset_name,
-              tool_mapper: mapper && lambda do |tool_class, definition:, binding:|
-                invoke_application_callback do
-                  mapper.call(tool_class, definition:, binding:)
-                end
-              end,
-              result_mapper: result_mapper && lambda do |result, call:, binding:|
-                result_mapper.call(result, call:, binding:)
-              end
+              tool_mapper: wrapped_tool_mapper,
+              result_mapper: wrapped_result_mapper
             )
-            discovered = client.tools(context:, binding:)
+            discovered = adapter.tools(context:, binding:)
+            session.close if discovered.empty? && !binding.run
             telemetry[:outcome] = :success
             telemetry[:tool_count] = discovered.length
             discovered
           end
         rescue CallbackFailure => error
+          session&.close
           raise error.original
         rescue ProviderError, ProtocolError, ToolError => error
+          session&.close
           raise unless optional_value
 
           error_callback_value&.call(error, binding:)
           []
+        rescue
+          session&.close
+          raise
         end
 
         private
 
-        def resolved_connection(binding)
-          configured = connection_value
-          raise ConfigurationError, "#{toolset_name} must declare an MCP connection" unless configured
+        def build_client(binding)
+          factory = client_factory_value
+          raise ConfigurationError, "#{toolset_name} must declare an MCP client factory" unless factory
 
-          value = if configured.respond_to?(:call)
-            invoke_application_callback { configured.call(binding) }
-          else
-            configured
+          value = invoke_application_callback { factory.call(binding) }
+          unless value.is_a?(::MCP::Client)
+            close_transport(value)
+            raise ConfigurationError, "#{toolset_name} client factory must return an MCP::Client"
           end
-          normalize_connection(value)
+          if value.transport.respond_to?(:connected?) && value.connected?
+            close_transport(value)
+            raise ConfigurationError, "#{toolset_name} client factory must return an unconnected MCP::Client"
+          end
+
+          install_catalog_validation(value)
+          value
         end
 
-        def normalize_connection(value)
-          hash = Hash.try_convert(value)
-          raise ConfigurationError, "#{toolset_name} connection must resolve to a hash" unless hash
-
-          normalized = hash.each_with_object({}) do |(name, child), result|
-            key = name.to_sym
-            raise ConfigurationError, "#{toolset_name} connection contains duplicate #{key}" if result.key?(key)
-
-            result[key] = child
+        def install_catalog_validation(client)
+          validated = CatalogValidatingTransport.new(client.transport)
+          client.instance_variable_set(:@transport, validated)
+          unless client.transport.equal?(validated)
+            validated.close if validated.respond_to?(:close)
+            raise DependencyError, "The installed MCP client does not expose a compatible transport"
           end
-          unknown = normalized.keys - CONNECTION_OPTIONS
-          unless unknown.empty?
-            raise ConfigurationError, "#{toolset_name} connection contains unknown option #{unknown.first.inspect}"
-          end
-          url = normalized[:url]
-          raise ConfigurationError, "#{toolset_name} connection must include a URL" if url.nil? || url.to_s.empty?
-
-          normalized[:url] = String(url).freeze
-          normalized[:headers] = normalize_headers(normalized.fetch(:headers, {}))
-          normalized.freeze
-        rescue NoMethodError
-          raise ConfigurationError, "#{toolset_name} connection keys must be strings or symbols"
         end
 
-        def normalize_headers(headers)
-          headers.each_with_object({}) do |(name, value), normalized|
-            normalized[String(name).dup.freeze] = String(value).dup.freeze
-          end.freeze
+        def connect_client(client, context:)
+          context&.check!
+          client.connect(**connect_options_value)
+          context&.check!
+        rescue ::MCP::Client::ServerError, ::MCP::Client::ValidationError => error
+          raise ProtocolError, "MCP client rejected the server handshake: #{error.message}"
+        rescue ::MCP::Client::RequestHandlerError => error
+          raise ProviderError, "MCP transport failed (#{error.error_type})"
+        rescue ArgumentError => error
+          raise ConfigurationError, "MCP connection is invalid: #{error.message}"
         end
 
-        def connection_with_wrapped_signer(options)
-          signer = options[:signer]
-          return options unless signer
+        def wrapped_tool_mapper
+          mapper = tool_mapping_value
+          return unless mapper
 
-          options.merge(
-            signer: ->(request) { invoke_application_callback { signer.call(request) } }
-          ).freeze
+          lambda do |tool_class, mcp_tool:, binding:|
+            invoke_application_callback do
+              mapper.call(tool_class, mcp_tool:, binding:)
+            end
+          end
+        end
+
+        def wrapped_result_mapper
+          result_mapping_value
+        end
+
+        def close_transport(value)
+          transport = value.respond_to?(:transport) ? value.transport : value
+          transport.close if transport&.respond_to?(:close)
         end
 
         def invoke_application_callback

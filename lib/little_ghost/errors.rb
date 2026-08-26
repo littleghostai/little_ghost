@@ -12,7 +12,7 @@ module LittleGhost
   class SandboxConfigurationError < ConfigurationError; end
   # Raised when a sandbox backend does not support the current operating system.
   class UnsupportedPlatformError < SandboxConfigurationError; end
-  # Raised when an explicitly selected sandbox backend dependency is unavailable.
+  # Raised when an explicitly selected optional integration or backend dependency is unavailable.
   class DependencyError < SandboxConfigurationError; end
   # Raised when a backend cannot enforce a requested sandbox capability.
   class CapabilityError < SandboxConfigurationError; end

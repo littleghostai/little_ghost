@@ -30,10 +30,10 @@ Gem::Specification.new do |spec|
 
   spec.add_dependency "base64"
   spec.add_dependency "fiddle"
-  spec.add_dependency "json_schemer", "~> 2.5"
   spec.add_dependency "opentelemetry-api", "~> 1.0"
 
   spec.add_development_dependency "async", "~> 2.39"
+  spec.add_development_dependency "mcp", "~> 1.3"
   spec.add_development_dependency "minitest", "~> 5.25"
   spec.add_development_dependency "mini_racer", "~> 0.21"
   spec.add_development_dependency "rake", "~> 13.2"

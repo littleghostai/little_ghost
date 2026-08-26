@@ -210,6 +210,7 @@ module LittleGhost
     class_attribute :tool_name_value
     class_attribute :description_value
     class_attribute :input_schema_value
+    class_attribute :validate_input_schema_value, default: true
     class_attribute :exclusive_value, default: false
     class_attribute :availability_value
 
@@ -384,7 +385,11 @@ module LittleGhost
     # results; unexpected exception messages are not exposed to the model.
     def execute(input, context: RunContext.new)
       context ||= RunContext.new
-      errors = SchemaValidator.new(self.class.input_schema).validate(input)
+      errors = if self.class.validate_input_schema_value
+        SchemaValidator.new(self.class.input_schema).validate(input)
+      else
+        []
+      end
       unless errors.empty?
         message = "Invalid tool input: #{errors.join("; ")}"
         return failure(message, error: ToolError.new(message))
