@@ -1,9 +1,19 @@
 # frozen_string_literal: true
 
 module LittleGhost
+  # Adapts Tools published by Model Context Protocol servers through the
+  # official Ruby SDK. Load it explicitly with <tt>little_ghost/mcp</tt>.
   module MCP
+    STRUCTURED_CONTENT_UNSET = Object.new.freeze # :nodoc:
+
     module ImmutableValue # :nodoc:
       module_function
+
+      def json(value, field:)
+        freeze_value(DataMap.new("value" => value).fetch("value"))
+      rescue ArgumentError => error
+        raise ProtocolError, "MCP #{field} is invalid: #{error.message}"
+      end
 
       def mapping(value, field:)
         raise ProtocolError, "MCP #{field} must be an object" unless value.is_a?(Hash)
@@ -163,25 +173,27 @@ module LittleGhost
       # The Tool::Binding for the generated Tool instance.
     end
 
-    Result = Data.define(:content, :structured_content, :error, :metadata, :raw) do # :nodoc:
-      def initialize(content:, raw:, structured_content: nil, error: false, metadata: {})
+    Result = Data.define(:content, :structured_content, :error, :metadata, :raw, :structured_content_present) do # :nodoc:
+      def initialize(content:, raw:, structured_content: STRUCTURED_CONTENT_UNSET, error: false, metadata: {})
         unless error.nil? || error == true || error == false
           raise ProtocolError, "MCP tool result isError must be boolean"
         end
 
+        structured_content_present = !structured_content.equal?(STRUCTURED_CONTENT_UNSET)
+
         super(
           content: ImmutableValue.array(content, field: "tool result content"),
-          structured_content: ImmutableValue.optional_mapping(
-            structured_content,
-            field: "structuredContent"
-          ),
+          structured_content: structured_content_present ?
+            ImmutableValue.json(structured_content, field: "structuredContent") : nil,
           error: !!error,
           metadata: ImmutableValue.mapping(metadata, field: "tool result _meta"),
-          raw: ImmutableValue.mapping(raw, field: "tool result")
+          raw: ImmutableValue.mapping(raw, field: "tool result"),
+          structured_content_present:
         )
       end
 
       def error? = error
+      def structured_content_provided? = structured_content_present
     end
 
     # Represents one MCP Tool result without discarding server fields. Mapping
@@ -194,7 +206,9 @@ module LittleGhost
 
       ##
       # :attr_reader: structured_content
-      # The optional deeply frozen structured result object.
+      # The deeply frozen structured JSON value, or +nil+ when it is absent or
+      # explicitly JSON null. Use +structured_content_provided?+ to distinguish
+      # those cases.
 
       ##
       # :attr_reader: error
@@ -211,6 +225,11 @@ module LittleGhost
       ##
       # :method: error?
       # Whether the server marked the result as an error.
+
+      ##
+      # :method: structured_content_provided?
+      # Whether the server included <tt>structuredContent</tt>, including an
+      # explicit JSON null value.
     end
   end
 end
