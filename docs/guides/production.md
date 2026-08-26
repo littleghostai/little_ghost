@@ -37,11 +37,15 @@ class CustomerSupportAgent < LittleGhost::Agent
 end
 ```
 
-Provider connections and model roles can also live in YAML files under `config/little_ghost`, or in files you select explicitly. Values set in Ruby take priority. An explicitly selected file comes next, followed by conventional files and environment defaults. See `LittleGhost::Configuration` when you need every supported source and override.
+Provider connections and model roles can live in the Ruby initializer or in
+YAML under `config/little_ghost`. Values set in Ruby take priority. See
+`LittleGhost::Configuration` for custom files and the full precedence order.
 
-[Provider Support](providers.md) lists the required credentials and
-endpoint settings for hosted and local providers. Keep provider selection,
-model identifiers, and any custom endpoint headers in trusted configuration.
+[Provider Support](providers.md) lists the credentials and endpoint settings
+for hosted and local providers. Choose connection names, model identifiers,
+and custom headers during application startup. Read secrets from deployment
+configuration or a secret manager; do not copy request parameters into these
+settings.
 
 Prompts, caller input and history, Tool results, and attachments may go to the
 selected provider. Choose configured providers that are appropriate for that
