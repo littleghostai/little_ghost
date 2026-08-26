@@ -17,7 +17,8 @@ $ export OPENROUTER_API_KEY="..."
 
 Use your application's secret manager outside a local shell, and never commit provider credentials.
 
-This guide uses OpenRouter because one credential is enough to begin. LittleGhost can use other provider connections too; you will configure those in [Running in Production](production.md).
+This guide uses OpenRouter to keep setup to one key. Prefer another hosted
+provider or a local model server? Start with [Provider Support](providers.md).
 
 ## See your first answer
 

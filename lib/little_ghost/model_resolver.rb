@@ -135,6 +135,8 @@ module LittleGhost
       @connections.each do |name, values|
         credentials = -> { catalog_credentials(name, values) }
         case values["adapter"].to_s
+        when "lm_studio"
+          sources << Providers::LMStudio::CatalogSource.new(provider: name, credential_resolver: credentials)
         when "openrouter"
           sources << Providers::OpenRouter::CatalogSource.new(provider: name, credential_resolver: credentials)
         when "anthropic"

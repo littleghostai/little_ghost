@@ -17,7 +17,8 @@ module LittleGhost
     #   )
     #
     # The client translates ModelRequest values to the selected wire API and
-    # translates responses back to StreamEvent objects.
+    # translates responses back to StreamEvent objects. It also sends
+    # Embeddings::Request values to the compatible embeddings endpoint.
     #
     # === Retries and streaming output
     #
@@ -33,6 +34,7 @@ module LittleGhost
 
       # The OpenAI API endpoint used when +base_url+ is omitted.
       DEFAULT_BASE_URL = "https://api.openai.com/v1/"
+      DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES = 8 * 1024 * 1024 # :nodoc:
       INITIAL_RETRY_DELAY = 1 # :nodoc:
       MAX_RETRY_DELAY = 16 # :nodoc:
       TRANSIENT_STREAM_ERROR_TYPES = %w[
@@ -95,6 +97,7 @@ module LittleGhost
         read_timeout: 120,
         allow_insecure_http: false,
         max_response_bytes: Support::HTTPClient::DEFAULT_MAX_RESPONSE_BYTES,
+        max_embedding_response_bytes: DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES,
         max_retries: 2,
         max_retry_delay: MAX_RETRY_DELAY,
         transport: nil,
@@ -107,6 +110,9 @@ module LittleGhost
         raise ConfigurationError, "api must be :responses or :chat_completions" unless %i[responses chat_completions].include?(@api)
 
         @headers = headers.transform_keys(&:to_s).freeze
+        @max_embedding_response_bytes = Integer(max_embedding_response_bytes)
+        raise ArgumentError, "max_embedding_response_bytes must be positive" unless @max_embedding_response_bytes.positive?
+
         @max_retries = Integer(max_retries)
         @max_retry_delay = Integer(max_retry_delay)
         @transport = transport || Support::HTTPClient.new(
@@ -160,6 +166,47 @@ module LittleGhost
         end
       end
 
+      # Embeds one or more strings with the configured compatible model.
+      #
+      # The optional +:dimensions+ request setting selects a supported output
+      # size. The response preserves input order and raises ProtocolError when
+      # the endpoint returns an incomplete or invalid batch.
+      def embed(request)
+        attempts = 0
+        begin
+          request.cancellation_token.raise_if_cancelled!
+          payload = {
+            model:,
+            input: request.inputs,
+            encoding_format: "float"
+          }
+          dimensions = request.settings[:dimensions]
+          payload[:dimensions] = Integer(dimensions) if dimensions
+          body = +""
+          @transport.stream(
+            path: "embeddings",
+            headers: {"Authorization" => "Bearer #{@api_key}", "Content-Type" => "application/json"}.merge(@headers),
+            body: JSON.generate(payload),
+            cancellation_token: request.cancellation_token,
+            deadline: request.deadline
+          ) do |chunk|
+            if body.bytesize + chunk.bytesize > @max_embedding_response_bytes
+              raise ProtocolError, "#{embedding_provider_name} embedding response exceeded #{@max_embedding_response_bytes} bytes"
+            end
+            body << chunk
+          end
+          normalize_embedding_response(body, request.inputs.length, dimensions && Integer(dimensions))
+        rescue HTTPError => error
+          raise unless error.retryable? && attempts < @max_retries
+
+          attempts += 1
+          delay = capped_retry_delay(request, retry_delay(attempts))
+          @on_retry.call(attempts, error, delay)
+          wait_before_retry(request, delay)
+          retry
+        end
+      end
+
       # Returns the permissive capability contract expected from compatible APIs.
       # Subclasses can override this when the endpoint advertises precise support.
       def capabilities(metadata: {})
@@ -167,6 +214,36 @@ module LittleGhost
       end
 
       private
+
+      def embedding_provider_name = "Provider"
+
+      def normalize_embedding_response(body, input_count, expected_dimensions)
+        payload = JSON.parse(body)
+        data = payload.fetch("data")
+        unless data.is_a?(Array) && data.length == input_count
+          raise ProtocolError, "#{embedding_provider_name} returned an invalid embedding count"
+        end
+
+        ordered = data.sort_by { |item| Integer(item.fetch("index")) }
+        expected = (0...input_count).to_a
+        unless ordered.map { |item| Integer(item.fetch("index")) } == expected
+          raise ProtocolError, "#{embedding_provider_name} returned invalid embedding indices"
+        end
+
+        vectors = ordered.map { |item| item.fetch("embedding") }
+        if expected_dimensions && vectors.any? { |vector| !vector.is_a?(Array) || vector.length != expected_dimensions }
+          raise ProtocolError, "#{embedding_provider_name} returned embeddings with unexpected dimensions"
+        end
+
+        usage = payload.fetch("usage", {})
+        Embeddings::Response.new(
+          vectors:,
+          usage: Usage.new(input_tokens: usage["prompt_tokens"] || usage["input_tokens"]),
+          metadata: {model: payload["model"] || model}
+        )
+      rescue JSON::ParserError, KeyError, ArgumentError, TypeError
+        raise ProtocolError, "#{embedding_provider_name} returned an invalid embedding response"
+      end
 
       def retry_error_metadata(error)
         case error

@@ -172,6 +172,7 @@ class LittleGhostSiteChecker
     "docs/prompt_views.html",
     "docs/core_concepts.html",
     "docs/models_and_providers.html",
+    "docs/providers.html",
     "docs/structured_outputs_and_content.html",
     "docs/assemblies.html",
     "docs/tools.html",
