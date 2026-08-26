@@ -43,7 +43,7 @@ $ export OPENROUTER_API_KEY="..."
 OpenRouter keeps the first setup to one credential. It is not required:
 LittleGhost also includes adapters for OpenAI, compatible APIs, Anthropic,
 Gemini, Vertex AI, Bedrock, and LM Studio. [Provider
-Connections](docs/guides/providers.md) shows the configuration for each one,
+Support](docs/guides/providers.md) shows the configuration for each one,
 including local Ollama and LM Studio servers. [Running in
 Production](docs/guides/production.md) gives model choices stable,
 application-facing names.
@@ -127,7 +127,7 @@ upgrading, because interfaces may change between releases.
 - [Getting Started](docs/guides/getting_started.md) takes you from installation to a tool-backed, streaming agent.
 - [Core Concepts](docs/guides/core_concepts.md) builds the mental model from Agent to Assembly.
 - [Models and Providers](docs/guides/models_and_providers.md) gives shared model choices application-facing names.
-- [Provider Connections](docs/guides/providers.md) connects LittleGhost to hosted APIs, Ollama, and LM Studio.
+- [Provider Support](docs/guides/providers.md) shows supported hosted APIs, local servers, embeddings, and model catalogs.
 - [Prompts as Views](docs/guides/prompt_views.md) gives growing instructions, shared pieces, and application values a natural home.
 - [Tools](docs/guides/tools.md) explains how models call focused Ruby operations.
 - [MCP](docs/guides/mcp.md) connects agents to operations published through the Model Context Protocol.

@@ -53,7 +53,7 @@ class LittleGhostDocsTest < Minitest::Test
       "Getting Started",
       "Core Concepts",
       "Models and Providers",
-      "Provider Connections",
+      "Provider Support",
       "Prompts as Views",
       "Tools",
       "MCP",
@@ -65,6 +65,7 @@ class LittleGhostDocsTest < Minitest::Test
       "Integrations",
       "Running in Production"
     ], LittleGhostDocs::GUIDES.map { |guide| guide.fetch(:title) }
+    assert_empty LittleGhostDocs::GUIDE_SECTIONS.select { |_section, guides| guides.one? }
   end
 
   def test_snapshot_adds_edge_selector_assets_and_catalog_location

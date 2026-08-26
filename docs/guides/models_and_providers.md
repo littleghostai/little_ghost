@@ -62,14 +62,20 @@ run = CustomerSupportAgent.ask(
 Build these settings in application code instead of passing request parameters
 through unchanged. Settings can affect cost, latency, and model behavior.
 
-## Configure connections in one place
+## Configure a supported provider
 
 LittleGhost includes adapters for OpenRouter, OpenAI, OpenAI-compatible APIs,
 Anthropic, Gemini, Vertex AI, Bedrock, and LM Studio. Connections may live in
 an initializer or in the conventional files under `config/little_ghost`.
-[Provider Connections](providers.md) shows the credentials, endpoint options,
-and representative targets for each adapter, including Ollama through the
-OpenAI-compatible adapter.
+[Provider Support](providers.md) is the setup reference for those adapters. It
+shows their credentials, endpoint options, embeddings and catalog behavior,
+and representative targets, including Ollama through the OpenAI-compatible
+adapter.
+
+A connection defines how LittleGhost reaches one provider or endpoint. A model
+role defines which connection and model your application chooses for a task.
+Keep that boundary clear when several roles share one provider or when one role
+moves between providers.
 
 Keep credentials in your application's secret manager. Agents refer to a role
 or configured connection; they don't need to contain credentials. If your
@@ -212,8 +218,8 @@ retry safely.
 Embedding text is sent to the selected provider. Choose a provider that is
 appropriate for that data, just as you would for an Agent request. See
 `LittleGhost::Embeddings::Request` and your provider adapter's API reference for
-the supported settings and request bounds. The [Provider
-Connections](providers.md) table identifies adapters with embedding support.
+the supported settings and request bounds. The [Provider Support](providers.md)
+table identifies adapters with embedding support.
 
 Continue with [Prompts as Views](prompt_views.md) when an Agent's instructions
 outgrow one string. See [Structured Results and Content](structured_outputs_and_content.md)

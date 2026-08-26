@@ -128,7 +128,7 @@ rewrite it in approachable language rather than hiding it in a late disclaimer.
 | Getting Started | “How do I make the first useful agent run?” | One complete path from installation through output and streaming. Explain only concepts used on that path. |
 | Core Concepts | “How do these pieces relate, and when do I choose each one?” | A durable mental model from Agent to Assembly, contrasting adjacent choices without cataloguing their options. |
 | Models and Providers | “How do I choose where an Agent sends a request?” | Start with one direct target, then introduce shared roles, connections, per-request selection, and capabilities. |
-| Provider Connections | “How do I connect the provider or local server I chose?” | Copyable connection recipes for every built-in adapter, model targets, embeddings and catalog availability, authentication, and endpoint caveats. |
+| Provider Support | “Which providers and local servers can I use, and how do I connect them?” | A support matrix and copyable connection recipes for every built-in adapter, model targets, embeddings and catalog availability, authentication, and endpoint caveats. |
 | Assembly guide | “How do I compose several participants?” | Connected, runnable examples of Workflow, Swarm, Graph, nesting, trajectories, and builders. |
 | Prompts as Views | “Where do growing instructions and shared prompt pieces live?” | Move one inline prompt into a conventional ERB view, then introduce locals, partials, and lookup. |
 | Tools | “What can an agent do, where does that code run, and where is it authorized?” | Tool definition and binding, trusted context, direct application authority, sandbox delegation, concurrency, retries, failures, and the bridge to code mode. |
@@ -461,7 +461,7 @@ Check both content and generated metadata:
 - The landing-page browser title is “LittleGhost API Documentation”; guide and API page titles also include that configured project title.
 - The landing-page description begins with LittleGhost's capability, not project history or development status.
 - `README.md` is the landing page. Guides appear in this order: Getting Started,
-  Core Concepts, Models and Providers, Prompts as Views, Tools, MCP,
+  Core Concepts, Models and Providers, Provider Support, Prompts as Views, Tools, MCP,
   Structured Results and Content, Compose Agents, Skills, Workspaces and
   Sandboxes, Code Mode, Integrations, and Running in Production. This
   contributor guideline does not appear in reader navigation.

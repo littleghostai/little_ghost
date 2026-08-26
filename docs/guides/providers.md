@@ -1,14 +1,16 @@
-# Connect Provider APIs
+# Provider Support
 
-A provider connection tells LittleGhost where to send model requests and how
-to authenticate them. Configure each connection once, then select its models
-with a `connection:model-id` target or an application-facing model role.
+Connect LittleGhost to a supported hosted API or local model server with the
+appropriate adapter and settings. Configure each connection once. Then select
+its models with a direct target made from the connection name and provider
+model identifier, or use an application-facing model role.
 
-This page covers every built-in adapter. If you are deciding how Agents should
-select between connections, start with [Models and
-Providers](models_and_providers.md).
+[Models and Providers](models_and_providers.md) explains how Agents choose
+between configured connections and model roles. This page covers the concrete
+adapter support, credentials, endpoints, embeddings, and catalog behavior for
+each connection.
 
-## See the available connections
+## Compare provider support
 
 The same configuration shape works for hosted services and local servers:
 
@@ -27,13 +29,14 @@ end
 wire protocol, and the remaining values configure that connection. An Agent
 can now use a target such as `primary:openai/gpt-5.6-luna`.
 
-LittleGhost supports these connection forms:
+LittleGhost supports these providers and compatible endpoints:
 
-| Connection | Adapter | Generation | Embeddings | Catalog after `refresh!` |
+| Provider or endpoint | Adapter | Generation | Embeddings | Model catalog after `refresh!` |
 | --- | --- | --- | --- | --- |
-| OpenRouter | `:openrouter` | Chat Completions | Compatible endpoint | models.dev and OpenRouter |
+| OpenRouter | `:openrouter` | Chat Completions | When the model supports it | models.dev and OpenRouter |
 | OpenAI | `:openai` | Responses or Chat Completions | Yes | models.dev |
 | Compatible API | `:openai_compatible` | Responses or Chat Completions | When the endpoint implements it | Not built in |
+| Ollama | `:openai_compatible` | Responses or Chat Completions | When the model supports it | Not built in |
 | Anthropic | `:anthropic` | Messages | No | models.dev and Anthropic |
 | Gemini | `:gemini` | Gemini API | No | models.dev and Gemini |
 | Vertex AI | `:vertex_ai` | Gemini on Vertex AI | No | models.dev |
@@ -151,7 +154,7 @@ placeholder credential:
 
 ```ruby
 config.providers = {
-  studio: {
+  lm_studio: {
     adapter: :lm_studio,
     allow_insecure_http: true
   }
@@ -159,7 +162,7 @@ config.providers = {
 ```
 
 Use the model key shown by LM Studio in the target, for example
-`studio:google/gemma-3-4b`. Generation uses the Responses API by default. Set
+`lm_studio:google/gemma-3-4b`. Generation uses the Responses API by default. Set
 `api: :chat_completions` with LM Studio releases earlier than 0.3.29, or when
 required by the selected model. `LittleGhost.embed` uses the same connection
 with an embedding model. The [LM Studio compatibility
@@ -171,7 +174,7 @@ token configured in LM Studio:
 
 ```ruby
 config.providers = {
-  studio: {
+  lm_studio: {
     adapter: :lm_studio,
     api_key: ENV.fetch("LM_STUDIO_API_TOKEN"),
     allow_insecure_http: true
@@ -254,16 +257,17 @@ Bedrock embeddings currently support `amazon.titan-embed-text-v2:0`. Its
 
 ## Refresh model details explicitly
 
-Catalog sources do not perform network work during configuration or ordinary model
-resolution. Refresh them when your application wants current provider facts:
+Catalog sources do not perform network work during configuration or ordinary
+model resolution. Refresh them when your application wants current provider
+facts:
 
 ```ruby
 resolver = LittleGhost.model_resolver
-result = resolver.refresh!(target: "studio:google/gemma-3-4b")
+result = resolver.refresh!(target: "lm_studio:google/gemma-3-4b")
 result[:updated]
 result[:errors]
 
-details = resolver.details("studio:google/gemma-3-4b")
+details = resolver.details("lm_studio:google/gemma-3-4b")
 details.context_window
 details.input_modalities
 details.supported_parameters
