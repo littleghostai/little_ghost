@@ -91,7 +91,9 @@ class OptionalIntegrationsTest < Minitest::Test
       require "little_ghost/mcp"
 
       class RemoteTools < LittleGhost::MCP::Toolset
-        connection url: "https://mcp.example/rpc"
+        client do |_binding|
+          MCP::Client.new(transport: Object.new)
+        end
       end
 
       class RemoteAgent < LittleGhost::Agent
@@ -120,30 +122,6 @@ class OptionalIntegrationsTest < Minitest::Test
         require "little_ghost/mcp"
       rescue LittleGhost::DependencyError => error
         abort unless error.message.include?("mcp") && error.message.include?('gem "mcp", "~> 1.3"')
-      else
-        abort "expected dependency error"
-      end
-    RUBY
-
-    output, status = Open3.capture2e(RbConfig.ruby, "-Ilib", "-e", script, chdir: __dir__ + "/..")
-
-    assert status.success?, output
-  end
-
-  def test_mcp_entrypoint_reports_its_missing_schema_dependency
-    script = <<~RUBY
-      module Kernel
-        alias_method :little_ghost_original_require, :require
-        def require(path)
-          raise LoadError, "blocked for test" if path == "json_schemer"
-          little_ghost_original_require(path)
-        end
-      end
-
-      begin
-        require "little_ghost/mcp"
-      rescue LittleGhost::DependencyError => error
-        abort unless error.message.include?("json_schemer") && error.message.include?('gem "json_schemer", "~> 2.5"')
       else
         abort "expected dependency error"
       end

@@ -22,15 +22,5 @@ unless requirement.satisfied_by?(Gem::Version.new(::MCP::VERSION))
     "MCP integration requires mcp #{requirement}; the bundle loaded #{::MCP::VERSION}."
 end
 
-begin
-  require "json_schemer"
-rescue LoadError => error
-  raise LittleGhost::DependencyError,
-    "MCP schema validation requires the optional json_schemer gem. " \
-      "Add `gem \"json_schemer\", \"~> 2.5\"` to your bundle.",
-    cause: error
-end
-
-require_relative "mcp/types"
 require_relative "mcp/client"
 require_relative "mcp/toolset"

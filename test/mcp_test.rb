@@ -45,8 +45,7 @@ class MCPTest < Minitest::Test
       result = case request[:method]
       when "tools/list"
         page = request.dig(:params, :cursor).to_i
-        tools = @tool_pages.fetch(page)
-        value = {"tools" => tools}
+        value = {"tools" => @tool_pages.fetch(page)}
         value["nextCursor"] = (page + 1).to_s if page + 1 < @tool_pages.length
         value
       when "tools/call"
@@ -81,117 +80,61 @@ class MCPTest < Minitest::Test
     end
   end
 
-  def test_toolset_uses_the_official_client_and_preserves_machine_values
-    transport = Transport.new(results: {
-      "content" => [{"type" => "text", "text" => "summary"}],
-      "structuredContent" => {"items" => [1, 2]}
-    })
-    toolset = http_toolset
-
-    with_http_transport(transport) do
-      tool_class = toolset.tools(LittleGhost::Tool::Binding.new).first
-      result = tool_class.new.execute({"query" => "ruby"})
-
-      assert_operator tool_class, :<, LittleGhost::Tool
-      assert_equal "search", tool_class.tool_name
-      assert_equal({"items" => [1, 2]}, result.value)
-      assert_equal "search", transport.requests.last.dig(:params, :name)
-    end
-
-    assert_equal :auto, transport.connects.fetch(0).fetch(:mode)
-    assert_equal "little_ghost", transport.connects.fetch(0).dig(:client_info, :name)
-    refute LittleGhost::MCP.const_defined?(:Client, false)
-  end
-
-  def test_toolset_preserves_raw_definition_metadata_omitted_by_sdk_tool_values
-    tools = [[{
-      "name" => "search",
-      "title" => "Knowledge search",
-      "description" => "Search",
-      "inputSchema" => {"type" => "object"},
-      "annotations" => {"readOnlyHint" => true},
-      "_meta" => {"vendor.example/routing" => "public"},
-      "vendorField" => {"enabled" => true}
-    }]]
-
-    with_http_transport(Transport.new(tool_pages: tools)) do
-      definition = http_toolset.tools(LittleGhost::Tool::Binding.new).first.mcp_definition
-
-      assert_equal "Knowledge search", definition.title
-      assert_equal true, definition.annotations.fetch("readOnlyHint")
-      assert_equal "public", definition.metadata.fetch("vendor.example/routing")
-      assert_equal true, definition.dig("vendorField", "enabled")
-      assert definition.raw.frozen?
-    end
-  end
-
-  def test_toolset_resolves_http_options_for_the_current_binding
+  def test_factory_returns_the_official_client_and_connect_options_are_forwarded
+    transport = Transport.new
     binding = LittleGhost::Tool::Binding.new(workspace: Object.new)
     seen = nil
-    received_options = nil
     toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection do |current|
+      client(protocol_version: "2025-06-18", capabilities: {elicitation: {}}) do |current|
         seen = current
-        {
-          url: "https://mcp.example/rpc",
-          headers: {Authorization: "Bearer token"},
-          timeout: 12,
-          max_response_bytes: 4096,
-          protocol_version: "2025-06-18",
-          capabilities: {elicitation: {}}
-        }
+        ::MCP::Client.new(transport:)
       end
     end
 
-    with_http_transport(Transport.new, options: ->(values) { received_options = values }) do
-      assert_equal ["search"], toolset.tools(binding).map(&:tool_name)
-    end
+    tool = toolset.tools(binding).fetch(0)
 
     assert_same binding, seen
-    assert_equal "https://mcp.example/rpc", received_options.fetch(:url)
-    assert_equal({"Authorization" => "Bearer token"}, received_options.fetch(:headers))
-    assert_equal 4096, received_options.fetch(:max_message_bytes)
+    assert_instance_of ::MCP::Client::Tool, tool.mcp_tool
+    assert_equal "search", tool.tool_name
+    assert_equal "2025-06-18", transport.connects.first.fetch(:protocol_version)
+    assert_equal({elicitation: {}}, transport.connects.first.fetch(:capabilities))
   end
 
-  def test_toolset_accepts_every_protocol_version_supported_by_the_sdk
+  def test_sdk_defaults_negotiate_every_supported_protocol_version
     ::MCP::Configuration::SUPPORTED_STABLE_PROTOCOL_VERSIONS.each do |version|
       transport = Transport.new
-      toolset = Class.new(LittleGhost::MCP::Toolset) do
-        connection url: "https://mcp.example/rpc", protocol_version: version
-      end
+      tools = client_toolset(transport, protocol_version: version).tools(LittleGhost::Tool::Binding.new)
 
-      with_http_transport(transport) do
-        assert_equal ["search"], toolset.tools(LittleGhost::Tool::Binding.new).map(&:tool_name)
-      end
-
+      assert_equal ["search"], tools.map(&:tool_name)
       assert_equal version, transport.connects.first.fetch(:protocol_version)
     end
-  end
 
-  def test_toolset_builds_stdio_without_loading_http_configuration
     transport = Transport.new
-    received = nil
-    toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection command: "bundle", args: ["exec", "mcp-server"], env: {"TENANT" => "public"},
-        timeout: 15, max_response_bytes: 8192
-    end
-
-    constructor = lambda do |**values|
-      received = values
-      transport
-    end
-    ::MCP::Client::Stdio.stub(:new, constructor) do
-      assert_equal ["search"], toolset.tools(LittleGhost::Tool::Binding.new).map(&:tool_name)
-    end
-
-    assert_equal "bundle", received.fetch(:command)
-    assert_equal ["exec", "mcp-server"], received.fetch(:args)
-    assert_equal({"TENANT" => "public"}, received.fetch(:env))
-    assert_equal 15.0, received.fetch(:read_timeout)
-    assert_equal 8192, received.fetch(:max_line_bytes)
+    client_toolset(transport).tools(LittleGhost::Tool::Binding.new)
+    assert_equal :auto, transport.connects.first.fetch(:mode)
   end
 
-  def test_configure_client_runs_before_connect
+  def test_wrapper_preserves_legacy_connect_for_keyrest_only_transports
+    transport = Transport.new
+    received = []
+    transport.define_singleton_method(:connect) do |**values|
+      received << values
+      @connected = true
+    end
+
+    client_toolset(transport).tools(LittleGhost::Tool::Binding.new)
+
+    refute received.first.key?(:mode)
+
+    legacy = Transport.new
+    legacy.define_singleton_method(:connect) { |**_values| @connected = true }
+    pinned = client_toolset(legacy, mode: :auto)
+    assert_raises(LittleGhost::ConfigurationError) do
+      pinned.tools(LittleGhost::Tool::Binding.new)
+    end
+  end
+
+  def test_factory_can_configure_sdk_handlers_before_little_ghost_connects
     transport = Transport.new
     sequence = []
     transport.define_singleton_method(:connect) do |**values|
@@ -199,55 +142,70 @@ class MCPTest < Minitest::Test
       super(**values)
     end
     toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection url: "https://mcp.example/rpc", capabilities: {elicitation: {}}
-      configure_client do |client, binding:|
-        sequence << :configure
-        raise "missing binding" unless binding.is_a?(LittleGhost::Tool::Binding)
-        raise "wrong client" unless client.is_a?(::MCP::Client)
+      client(capabilities: {elicitation: {}}) do |_binding|
+        ::MCP::Client.new(transport:).tap do |official_client|
+          official_client.on_elicitation { |_request| nil }
+          sequence << :configure
+        end
       end
     end
 
-    with_http_transport(transport) do
-      toolset.tools(LittleGhost::Tool::Binding.new)
-    end
+    toolset.tools(LittleGhost::Tool::Binding.new)
 
     assert_equal %i[configure connect], sequence
-    assert_equal({elicitation: {}}, transport.connects.first.fetch(:capabilities))
   end
 
-  def test_connection_block_can_return_a_run_scoped_official_transport
-    transport = Transport.new(tool_pages: [[{
-      "name" => "search",
-      "title" => "Search title",
-      "inputSchema" => {"type" => "object"},
-      "_meta" => {"vendor.example/value" => true}
-    }]])
-    toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection { |_binding| transport }
+  def test_factory_requires_a_fresh_unconnected_official_client
+    missing = Class.new(LittleGhost::MCP::Toolset)
+    assert_raises(LittleGhost::ConfigurationError) do
+      missing.tools(LittleGhost::Tool::Binding.new)
     end
 
-    tool = toolset.tools(LittleGhost::Tool::Binding.new).first
+    wrong = Class.new(LittleGhost::MCP::Toolset) { client { |_binding| Object.new } }
+    assert_raises(LittleGhost::ConfigurationError) do
+      wrong.tools(LittleGhost::Tool::Binding.new)
+    end
 
-    assert_equal "search", tool.tool_name
-    assert_equal "Search title", tool.mcp_definition.title
-    assert_equal true, tool.mcp_definition.metadata.fetch("vendor.example/value")
-    tool.new.close
+    transport = Transport.new
+    official_client = ::MCP::Client.new(transport:)
+    official_client.connect
+    connected = Class.new(LittleGhost::MCP::Toolset) { client { |_binding| official_client } }
+    error = assert_raises(LittleGhost::ConfigurationError) do
+      connected.tools(LittleGhost::Tool::Binding.new)
+    end
+    assert_match(/unconnected/, error.message)
     assert transport.closed?
   end
 
-  def test_static_transport_and_connection_block_client_are_rejected
-    transport = Transport.new
-
+  def test_client_options_require_a_factory_block
     error = assert_raises(ArgumentError) do
-      Class.new(LittleGhost::MCP::Toolset) { connection transport }
+      Class.new(LittleGhost::MCP::Toolset) { client(capabilities: {}) }
     end
-    assert_match(/connection block/, error.message)
 
-    client = ::MCP::Client.new(transport:)
-    toolset = Class.new(LittleGhost::MCP::Toolset) { connection { |_binding| client } }
-    assert_raises(LittleGhost::ConfigurationError) do
-      toolset.tools(LittleGhost::Tool::Binding.new)
-    end
+    assert_match(/factory block/, error.message)
+  end
+
+  def test_tool_generation_uses_sdk_values_and_skips_little_ghost_subset_validation
+    tools = [[{
+      "name" => "count.items",
+      "description" => "Count items",
+      "inputSchema" => {
+        "type" => "object",
+        "properties" => {"count" => {"const" => 1}},
+        "required" => ["count"]
+      },
+      "outputSchema" => {"type" => "integer"},
+      "annotations" => {"readOnlyHint" => true}
+    }]]
+    transport = Transport.new(tool_pages: tools)
+    tool = client_toolset(transport).tools(LittleGhost::Tool::Binding.new).fetch(0)
+    result = tool.new.execute({"count" => 2})
+
+    assert_equal "count_items", tool.tool_name
+    assert_equal({"const" => 1}, tool.input_schema.dig("properties", "count"))
+    assert_equal true, tool.mcp_tool.annotations.fetch("readOnlyHint")
+    assert result.success?
+    assert_equal 2, transport.requests.last.dig(:params, :arguments, "count")
   end
 
   def test_map_tool_can_omit_and_rename_without_changing_dispatch
@@ -255,12 +213,12 @@ class MCPTest < Minitest::Test
       {"name" => "search", "description" => "Search", "inputSchema" => {"type" => "object"}},
       {"name" => "delete", "description" => "Delete", "inputSchema" => {"type" => "object"}}
     ]])
-    definitions = []
+    observed = []
     toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection url: "https://mcp.example/rpc"
-      map_tool do |tool_class, definition:, binding:|
-        definitions << [definition, binding]
-        next if definition.source_name == "delete"
+      client { |_binding| ::MCP::Client.new(transport:) }
+      map_tool do |tool_class, mcp_tool:, binding:|
+        observed << [mcp_tool, binding]
+        next if mcp_tool.name == "delete"
 
         tool_class.tool_name "knowledge_search"
         tool_class
@@ -268,26 +226,50 @@ class MCPTest < Minitest::Test
     end
     binding = LittleGhost::Tool::Binding.new
 
-    with_http_transport(transport) do
-      tool_class = toolset.tools(binding).fetch(0)
-      assert_equal "found", tool_class.new.execute({}).value
-      assert_equal "knowledge_search", tool_class.tool_name
-    end
+    tool = toolset.tools(binding).fetch(0)
+    result = tool.new.execute({})
 
-    assert_equal %w[search delete], definitions.map { |definition, _| definition.source_name }
+    assert_equal "found", result.value
+    assert_equal "knowledge_search", tool.tool_name
+    assert_equal %w[search delete], observed.map { |mcp_tool, _| mcp_tool.name }
+    assert observed.all? { |_, current| current.equal?(binding) }
     assert_equal "search", transport.requests.last.dig(:params, :name)
   end
 
-  def test_map_result_receives_immutable_values_and_can_return_artifacts
-    seen = nil
+  def test_map_tool_rejects_collisions_after_customization
+    transport = Transport.new(tool_pages: [[
+      {"name" => "first", "inputSchema" => {"type" => "object"}},
+      {"name" => "second", "inputSchema" => {"type" => "object"}}
+    ]])
     toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection url: "https://mcp.example/rpc"
-      map_result do |result, call:, binding:|
-        seen = [result, call, binding]
+      client { |_binding| ::MCP::Client.new(transport:) }
+      map_tool do |tool_class, **|
+        tool_class.tool_name "duplicate"
+        tool_class
+      end
+    end
+
+    assert_raises(LittleGhost::ConfigurationError) do
+      toolset.tools(LittleGhost::Tool::Binding.new)
+    end
+    assert transport.closed?
+  end
+
+  def test_map_result_receives_the_default_value_and_sdk_native_values
+    transport = Transport.new(results: {
+      "content" => [{"type" => "text", "text" => "summary"}],
+      "structuredContent" => {"items" => [1, 2]},
+      "_meta" => {"download_id" => "record:1"}
+    })
+    observed = nil
+    toolset = Class.new(LittleGhost::MCP::Toolset) do
+      client { |_binding| ::MCP::Client.new(transport:) }
+      map_result do |value, result:, mcp_tool:, arguments:, binding:|
+        observed = [value, result, mcp_tool, arguments, binding]
         LittleGhost::Tool::Result.new(
-          value: {"mapped" => result.content.first.fetch("text")},
+          value: {"mapped" => value.fetch("items")},
           artifacts: [LittleGhost::Artifact.deferred(
-            reference: "record:1",
+            reference: result.fetch("_meta").fetch("download_id"),
             media_type: "application/octet-stream"
           )]
         )
@@ -295,17 +277,198 @@ class MCPTest < Minitest::Test
     end
     binding = LittleGhost::Tool::Binding.new
 
-    with_http_transport(Transport.new) do
-      result = toolset.tools(binding).first.new(binding:).execute({})
-      assert_equal({"mapped" => "found"}, result.value)
-      assert_equal "record:1", result.artifacts.first.reference
+    execution = toolset.tools(binding).first.new(binding:).execute({"query" => "ruby"})
+
+    assert_equal({"mapped" => [1, 2]}, execution.value)
+    assert_equal "record:1", execution.artifacts.first.reference
+    value, result, mcp_tool, arguments, current_binding = observed
+    assert_equal({"items" => [1, 2]}, value)
+    assert_equal "record:1", result.dig("_meta", "download_id")
+    assert_instance_of ::MCP::Client::Tool, mcp_tool
+    assert_equal({"query" => "ruby"}, arguments)
+    assert_same binding, current_binding
+  end
+
+  def test_map_result_tool_errors_keep_their_model_safe_message
+    transport = Transport.new
+    toolset = Class.new(LittleGhost::MCP::Toolset) do
+      client { |_binding| ::MCP::Client.new(transport:) }
+      map_result { |_value, **| raise LittleGhost::ToolError, "safe mapping failure" }
     end
 
-    protocol_result, call, current_binding = seen
-    assert_instance_of LittleGhost::MCP::Result, protocol_result
-    assert protocol_result.content.frozen?
-    assert_instance_of LittleGhost::MCP::Call, call
-    assert_same binding, current_binding
+    execution = toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({})
+
+    assert execution.error?
+    assert_equal "safe mapping failure", execution.content
+  end
+
+  def test_structured_content_preserves_false_and_explicit_null
+    false_result = Transport.new(results: {"structuredContent" => false})
+    execution = client_toolset(false_result).tools(LittleGhost::Tool::Binding.new).first.new.execute({})
+    assert_equal false, execution.value
+
+    null_result = Transport.new(results: {"structuredContent" => nil})
+    execution = client_toolset(null_result).tools(LittleGhost::Tool::Binding.new).first.new.execute({})
+    assert execution.success?
+    assert_nil execution.value
+  end
+
+  def test_images_become_artifacts_without_retaining_base64_in_the_value
+    encoded = Base64.strict_encode64("image-bytes")
+    transport = Transport.new(results: {
+      "content" => [{"type" => "image", "data" => encoded, "mimeType" => "image/png", "name" => "chart.png"}]
+    })
+
+    result = client_toolset(transport).tools(LittleGhost::Tool::Binding.new).first.new.execute({})
+
+    assert_equal({"images" => [{"mediaType" => "image/png", "name" => "chart.png", "bytes" => 11}]}, result.value)
+    refute_includes result.value.inspect, encoded
+    assert_equal "image-bytes", result.artifacts.fetch(0).data
+  end
+
+  def test_invalid_image_data_and_result_shapes_fail_inside_the_tool_boundary
+    invalid_image = Transport.new(results: {
+      "content" => [{"type" => "image", "data" => "not base64", "mimeType" => "image/png"}]
+    })
+    result = client_toolset(invalid_image).tools(LittleGhost::Tool::Binding.new).first.new.execute({})
+    assert result.error?
+    assert_equal "Tool failed (LittleGhost::ProtocolError)", result.content
+
+    invalid_content = Transport.new(results: {"content" => {}})
+    result = client_toolset(invalid_content).tools(LittleGhost::Tool::Binding.new).first.new.execute({})
+    assert result.error?
+    assert_equal "Tool failed (LittleGhost::ProtocolError)", result.content
+  end
+
+  def test_server_tool_errors_remain_safe_tool_errors
+    transport = Transport.new(results: {
+      "content" => [{"type" => "text", "text" => "safe failure"}],
+      "isError" => true
+    })
+
+    result = client_toolset(transport).tools(LittleGhost::Tool::Binding.new).first.new.execute({})
+
+    assert result.error?
+    assert_equal "safe failure", result.content
+  end
+
+  def test_loads_all_pages_and_normalizes_long_names
+    long_name = "search." + ("a" * 100)
+    transport = Transport.new(tool_pages: [
+      [{"name" => "first", "inputSchema" => {"type" => "object"}}],
+      [{"name" => long_name, "inputSchema" => {"type" => "object"}}]
+    ])
+
+    names = client_toolset(transport).tools(LittleGhost::Tool::Binding.new).map(&:tool_name)
+
+    assert_equal "first", names.first
+    assert_equal 64, names.last.length
+    assert_match(/_[a-f0-9]{12}\z/, names.last)
+  end
+
+  def test_discovery_bounds_tools_before_generating_classes
+    tools = Array.new(1_001) do |index|
+      {"name" => "tool_#{index}", "inputSchema" => {"type" => "object"}}
+    end
+    transport = Transport.new(tool_pages: [tools])
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      client_toolset(transport).tools(LittleGhost::Tool::Binding.new)
+    end
+
+    assert_match(/1000-tool limit/, error.message)
+    assert transport.closed?
+  end
+
+  def test_discovery_bounds_empty_pagination
+    transport = Transport.new(tool_pages: Array.new(101) { [] })
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      client_toolset(transport).tools(LittleGhost::Tool::Binding.new)
+    end
+
+    assert_match(/100-page limit/, error.message)
+    assert_equal 100, transport.requests.length
+  end
+
+  def test_malformed_catalog_responses_are_protocol_errors
+    responses = [
+      "invalid",
+      {"jsonrpc" => "2.0", "id" => "1"},
+      {"jsonrpc" => "2.0", "id" => "1", "result" => {"tools" => ["invalid"]}},
+      {"jsonrpc" => "2.0", "id" => "1", "error" => nil},
+      {"jsonrpc" => "2.0", "id" => "1", "error" => {"code" => "bad", "message" => nil}}
+    ]
+
+    responses.each do |response|
+      transport = transport_with_catalog_response(response)
+      assert_raises(LittleGhost::ProtocolError) do
+        client_toolset(transport).tools(LittleGhost::Tool::Binding.new)
+      end
+      assert transport.closed?
+    end
+
+    transport = transport_with_catalog_response(responses.first)
+    toolset = Class.new(LittleGhost::MCP::Toolset) do
+      client { |_binding| ::MCP::Client.new(transport:) }
+      optional true
+    end
+    assert_empty toolset.tools(LittleGhost::Tool::Binding.new)
+  end
+
+  def test_deep_input_schema_is_rejected_before_sdk_scanning
+    schema = {"type" => "object"}
+    129.times { schema = {"properties" => {"child" => schema}} }
+    transport = Transport.new(tool_pages: [[{
+      "name" => "deep",
+      "inputSchema" => schema
+    }]])
+    run = FakeRun.new
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      client_toolset(transport).tools(LittleGhost::Tool::Binding.new(run:))
+    end
+
+    assert_match(/depth limit/, error.message)
+    assert transport.closed?
+  end
+
+  def test_schema_node_budget_is_cumulative_across_pages
+    maximum = LittleGhost::MCP::CatalogValidatingTransport::MAX_SCHEMA_NODES
+    LittleGhost::MCP::CatalogValidatingTransport.send(:remove_const, :MAX_SCHEMA_NODES)
+    LittleGhost::MCP::CatalogValidatingTransport.const_set(:MAX_SCHEMA_NODES, 5)
+    schema = {"properties" => {"child" => {}}}
+    transport = Transport.new(tool_pages: [
+      [{"name" => "first", "inputSchema" => schema}],
+      [{"name" => "second", "inputSchema" => schema}]
+    ])
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      client_toolset(transport).tools(LittleGhost::Tool::Binding.new)
+    end
+
+    assert_match(/node limit/, error.message)
+  ensure
+    LittleGhost::MCP::CatalogValidatingTransport.send(:remove_const, :MAX_SCHEMA_NODES)
+    LittleGhost::MCP::CatalogValidatingTransport.const_set(:MAX_SCHEMA_NODES, maximum)
+  end
+
+  def test_transport_schema_stack_errors_wake_discovery_and_close
+    transport = Transport.new
+    original = transport.method(:send_request)
+    transport.define_singleton_method(:send_request) do |request:, &sent|
+      raise SystemStackError if request[:method] == "tools/list"
+
+      original.call(request:, &sent)
+    end
+    run = FakeRun.new
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      client_toolset(transport).tools(LittleGhost::Tool::Binding.new(run:))
+    end
+
+    assert_match(/SDK nesting limit/, error.message)
+    assert transport.closed?
   end
 
   def test_optional_toolset_reports_expected_discovery_failures_and_closes
@@ -313,15 +476,13 @@ class MCPTest < Minitest::Test
     transport = Transport.new(request_error: error)
     observed = []
     toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection url: "https://mcp.example/rpc"
+      client { |_binding| ::MCP::Client.new(transport:) }
       optional true
       on_error { |failure, binding:| observed << [failure, binding] }
     end
     binding = LittleGhost::Tool::Binding.new
 
-    with_http_transport(transport) do
-      assert_empty toolset.tools(binding)
-    end
+    assert_empty toolset.tools(binding)
 
     assert_instance_of LittleGhost::ProviderError, observed.first.first
     assert_same binding, observed.first.last
@@ -330,7 +491,7 @@ class MCPTest < Minitest::Test
 
   def test_optional_toolset_does_not_consume_application_callback_failures
     toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection { |_binding| raise LittleGhost::ToolError, "caller policy failed" }
+      client { |_binding| raise LittleGhost::ToolError, "caller policy failed" }
       optional true
     end
 
@@ -340,14 +501,12 @@ class MCPTest < Minitest::Test
     assert_equal "caller policy failed", error.message
   end
 
-  def test_run_owns_and_closes_the_official_transport
+  def test_run_owns_and_idempotently_closes_the_official_transport
     transport = Transport.new
     run = FakeRun.new
     binding = LittleGhost::Tool::Binding.new(run:)
 
-    with_http_transport(transport) do
-      http_toolset.tools(binding)
-    end
+    client_toolset(transport).tools(binding)
 
     assert_equal 1, run.resources.length
     run.resources.first.close
@@ -355,269 +514,74 @@ class MCPTest < Minitest::Test
     assert transport.closed?
   end
 
-  def test_cancellation_stops_discovery_before_transport_work
+  def test_discovery_failure_closes_the_transport
+    transport = Transport.new(tool_pages: [[{"name" => nil, "inputSchema" => {"type" => "object"}}]])
+
+    assert_raises(LittleGhost::ProtocolError) do
+      client_toolset(transport).tools(LittleGhost::Tool::Binding.new)
+    end
+    assert transport.closed?
+  end
+
+  def test_cancellation_stops_before_client_construction
     token = LittleGhost::Support::CancellationToken.new.cancel
     run = FakeRun.new(LittleGhost::RunContext.new(cancellation_token: token))
-    transport = Transport.new
-
-    with_http_transport(transport) do
-      assert_raises(LittleGhost::CancelledError) do
-        http_toolset.tools(LittleGhost::Tool::Binding.new(run:))
+    constructed = false
+    toolset = Class.new(LittleGhost::MCP::Toolset) do
+      client do |_binding|
+        constructed = true
+        ::MCP::Client.new(transport: Transport.new)
       end
     end
 
-    assert_empty transport.requests
-    refute transport.closed?
+    assert_raises(LittleGhost::CancelledError) do
+      toolset.tools(LittleGhost::Tool::Binding.new(run:))
+    end
+    refute constructed
   end
 
-  def test_deadline_bounds_protocol_initialization_timeout
-    transport = Transport.new
-    context = LittleGhost::RunContext.new(deadline: Time.now + 0.25)
-    run = FakeRun.new(context)
-    configured_timeout = nil
+  def test_successful_requests_wake_the_cancellation_watcher_immediately
+    interval = LittleGhost::MCP::Adapter::CONTEXT_POLL_INTERVAL
+    LittleGhost::MCP::Adapter.send(:remove_const, :CONTEXT_POLL_INTERVAL)
+    LittleGhost::MCP::Adapter.const_set(:CONTEXT_POLL_INTERVAL, 1)
+    run = FakeRun.new
 
-    with_http_transport(transport, faraday: ->(value) { configured_timeout = value.options.timeout }) do
-      http_toolset.tools(LittleGhost::Tool::Binding.new(run:))
-    end
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    client_toolset(Transport.new).tools(LittleGhost::Tool::Binding.new(run:))
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
 
-    assert_operator configured_timeout, :>, 0
-    assert_operator configured_timeout, :<=, 0.25
+    assert_operator elapsed, :<, 0.2
+  ensure
+    LittleGhost::MCP::Adapter.send(:remove_const, :CONTEXT_POLL_INTERVAL)
+    LittleGhost::MCP::Adapter.const_set(:CONTEXT_POLL_INTERVAL, interval)
   end
 
-  def test_input_schema_uses_full_draft_validation
-    tools = [[{
-      "name" => "count",
-      "inputSchema" => {
-        "type" => "object",
-        "properties" => {"count" => {"const" => 1}},
-        "required" => ["count"]
-      }
-    }]]
+  def test_stdio_session_is_poisoned_after_sdk_cancellation
+    delegate = Transport.new
+    transport = stdio_transport(delegate)
+    session = LittleGhost::MCP::Session.new(::MCP::Client.new(transport:))
+    cancellation = ::MCP::CancelledError.new(request_id: "request-1", reason: "cancelled")
 
-    with_http_transport(Transport.new(tool_pages: tools)) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({"count" => 2})
-
-      assert result.error?
-      assert_match(/did not match inputSchema/, result.content)
+    assert_raises(::MCP::CancelledError) do
+      session.request { raise cancellation }
     end
-  end
-
-  def test_full_draft_validation_is_not_preempted_by_the_local_tool_subset
-    tools = [[{
-      "name" => "integer",
-      "inputSchema" => {
-        "type" => "object",
-        "properties" => {"count" => {"type" => "integer"}},
-        "required" => ["count"]
-      }
-    }]]
-    transport = Transport.new(tool_pages: tools)
-
-    with_http_transport(transport) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({"count" => 1.0})
-
-      assert result.success?
-      assert_equal 1.0, transport.requests.last.dig(:params, :arguments, "count")
+    assert transport.closed?
+    error = assert_raises(LittleGhost::ProviderError) do
+      session.request { flunk "poisoned session should not dispatch" }
     end
-  end
-
-  def test_recursive_schema_failure_stays_inside_the_tool_boundary
-    tools = [[{
-      "name" => "recursive",
-      "inputSchema" => {"$ref" => "#"}
-    }]]
-
-    with_http_transport(Transport.new(tool_pages: tools)) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({})
-      assert result.error?
-      assert_match(/recursion limit/, result.content)
-    end
-
-    output_tools = [[{
-      "name" => "recursive_output",
-      "inputSchema" => {"type" => "object"},
-      "outputSchema" => {"$ref" => "#"}
-    }]]
-    transport = Transport.new(tool_pages: output_tools, results: {"structuredContent" => {}})
-    with_http_transport(transport) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({})
-      assert result.error?
-      assert_equal "Tool failed (LittleGhost::ProtocolError)", result.content
-    end
-  end
-
-  def test_output_schema_accepts_false_and_explicit_null_roots
-    false_tool = [[{
-      "name" => "flag",
-      "inputSchema" => {"type" => "object"},
-      "outputSchema" => {"type" => "boolean"}
-    }]]
-    with_http_transport(Transport.new(tool_pages: false_tool, results: {"structuredContent" => false})) do
-      assert_equal false, http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({}).value
-    end
-
-    null_tool = [[{
-      "name" => "nothing",
-      "inputSchema" => {"type" => "object"},
-      "outputSchema" => {"type" => "null"}
-    }]]
-    with_http_transport(Transport.new(tool_pages: null_tool, results: {"structuredContent" => nil})) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({})
-      assert result.success?
-      assert_nil result.value
-    end
-  end
-
-  def test_output_schema_rejects_absent_or_invalid_structured_content
-    tools = [[{
-      "name" => "count",
-      "inputSchema" => {"type" => "object"},
-      "outputSchema" => {"type" => "integer", "const" => 1}
-    }]]
-
-    with_http_transport(Transport.new(tool_pages: tools, results: {})) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({})
-      assert result.error?
-      assert_equal "Tool failed (LittleGhost::ProtocolError)", result.content
-    end
-    with_http_transport(Transport.new(tool_pages: tools, results: {"structuredContent" => 2})) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({})
-      assert result.error?
-      assert_equal "Tool failed (LittleGhost::ProtocolError)", result.content
-    end
-  end
-
-  def test_external_schema_references_are_rejected
-    tools = [[{
-      "name" => "unsafe",
-      "inputSchema" => {"$ref" => "https://example.com/schema.json"}
-    }]]
-
-    with_http_transport(Transport.new(tool_pages: tools)) do
-      error = assert_raises(LittleGhost::ProtocolError) do
-        http_toolset.tools(LittleGhost::Tool::Binding.new)
-      end
-      assert_match(/same-document/, error.message)
-    end
-  end
-
-  def test_schema_patterns_keep_ecmascript_semantics_and_size_limits
-    tools = [[{
-      "name" => "match",
-      "inputSchema" => {
-        "type" => "object",
-        "properties" => {"value" => {"type" => "string", "pattern" => "^foo$"}}
-      }
-    }]]
-    with_http_transport(Transport.new(tool_pages: tools)) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({"value" => "x\nfoo\ny"})
-      assert result.error?
-    end
-
-    oversized = [[{
-      "name" => "oversized",
-      "inputSchema" => {"type" => "string", "pattern" => "x" * 65_537}
-    }]]
-    with_http_transport(Transport.new(tool_pages: oversized)) do
-      assert_raises(LittleGhost::ProtocolError) do
-        http_toolset.tools(LittleGhost::Tool::Binding.new)
-      end
-    end
-  end
-
-  def test_mcp_images_become_artifacts_without_retaining_base64_in_the_value
-    encoded = Base64.strict_encode64("image-bytes")
-    transport = Transport.new(results: {
-      "content" => [{"type" => "image", "data" => encoded, "mimeType" => "image/png", "name" => "chart.png"}]
-    })
-
-    with_http_transport(transport) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({})
-      assert_equal({"images" => [{"mediaType" => "image/png", "name" => "chart.png", "bytes" => 11}]}, result.value)
-      refute_includes result.value.inspect, encoded
-      assert_equal "image-bytes", result.artifacts.fetch(0).data
-    end
-  end
-
-  def test_mcp_image_count_limit_is_applied_before_decode
-    images = Array.new(21) do
-      {"type" => "image", "data" => Base64.strict_encode64("x"), "mimeType" => "image/png"}
-    end
-
-    with_http_transport(Transport.new(results: {"content" => images})) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({})
-      assert result.error?
-      assert_equal "Tool failed (LittleGhost::ProtocolError)", result.content
-    end
-  end
-
-  def test_server_tool_errors_remain_tool_errors
-    transport = Transport.new(results: {
-      "content" => [{"type" => "text", "text" => "safe failure"}],
-      "isError" => true
-    })
-
-    with_http_transport(transport) do
-      result = http_toolset.tools(LittleGhost::Tool::Binding.new).first.new.execute({})
-      assert result.error?
-      assert_equal "safe failure", result.content
-    end
-  end
-
-  def test_loads_all_pages_and_normalizes_long_names
-    long_name = "search." + ("a" * 100)
-    pages = [
-      [{"name" => "first", "inputSchema" => {"type" => "object"}}],
-      [{"name" => long_name, "inputSchema" => {"type" => "object"}}]
-    ]
-
-    with_http_transport(Transport.new(tool_pages: pages)) do
-      names = http_toolset.tools(LittleGhost::Tool::Binding.new).map(&:tool_name)
-      assert_equal "first", names.first
-      assert_equal 64, names.last.length
-      assert_match(/_[a-f0-9]{12}\z/, names.last)
-    end
-  end
-
-  def test_malformed_tool_catalog_is_a_protocol_error_and_optional_failure
-    transport = Transport.new(tool_pages: ["invalid"])
-    with_http_transport(transport) do
-      assert_raises(LittleGhost::ProtocolError) do
-        http_toolset.tools(LittleGhost::Tool::Binding.new)
-      end
-    end
-
-    optional = Class.new(LittleGhost::MCP::Toolset) do
-      connection url: "https://mcp.example/rpc"
-      optional true
-    end
-    with_http_transport(Transport.new(tool_pages: ["invalid"])) do
-      assert_empty optional.tools(LittleGhost::Tool::Binding.new)
-    end
-
-    [{"jsonrpc" => "2.0", "id" => 1}, "invalid"].each do |response|
-      malformed = Transport.new
-      malformed.define_singleton_method(:send_request) do |request:|
-        (request[:method] == "tools/list") ? response : super(request:)
-      end
-      with_http_transport(malformed) do
-        assert_raises(LittleGhost::ProtocolError) do
-          http_toolset.tools(LittleGhost::Tool::Binding.new)
-        end
-      end
-    end
+    assert_match(/unavailable after cancellation/, error.message)
   end
 
   def test_stdio_calls_are_serialized
-    transport = Transport.new(tool_pages: [[
+    delegate = Transport.new(tool_pages: [[
       {"name" => "first", "inputSchema" => {"type" => "object"}},
       {"name" => "second", "inputSchema" => {"type" => "object"}}
     ]])
     active = 0
     maximum = 0
     mutex = Mutex.new
-    original = transport.method(:send_request)
-    transport.define_singleton_method(:send_request) do |request:, &sent|
+    original = delegate.method(:send_request)
+    delegate.define_singleton_method(:send_request) do |request:, &sent|
       if request[:method] == "tools/call"
         mutex.synchronize do
           active += 1
@@ -629,162 +593,42 @@ class MCPTest < Minitest::Test
     ensure
       mutex.synchronize { active -= 1 } if request[:method] == "tools/call"
     end
-    toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection command: "server"
-    end
+    transport = stdio_transport(delegate)
 
-    ::MCP::Client::Stdio.stub(:new, transport) do
-      tools = toolset.tools(LittleGhost::Tool::Binding.new).map(&:new)
-      tools.map { |tool| Thread.new { tool.execute({}) } }.each(&:value)
-    end
+    tools = client_toolset(transport).tools(LittleGhost::Tool::Binding.new).map(&:new)
+    tools.map { |tool| Thread.new { tool.execute({}) } }.each(&:value)
 
     assert_equal 1, maximum
   end
 
-  def test_rejects_transport_specific_options_on_the_wrong_transport
-    assert_raises(LittleGhost::ConfigurationError) do
-      Class.new(LittleGhost::MCP::Toolset) do
-        connection command: "server", headers: {"Authorization" => "secret"}
-      end
-    end
-    assert_raises(LittleGhost::ConfigurationError) do
-      Class.new(LittleGhost::MCP::Toolset) do
-        connection url: "https://mcp.example/rpc", args: ["server"]
-      end
-    end
-  end
-
-  def test_custom_transport_requires_cancellation_and_cleanup_methods
-    transport = Object.new
-    closed = false
-    transport.define_singleton_method(:send_request) { |request:| {"result" => {"tools" => []}} }
-    transport.define_singleton_method(:close) { closed = true }
-    toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection { |_binding| transport }
-    end
-
-    error = assert_raises(LittleGhost::ConfigurationError) do
-      toolset.tools(LittleGhost::Tool::Binding.new)
-    end
-    assert_match(/send_notification/, error.message)
-    assert closed
-  end
-
-  def test_stdio_can_start_with_a_clean_environment_and_unset_entries
-    received = nil
-    toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection command: "server", inherit_env: false,
-        env: {"ONLY_THIS" => "value", "REMOVE_THIS" => nil}
-    end
-    constructor = lambda do |**values|
-      received = values
-      Transport.new
-    end
-
-    ::MCP::Client::Stdio.stub(:new, constructor) do
-      toolset.tools(LittleGhost::Tool::Binding.new)
-    end
-
-    environment = received.fetch(:env)
-    assert_equal "value", environment.fetch("ONLY_THIS")
-    assert_nil environment.fetch("REMOVE_THIS")
-    inherited_name = (ENV.keys - %w[ONLY_THIS REMOVE_THIS]).first
-    assert_nil environment.fetch(inherited_name) if inherited_name
-  end
-
-  def test_oauth_accepts_an_official_provider_escape_hatch
-    provider = Object.new
-    provider.define_singleton_method(:authorization_flow) { :custom }
-    received = nil
-    toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection url: "https://mcp.example/rpc", oauth: provider
-    end
-
-    with_http_transport(Transport.new, options: ->(values) { received = values }) do
-      toolset.tools(LittleGhost::Tool::Binding.new)
-    end
-
-    assert_same provider, received.fetch(:oauth)
-  end
-
-  def test_oauth_hash_selects_the_official_provider
-    provider = Object.new
-    received = nil
-    toolset = Class.new(LittleGhost::MCP::Toolset) do
-      connection url: "https://mcp.example/rpc", oauth: {
-        grant: :client_credentials,
-        client_id: "client",
-        client_secret: "secret"
-      }
-    end
-
-    constructor = lambda do |**values|
-      received = values
-      provider
-    end
-    ::MCP::Client::OAuth::ClientCredentialsProvider.stub(:new, constructor) do
-      with_http_transport(Transport.new) do
-        toolset.tools(LittleGhost::Tool::Binding.new)
-      end
-    end
-
-    assert_equal "client", received.fetch(:client_id)
-    assert_equal "secret", received.fetch(:client_secret)
-  end
-
-  def test_signer_middleware_preserves_the_net_http_request_contract
-    seen = nil
-    signer = lambda do |request|
-      seen = request
-      request["Authorization"] = "signed"
-    end
-    response = Object.new
-    app = ->(environment) { response }
-    environment = Struct.new(:url, :request_headers, :body).new(
-      URI("https://mcp.example/rpc"),
-      {"Content-Type" => "application/json"},
-      "{}"
-    )
-
-    result = LittleGhost::MCP::SignerMiddleware.new(app, signer).call(environment)
-
-    assert_instance_of Net::HTTP::Post, seen
-    assert_equal "{}", seen.body
-    assert_equal "signed", environment.request_headers.fetch("authorization")
-    assert_same response, result
-  end
-
   private
 
-  def http_toolset
+  def client_toolset(transport, **connect_options)
     Class.new(LittleGhost::MCP::Toolset) do
-      connection url: "https://mcp.example/rpc"
+      client(**connect_options) { |_binding| ::MCP::Client.new(transport:) }
     end
   end
 
-  def with_http_transport(transport, options: nil, faraday: nil)
-    constructor = lambda do |**values, &customizer|
-      options&.call(values)
-      connection = FakeFaraday.new
-      customizer&.call(connection)
-      faraday&.call(connection)
-      transport
+  def stdio_transport(delegate)
+    ::MCP::Client::Stdio.allocate.tap do |transport|
+      %i[connect connected? closed? send_request send_notification close].each do |name|
+        transport.define_singleton_method(name) { |**values, &block| delegate.public_send(name, **values, &block) }
+      end
     end
-    ::MCP::Client::HTTP.stub(:new, constructor) { yield }
   end
 
-  class FakeFaraday
-    Options = Struct.new(:timeout, :open_timeout)
-
-    attr_reader :options, :middleware
-
-    def initialize
-      @options = Options.new
-      @middleware = []
-    end
-
-    def use(*values)
-      middleware << values
+  def transport_with_catalog_response(response)
+    Transport.new.tap do |transport|
+      original = transport.method(:send_request)
+      transport.define_singleton_method(:send_request) do |request:, &sent|
+        if request[:method] == "tools/list"
+          sent&.call
+          requests << request
+          response
+        else
+          original.call(request:, &sent)
+        end
+      end
     end
   end
 end

@@ -6,19 +6,17 @@ Agents and Runs you already have.
 
 ## Load Tools from an MCP server
 
-An MCP Toolset connects to one server and turns its published operations into
-LittleGhost Tool classes. MCP support is opt-in so applications that do not use
-it do not install or load its protocol and transport stack.
+An MCP Toolset turns operations discovered by the official MCP Ruby client into
+LittleGhost Tool classes. MCP support is opt-in: requiring `little_ghost` alone
+does not install or load the SDK or its transports.
 
-For stdio, add the official Ruby SDK to your `Gemfile`:
+Add the official SDK for stdio connections:
 
 ```ruby
 gem "mcp", "~> 1.3"
 ```
 
-The SDK currently installs `json_schemer`, which LittleGhost also uses to
-validate server-advertised input and output schemas. For Streamable HTTP,
-install the SDK's optional HTTP and SSE dependencies too:
+Streamable HTTP also needs the SDK's HTTP and SSE dependencies:
 
 ```ruby
 gem "mcp", "~> 1.3"
@@ -26,14 +24,20 @@ gem "faraday", "~> 2.0"
 gem "event_stream_parser", "~> 1.0"
 ```
 
-Then require the integration explicitly and add the Toolset through the same
-Agent `tools` declaration used for local Tools:
+Require the integration explicitly, then declare a factory for a fresh,
+unconnected `MCP::Client`. LittleGhost calls the factory once for each Agent
+run, connects the returned client, and closes its transport when the run ends:
 
 ```ruby
 require "little_ghost/mcp"
 
 class HelpCenterTools < LittleGhost::MCP::Toolset
-  connection url: "https://mcp.example/rpc", timeout: 20
+  client do |_binding|
+    transport = MCP::Client::HTTP.new(
+      url: "https://mcp.example/rpc"
+    )
+    MCP::Client.new(transport:)
+  end
 end
 
 class CustomerSupportAgent < LittleGhost::Agent
@@ -45,87 +49,132 @@ run = CustomerSupportAgent.ask("How long do refunds take?")
 run.response
 ```
 
-HTTP connections also accept `headers`, `timeout`, `signer`,
-`allow_insecure_http`, `max_response_bytes`, `max_reconnection_wait`, `oauth`,
-`protocol_version`, and `capabilities`. Pass a block when credentials depend on
-the current Agent run:
+The factory receives the current `Tool::Binding`, so it can construct headers
+or credentials from authenticated application context without storing them on
+the Toolset:
 
 ```ruby
-connection do |binding|
-  token = McpAccessTokens.for_actor(binding.run.invocation.actor_id)
-  {
-    url: "https://mcp.example/rpc",
-    headers: {"Authorization" => "Bearer #{token}"},
-    timeout: 20
-  }
+class AccountTools < LittleGhost::MCP::Toolset
+  client do |binding|
+    token = McpAccessTokens.for_actor(binding.run.invocation.actor_id)
+    transport = MCP::Client::HTTP.new(
+      url: "https://mcp.example/rpc",
+      headers: {"Authorization" => "Bearer #{token}"}
+    )
+    MCP::Client.new(transport:)
+  end
 end
 ```
 
-The block's `binding` gives it access to the current Run. LittleGhost evaluates
-the block before opening the MCP session, so each Agent run can use credentials
-for its authenticated caller.
-
-Use `command` instead of `url` for a stdio server. `args`, `env`, `timeout`,
-`max_response_bytes`, `protocol_version`, and `capabilities` are available:
+Configure transport timeouts, message limits, OAuth providers, middleware, and
+other transport behavior through the SDK. LittleGhost does not copy those
+options into a second connection API. For stdio, construct the official
+transport directly:
 
 ```ruby
 class LocalDatabaseTools < LittleGhost::MCP::Toolset
-  connection command: "bundle", args: ["exec", "database-mcp"],
-    env: {"APP_ENV" => "production"}, inherit_env: false, timeout: 30
+  client do |_binding|
+    transport = MCP::Client::Stdio.new(
+      command: "bundle",
+      args: ["exec", "database-mcp"],
+      env: {"APP_ENV" => "production"},
+      read_timeout: 30
+    )
+    MCP::Client.new(transport:)
+  end
 end
 ```
 
-LittleGhost creates and closes one official `MCP::Client` for each Agent run.
-HTTP sessions therefore receive the SDK's normal session-termination request,
-and stdio child processes are closed at the end of the run.
-
 A stdio server is executable code with the Ruby process's operating-system
-permissions; it is not a sandbox. By default it also inherits the process
-environment and `env` adds or replaces entries. Set `inherit_env: false` to
-start with only the entries in `env`. A `nil` value removes one inherited entry.
-Use an operating-system sandbox when the executable itself is not fully trusted.
+permissions; it is not a sandbox. Choose its environment and use an operating-
+system sandbox when the executable is not fully trusted. The SDK's `env` Hash
+adds, replaces, or removes named variables; all other variables from the parent
+process remain inherited. Clear sensitive variables explicitly or start the
+server through an isolated wrapper when it must not receive ambient credentials.
 
-By default, the Agent receives every operation published by the server. Their
-normalized server names, such as `search` and `fetch`, become Tool names.
+### Configure the official client
 
-Use `map_tool` when the Agent should receive only part of the server catalog or
-when a generated Tool needs a different name or configuration:
+Keyword arguments passed to `client` are forwarded unchanged to
+`MCP::Client#connect`. Use them for client capabilities or an explicit protocol
+mode or version. Configure handlers on the client before returning it:
 
 ```ruby
-class CuratedHelpCenterTools < LittleGhost::MCP::Toolset
-  connection url: "https://mcp.example/rpc", timeout: 20
+class InteractiveTools < LittleGhost::MCP::Toolset
+  client(capabilities: {elicitation: {}}) do |binding|
+    transport = MCP::Client::HTTP.new(url: "https://mcp.example/rpc")
+    MCP::Client.new(transport:).tap do |official_client|
+      official_client.on_elicitation do |request|
+        Elicitations.answer(request, run: binding.run)
+      end
+    end
+  end
+end
+```
 
-  map_tool do |tool_class, definition:, binding:|
-    next unless %w[search fetch].include?(definition.source_name)
+The SDK also exposes sampling and roots handlers, OAuth providers, pagination
+limits, and transport customization. Configure those features through its
+public API so applications can adopt new SDK capabilities without waiting for a
+matching LittleGhost wrapper.
 
-    tool_class.tool_name "help_center_#{definition.source_name}"
+The factory must return a new, unconnected `MCP::Client`. Client and transport
+construction should not start remote work. LittleGhost guarantees cleanup once
+the client is returned, including connection and discovery failures. Configure
+SDK transport timeouts so construction and connection cannot wait past the
+application's intended deadline; LittleGhost bridges Run cancellation and
+deadlines to SDK cancellation tokens for Tool discovery and calls.
+
+### Select and map Tools
+
+By default, the Agent receives every Tool published by the server.
+LittleGhost normalizes server names for model-facing Tool names while retaining
+the official Tool's original name for dispatch. Discovery stops after 1,000
+Tools or 100 pages so an untrusted server cannot create an unbounded number of
+Ruby classes in one Agent run.
+
+Use `map_tool` to omit operations or configure their generated classes:
+
+```ruby
+class CuratedHelpCenterTools < HelpCenterTools
+  map_tool do |tool_class, mcp_tool:, binding:|
+    next unless %w[search fetch].include?(mcp_tool.name)
+
+    tool_class.tool_name "help_center_#{mcp_tool.name}"
     tool_class
   end
 end
 ```
 
-`definition` describes the operation published by the server, and `binding`
-identifies the current Agent run. Return the class after configuring it, or
-return `nil` to omit the operation. Renaming a generated Tool does not change
-the original `Definition#source_name` sent back to the server.
+`mcp_tool` is the official `MCP::Client::Tool`, and the generated class also
+exposes it through `.mcp_tool`. Return the generated class, a subclass, or `nil`
+to omit it. Renaming the generated Tool does not change the name sent to the
+server.
 
-The Agent can call the generated Tools like local Tools. Most MCP results need
-no mapping. LittleGhost returns any JSON value from `structuredContent` when it
-is present, otherwise it returns the server's text. Server images become
-Artifacts.
+LittleGhost publishes the SDK-provided input schema to the model but does not
+compile or validate it independently. The MCP server remains responsible for
+validating Tool arguments. This avoids claiming support for a different JSON
+Schema subset from the protocol and avoids a second validation result that can
+disagree with the server. LittleGhost still applies structural nesting and node
+limits across the discovered catalog. It also translates an SDK nesting failure
+from transport-level processing into a normal protocol failure so the client is
+closed rather than leaving discovery blocked.
 
-Use `map_result` when one operation needs application-specific conversion. This
-example turns the server's download identifier into a deferred Artifact:
+### Convert results
+
+Without a mapping, LittleGhost returns `structuredContent` when present,
+including explicit `false` or `null`; otherwise it returns text content or the
+remaining visible content blocks. MCP image blocks become Artifacts.
+
+Use `map_result` for application-specific conversion:
 
 ```ruby
-map_result do |result, call:, binding:|
-  next result unless call.definition.source_name == "export"
+map_result do |value, result:, mcp_tool:, arguments:, binding:|
+  next value unless mcp_tool.name == "export"
 
   LittleGhost::Tool::Result.new(
-    value: result.structured_content,
+    value:,
     artifacts: [
       LittleGhost::Artifact.deferred(
-        reference: result.metadata.fetch("download_id"),
+        reference: result.fetch("_meta").fetch("download_id"),
         media_type: "application/octet-stream"
       )
     ]
@@ -133,76 +182,17 @@ map_result do |result, call:, binding:|
 end
 ```
 
-`map_result` receives the complete `MCP::Result`, the `MCP::Call` that produced
-it, and the current binding. Return any Ruby value or `Tool::Result`. Returning
-the supplied result unchanged keeps the default conversion described above.
-MCP images and local Tool artifacts use the same storage and presentation
-rules when `Configuration#artifacts` is enabled. Images and documents are sent
-as model content; their stored references are fallback information rather than
-a second representation. LittleGhost checks calls and results against
-server-advertised JSON Schema Draft 2020-12 schemas. References must be
-same-document references; remote schema retrieval is intentionally disabled.
-
-### Configure official client features
-
-`configure_client` exposes the run-scoped official client before connection.
-Use it to install handlers for protocol features such as elicitation. Advertise
-the matching capability in `connection`:
-
-```ruby
-class InteractiveTools < LittleGhost::MCP::Toolset
-  connection url: "https://mcp.example/rpc",
-    capabilities: {elicitation: {}}
-
-  configure_client do |client, binding:|
-    client.on_elicitation do |request|
-      Elicitations.answer(request, run: binding.run)
-    end
-  end
-end
-```
-
-The SDK also exposes handlers for sampling and roots for protocol versions
-where those features apply. Review their trust and user-consent requirements
-before advertising them.
-
-HTTP authentication can use headers, a signer, or the SDK's OAuth providers.
-For example, a client-credentials connection can be declared as:
-
-```ruby
-connection url: "https://mcp.example/rpc", oauth: {
-  grant: :client_credentials,
-  client_id: ENV.fetch("MCP_CLIENT_ID"),
-  client_secret: ENV.fetch("MCP_CLIENT_SECRET")
-}
-```
-
-`oauth` also accepts an official provider instance for advanced SDK features.
-Supported hash grants are `authorization_code`, `client_credentials`, and
-`jwt_bearer`. A `signer` is called with a `Net::HTTP::Post`; an AWS SigV4 signer
-also requires `gem "aws-sigv4"`.
-
-When the connection needs a custom transport, return a newly created official or
-compatible transport from the connection block. The transport must be
-run-scoped because LittleGhost wraps and closes it; use `configure_client` for
-client handlers. A compatible custom transport must implement `send_request`,
-`send_notification`, and `close`; it may also implement the official connection
-methods. The built-in MCP HTTP and stdio transport I/O timeout is capped by the
-Run deadline. SDK OAuth discovery and token exchanges, authorization callbacks,
-and custom transports own their own timeout behavior; configure those paths so
-they cannot wait past the application's deadline:
-
-```ruby
-connection do |_binding|
-  MCP::Client::Stdio.new(command: "database-mcp")
-end
-```
+The positional `value` is LittleGhost's default conversion. `result` is the raw
+MCP `tools/call` result Hash returned by the SDK; `mcp_tool` is the official Tool;
+`arguments` are the values sent to the server; and `binding` identifies the
+current run. Return any Ruby value or `Tool::Result`. Image Artifacts are added
+to any Artifacts returned by the mapper. A server result marked `isError`
+remains a model-visible Tool error.
 
 An optional server can fail discovery without preventing Agent construction:
 
 ```ruby
-class HelpCenterTools < LittleGhost::MCP::Toolset
-  connection { |binding| McpConnections.help_center(binding) }
+class OptionalHelpCenterTools < HelpCenterTools
   optional true
   on_error do |error, binding:|
     McpAvailability.report(error, run_id: binding.run.invocation.run_id)
@@ -210,49 +200,33 @@ class HelpCenterTools < LittleGhost::MCP::Toolset
 end
 ```
 
-`optional true` converts expected provider and protocol discovery failures
-into an empty Tool set. `on_error` observes only those caught failures.
-Cancellation, deadlines, configuration errors, and application callback
-failures still propagate.
-
-LittleGhost limits the number and total size of discovered operations, the
-complexity of their schemas, and the size and number of returned images. HTTP
-also limits each protocol message and requires HTTPS unless local HTTP is
-explicitly enabled.
+`optional true` converts expected SDK provider and protocol discovery failures
+into an empty Tool set. Configuration, cancellation, deadline, and application
+callback failures still propagate.
 
 > **Safety note:** An MCP server supplies descriptions and results that the model
-> can see. Structural validation does not make that content trustworthy or
-> authorize an operation it suggests. Expose only the operations the Agent
-> needs, use narrowly scoped credentials, and have the server authorize every
-> sensitive call. If a result becomes a deferred Artifact, its resolver must
-> verify that the referenced file belongs to the authenticated caller, fetch
-> only from an intended service, and limit the response size before returning
-> bytes to LittleGhost.
+> can see. A schema does not make that content trustworthy or authorize an
+> operation it suggests. Expose only the operations the Agent needs, use narrowly
+> scoped credentials, and have the server authorize every sensitive call. A
+> deferred Artifact resolver must verify ownership, fetch only from an intended
+> service, and limit response size before returning bytes to LittleGhost.
 
 ### Protocol compatibility
 
-LittleGhost delegates transport, lifecycle negotiation, OAuth, pagination,
-cancellation, and protocol evolution to the [official MCP Ruby
-SDK](https://github.com/modelcontextprotocol/ruby-sdk). The default connection
-mode automatically negotiates across every protocol version supported by the
-installed compatible SDK. Pin `protocol_version` only when interoperability
-requires a specific version; the SDK rejects unsupported pins.
+LittleGhost delegates lifecycle negotiation, protocol envelopes, transports,
+OAuth, pagination, cancellation messages, multi-round-trip input, and protocol
+evolution to the [official MCP Ruby SDK](https://github.com/modelcontextprotocol/ruby-sdk).
+With no explicit connect options, the SDK negotiates across every protocol
+version it supports. Pin `protocol_version` or `mode` only when interoperability
+requires it.
 
-LittleGhost's integration surface is the MCP client Tool flow: discover Tools,
-validate their schemas, expose them to an Agent, call them, and convert their
-results. `configure_client` makes applicable server-to-client requests and
-multi-round-trip input available through the official client. LittleGhost does
-not claim every MCP server feature, optional extension, or future SDK API as its
-own public API. Features outside the Tool flow can be configured on the
-run-scoped official client when the SDK supports them. Check the [Ruby SDK client
-documentation](https://ruby.sdk.modelcontextprotocol.io/client/) and the
-[versioned MCP specification](https://modelcontextprotocol.io/specification/)
-for the installed SDK's current boundary.
-
-Requiring `little_ghost` alone never loads MCP. Requiring
-`little_ghost/mcp` without the SDK or schema validator raises an actionable
-`LittleGhost::DependencyError`; HTTP and SSE dependencies are checked only when
-that transport needs them.
+LittleGhost's interface is the MCP client Tool flow: discover official SDK
+Tools, expose them to an Agent, call them, and convert their results. Other MCP
+features remain accessible on the client created by the application, but
+LittleGhost does not claim each server capability or future SDK method as part
+of its own API. See the [Ruby SDK client documentation](https://ruby.sdk.modelcontextprotocol.io/client/)
+and the [versioned MCP specification](https://modelcontextprotocol.io/specification/)
+for the installed SDK's supported boundary.
 
 ## Send a Run stream through AG-UI
 
