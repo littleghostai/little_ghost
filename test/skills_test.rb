@@ -32,6 +32,45 @@ class SkillsTest < Minitest::Test
       assert_includes result.content, "Location: #{File.realpath(File.join(skill_directory, "SKILL.md"))}"
       assert_includes result.content, "references/nested/guide.md"
       assert_equal ["skill_name"], catalog.tool.input_schema.fetch("required")
+      assert_equal(
+        "Exact name of one skill from available_skills. Pass only the bare name here; keep arguments and surrounding instructions in the task request.",
+        catalog.tool.input_schema.dig("properties", "skill_name", "description")
+      )
+    end
+  end
+
+  def test_unknown_skill_error_names_available_skills
+    Dir.mktmpdir do |directory|
+      %w[review security].each do |name|
+        skill_directory = File.join(directory, name)
+        Dir.mkdir(skill_directory)
+        File.write(
+          File.join(skill_directory, "SKILL.md"),
+          "---\nname: #{name}\ndescription: #{name}\n---\nInstructions"
+        )
+      end
+      catalog = LittleGhost::Skills::Catalog.new(paths: directory)
+
+      result = catalog.tool.new.execute({
+        "skill_name" => "review pr https://example.test/pull/123"
+      })
+
+      assert result.error?
+      assert_equal(
+        "Unknown skill: review pr https://example.test/pull/123. Available skills: review, security",
+        result.content
+      )
+      assert_instance_of LittleGhost::ToolError, result.error
+    end
+  end
+
+  def test_unknown_skill_error_omits_available_skills_for_an_empty_catalog
+    Dir.mktmpdir do |directory|
+      catalog = LittleGhost::Skills::Catalog.new(paths: directory)
+
+      error = assert_raises(LittleGhost::ConfigurationError) { catalog.fetch("review") }
+
+      assert_equal "Unknown skill: review", error.message
     end
   end
 

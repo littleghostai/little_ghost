@@ -74,9 +74,14 @@ module LittleGhost
         @skills.each_value(&block)
       end
 
-      # Finds the named Skill or raises ConfigurationError.
+      # Finds the named Skill. When no Skill matches, the ConfigurationError
+      # names the available skills so the caller can correct the lookup.
       def fetch(name)
-        @skills.fetch(name.to_s) { raise ConfigurationError, "Unknown skill: #{name}" }
+        @skills.fetch(name.to_s) do
+          message = "Unknown skill: #{name}"
+          message += ". Available skills: #{names.join(", ")}" unless @skills.empty?
+          raise ConfigurationError, message
+        end
       end
 
       # Lists immutable skill names in lookup order.
@@ -115,7 +120,12 @@ module LittleGhost
           DESCRIPTION
           input_schema: {
             type: "object",
-            properties: {skill_name: {type: "string", description: "Name of the skill to activate."}},
+            properties: {
+              skill_name: {
+                type: "string",
+                description: "Exact name of one skill from available_skills. Pass only the bare name here; keep arguments and surrounding instructions in the task request."
+              }
+            },
             required: ["skill_name"],
             additionalProperties: false
           }
