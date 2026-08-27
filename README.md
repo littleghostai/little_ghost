@@ -20,7 +20,9 @@ run.response
 # One possible response: Hi! How can I help today?
 ```
 
-That small definition is already a complete agent. LittleGhost makes the model call, tracks usage, supports streaming, and closes the resources it creates for the request. Add a tool when the agent needs something from your application. Bring in more agents when the work grows.
+That definition is a complete Agent. LittleGhost makes the model call, tracks
+usage, supports streaming, and closes request resources. Add a Tool for
+application capabilities or an Assembly as the work grows.
 
 Model requests may send system instructions, caller input, conversation history,
 Tool results, and attachments to the selected provider. Model wording can vary
@@ -40,11 +42,33 @@ $ bundle install
 $ export OPENROUTER_API_KEY="..."
 ```
 
-The examples use OpenRouter so you can start with one key. Prefer another
-hosted provider or a local Ollama or LM Studio server? See [Provider
+The introductory guides use OpenRouter so you can start with one key. Prefer
+another hosted provider or a local Ollama or LM Studio server? See [Provider
 Support](docs/guides/providers.md).
 
-LittleGhost runs inside your Ruby process. Use it from a controller, job, CLI, or service. If you want a conventional layout, start with `app/agents`, `app/assemblies`, `app/prompts`, and `app/tools`.
+LittleGhost runs inside your Ruby process. Use it from a controller, job, CLI,
+or service.
+
+## Generate a small application
+
+Generate a conventional standalone application:
+
+```sh
+$ gem install little_ghost
+$ little_ghost new MyApp
+$ cd my_app
+$ export OPENROUTER_API_KEY="..."
+$ bin/little_ghost console
+```
+
+The generator installs the bundle. `bin/little_ghost console` runs that
+bundle's LittleGhost version and loads the application before starting IRB.
+
+The source checkout also includes a complete
+[single-file Agent](https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent)
+and
+[coding harness](https://github.com/littleghostai/little_ghost/tree/main/examples/coding_harness),
+both configured for local Ollama.
 
 ## Give an agent real capabilities
 

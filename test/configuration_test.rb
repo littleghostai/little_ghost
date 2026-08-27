@@ -203,11 +203,35 @@ class ConfigurationTest < Minitest::Test
         [SharedRuntimeAgent.ask("first"), SharedRuntimeAgent.ask("second")]
       end
 
+      assert_predicate first, :completed?
+      assert_predicate second, :completed?
       assert_same first.runtime, second.runtime
       assert_same configuration.runtime, first.runtime
       refute_same first, second
       refute_same first.workspace, second.workspace
       refute_same first.sandbox, second.sandbox
+    ensure
+      SharedRuntimeResolver.provider = nil
+    end
+  end
+
+  def test_dynamic_builder_calls_execute_their_definition_snapshots
+    Dir.mktmpdir do |root|
+      SharedRuntimeResolver.provider = ScriptedProvider.new
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.model_resolver = SharedRuntimeResolver
+      agent = LittleGhost::AgentBuilder.new(id: "dynamic_agent").system_prompt("Answer clearly.")
+      graph = LittleGhost::GraphBuilder.new(id: "dynamic_graph")
+        .node(:answer, SharedRuntimeAgent)
+        .start(:answer)
+        .finish(:answer)
+
+      agent_run, graph_run = LittleGhost.with_configuration(configuration) do
+        [agent.ask("agent"), graph.ask("graph")]
+      end
+
+      assert_predicate agent_run, :completed?
+      assert_predicate graph_run, :completed?
     ensure
       SharedRuntimeResolver.provider = nil
     end

@@ -297,13 +297,14 @@ LittleGhost.configure do |config|
   end
   config.sandbox = {
     provider: :native,
-    files: {root: :read_write},
-    root_filesystem: :isolated,
-    environment: {inherit: false, set: {"LANG" => "C.UTF-8"}},
-    network: :none
+    files: {root: :read_write}
   }
 end
 ```
+
+The native backend isolates the host root, removes child-process network
+access, and starts with a scrubbed child environment unless you configure a
+different policy.
 
 The temporary Workspace above is useful when files should live for one Run. Use application-managed storage, with tenant isolation and concurrency control, when files must persist or several Runs share a root.
 

@@ -240,10 +240,11 @@ module LittleGhostRelease
     README.md
     docs/guides/core_concepts.md
     docs/guides/getting_started.md
+    exe/little_ghost
     lib/little_ghost.rb
     lib/little_ghost/version.rb
   ].freeze
-  EXCLUDED_PATHS = %r{\A(?:\.github|site|test|rakelib|pkg)/}
+  EXCLUDED_PATHS = %r{\A(?:\.github|examples|site|test|rakelib|pkg)/}
   REQUIRED_METADATA = {
     "allowed_push_host" => "https://rubygems.org",
     "rubygems_mfa_required" => "true"
@@ -335,6 +336,10 @@ module LittleGhostRelease
     errors << "gem name must be little_ghost" unless package.fetch(:name) == "little_ghost"
     errors << "gem version must be #{version}" unless package.fetch(:version) == version.to_s
     errors << "gem must support Ruby 3.3 and newer" unless package.fetch(:required_ruby_version) == ">= 3.3"
+    errors << "gem executable directory must be exe" unless package.fetch(:bindir) == "exe"
+    unless package.fetch(:executables) == ["little_ghost"]
+      errors << "gem must declare only the little_ghost executable"
+    end
 
     files = package.fetch(:files)
     missing = REQUIRED_FILES - files
@@ -347,6 +352,10 @@ module LittleGhostRelease
     errors << "gem archive entries must exactly match gemspec files" unless archive_paths == files
     unsupported = archive.reject { |entry| entry.fetch(:type) == "0" }
     errors << "gem archive must contain only regular files" unless unsupported.empty?
+    executable = archive.find { |entry| entry.fetch(:path) == "exe/little_ghost" }
+    unless executable && (executable.fetch(:mode) & 0o111).positive?
+      errors << "gem executable must be executable"
+    end
 
     REQUIRED_METADATA.each do |key, value|
       errors << "gem metadata #{key} must be #{value.inspect}" unless package.fetch(:metadata)[key] == value

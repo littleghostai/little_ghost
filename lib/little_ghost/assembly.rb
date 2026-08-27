@@ -50,7 +50,8 @@ module LittleGhost
       # +context+, +settings+, +metadata+, +session_id+, +actor_id+, and
       # +deadline_at+.
       def ask(message, **options)
-        definition.implementation.new.ask(message, **options)
+        snapshot = definition
+        snapshot.implementation.new.bind_assembly_definition(snapshot).ask(message, **options)
       end
 
       # Lazily streams +message+ through a fresh standalone assembly.
@@ -66,7 +67,7 @@ module LittleGhost
         snapshot = definition
         stream = nil
         Enumerator.new do |events|
-          stream ||= snapshot.implementation.new.stream_ask(message, **options)
+          stream ||= snapshot.implementation.new.bind_assembly_definition(snapshot).stream_ask(message, **options)
           stream.each { |event| events << event }
         end
       end
@@ -157,6 +158,7 @@ module LittleGhost
       @runtime = runtime || run&.runtime || LittleGhost.runtime
       @workspace = workspace || run&.workspace
       @sandbox = sandbox || run&.sandbox
+      @assembly_definition = nil
       @standalone = standalone
       @assembly_mutex = Mutex.new
       @assembly_closed = false
@@ -169,6 +171,11 @@ module LittleGhost
       self
     end
 
+    def bind_assembly_definition(definition) # :nodoc:
+      @assembly_definition = definition
+      self
+    end
+
     # Builds the top-level Run used by a standalone assembly.
     def build_run(payload = nil, include_agent_events_by_default: false, **payload_options) # :nodoc:
       payload = entrypoint_payload(payload, payload_options) unless payload_options.empty?
@@ -178,7 +185,8 @@ module LittleGhost
       end
       source_class = run_entrypoint_class
       options = {entrypoint_class: source_class}
-      options[:execution_class] = self.class unless source_class.equal?(self.class)
+      execution = @assembly_definition || self.class
+      options[:execution_class] = execution unless source_class.equal?(execution)
       options[:agent_class] = source_class if is_a?(Agent)
       options[:cancellation_token] = cancellation_token if cancellation_token
       options[:workspace] = workspace if workspace

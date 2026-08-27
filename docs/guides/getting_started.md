@@ -202,6 +202,30 @@ app/
     └── help_center_lookup_tool.rb
 ```
 
+To generate this layout for a standalone application, install the gem and run
+`little_ghost new`:
+
+```sh
+$ gem install little_ghost
+$ little_ghost new MyApp
+$ cd my_app
+$ export OPENROUTER_API_KEY="..."
+$ bin/little_ghost console
+```
+
+The generator creates `my_app` with one Agent, a prompt view, configuration,
+the conventional application directories, an installed bundle, and a local
+LittleGhost command. `bin/little_ghost console` uses the generated
+application's bundle, loads its configuration and classes, and then starts
+IRB.
+
+The source repository also contains a complete
+[single-file Agent](https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent)
+and a
+[coding harness](https://github.com/littleghostai/little_ghost/tree/main/examples/coding_harness)
+that demonstrates Agents, prompt views, Tools, a Graph, a Workspace, and a
+native Sandbox.
+
 You now have the smallest useful LittleGhost application: one Agent, one Tool, and one familiar Ruby call.
 
 When the feature grows, the calling style stays the same. An **assembly** lets one or more agents work as a unit while keeping `.ask` and `.stream_ask`. Read [Core Concepts](core_concepts.md) next and grow this Agent into a larger system.

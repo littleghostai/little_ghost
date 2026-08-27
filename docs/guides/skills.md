@@ -107,9 +107,7 @@ LittleGhost.configure do |config|
 
   config.sandbox = {
     provider: :native,
-    files: {root: :read_write, skills: :read_only},
-    root_filesystem: :isolated,
-    network: :none
+    files: {root: :read_write, skills: :read_only}
   }
 end
 ```

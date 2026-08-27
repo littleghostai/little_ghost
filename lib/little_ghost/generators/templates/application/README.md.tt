@@ -1,0 +1,29 @@
+# {{CLASS_NAME}}
+
+This LittleGhost application includes one Agent, a prompt view, and a
+bundle-aware local command.
+
+## Open the console
+
+Install or refresh the application's bundle whenever its dependencies change:
+
+```sh
+$ bundle install
+```
+
+Then start the console:
+
+```sh
+$ export OPENROUTER_API_KEY="..."
+$ bin/little_ghost console
+```
+
+The generator runs `bundle install` when it creates the directory. If that
+initial install cannot finish, the application remains in place so you can fix
+the cause and run `bundle install` again. The console uses the application's
+bundle, loads `config/little_ghost.rb` and the classes under `app/`, and then
+starts IRB:
+
+```ruby
+{{CLASS_NAME}}Agent.ask("Say hello").response
+```
