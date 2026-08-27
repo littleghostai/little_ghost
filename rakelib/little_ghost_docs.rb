@@ -23,6 +23,7 @@ module LittleGhostDocs
   }.freeze
   PUBLIC_DOCUMENTATION_URL_PATTERN = %r{#{Regexp.escape(SITE_URL)}[^\s"'\[\]()`<>]+}
   UNVERSIONED_SITE_URL_PATTERN = %r{#{Regexp.escape(SITE_URL)}(?!versions(?:/|\.json))}
+  MAIN_EXAMPLES_URL = "#{REPOSITORY_URL}/tree/main/examples/"
   EDGE_ID = "edge"
   VERSION_DIRECTORY = "versions"
   CATALOG_FILE = "versions.json"
@@ -55,9 +56,13 @@ module LittleGhostDocs
 
   module_function
 
-  def rewrite_public_urls(contents, base_path:)
+  def rewrite_public_urls(contents, base_path:, id: EDGE_ID)
     rewritten = LEGACY_PUBLIC_URL_REPLACEMENTS.reduce(contents) do |text, (legacy_url, public_url)|
       text.gsub(legacy_url, public_url)
+    end
+    unless id.to_s == EDGE_ID
+      version = stable_version!(id)
+      rewritten = rewritten.gsub(MAIN_EXAMPLES_URL, "#{REPOSITORY_URL}/tree/v#{version}/examples/")
     end
     return rewritten if base_path.to_s.empty? || base_path.to_s == "."
 
@@ -282,7 +287,7 @@ module LittleGhostDocs
     end
 
     def rewrite_public_urls(html)
-      LittleGhostDocs.rewrite_public_urls(html, base_path:)
+      LittleGhostDocs.rewrite_public_urls(html, base_path:, id:)
     end
   end
 

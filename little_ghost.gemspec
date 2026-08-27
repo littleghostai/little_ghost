@@ -24,12 +24,23 @@ Gem::Specification.new do |spec|
   }
 
   spec.files = Dir.chdir(__dir__) do
-    Dir["lib/**/*.rb", "lib/**/*.json", "docs/guides/*.md", "LICENSE.txt", "README.md"]
+    Dir[
+      "exe/little_ghost",
+      "lib/**/*.rb",
+      "lib/**/*.json",
+      "lib/little_ghost/generators/templates/**/*",
+      "docs/guides/*.md",
+      "LICENSE.txt",
+      "README.md"
+    ].select { |path| File.file?(path) }
   end
+  spec.bindir = "exe"
+  spec.executables = ["little_ghost"]
   spec.require_paths = ["lib"]
 
   spec.add_dependency "base64"
   spec.add_dependency "fiddle"
+  spec.add_dependency "irb", "~> 1.16"
   spec.add_dependency "opentelemetry-api", "~> 1.0"
 
   spec.add_development_dependency "async", "~> 2.39"

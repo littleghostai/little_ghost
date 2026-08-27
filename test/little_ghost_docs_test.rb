@@ -76,6 +76,11 @@ class LittleGhostDocsTest < Minitest::Test
   def test_snapshot_adds_edge_selector_assets_and_catalog_location
     Dir.mktmpdir("little-ghost-docs") do |directory|
       site = build_site(directory, "site", version: "0.3.0")
+      index = File.join(site, "index.html")
+      File.write(index, File.read(index).sub("</main>", <<~HTML.chomp))
+        <a href="https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent">Example</a>
+        </main>
+      HTML
 
       LittleGhostDocs::Snapshot.new(site, id: "edge", base_path: "").decorate!
 
@@ -84,6 +89,7 @@ class LittleGhostDocsTest < Minitest::Test
       assert_includes homepage, 'data-current-version="edge"'
       assert_includes homepage, 'data-versions-url="versions.json"'
       assert_includes homepage, '<link rel="alternate" type="text/markdown" href="https://littleghostai.org/index.md">'
+      assert_includes homepage, "https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent"
       assert_includes homepage, 'class="docs-markdown-link visually-hidden"'
       refute_includes homepage, "data-docs-version-notice"
       assert_includes agent, 'data-current-page="docs/LittleGhost/Agent.html"'
@@ -97,6 +103,11 @@ class LittleGhostDocsTest < Minitest::Test
   def test_release_snapshot_uses_versioned_urls_and_rewrites_canonical_metadata
     Dir.mktmpdir("little-ghost-docs") do |directory|
       site = build_site(directory, "site", version: "0.2.0")
+      index = File.join(site, "index.html")
+      File.write(index, File.read(index).sub("</main>", <<~HTML.chomp))
+        <a href="https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent">Example</a>
+        </main>
+      HTML
 
       LittleGhostDocs::Snapshot.new(site, id: "0.2.0", base_path: "versions/0.2.0").decorate!
 
@@ -106,6 +117,8 @@ class LittleGhostDocsTest < Minitest::Test
       assert_includes homepage, 'data-versions-url="../../versions.json"'
       assert_includes homepage, "https://littleghostai.org/versions/0.2.0/"
       assert_includes homepage, 'href="https://littleghostai.org/versions/0.2.0/index.md"'
+      assert_includes homepage, "https://github.com/littleghostai/little_ghost/tree/v0.2.0/examples/basic_agent"
+      refute_includes homepage, "https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent"
       assert_includes agent, 'data-versions-url="../../../../versions.json"'
       assert_includes agent, '<link rel="canonical" href="https://littleghostai.org/versions/0.2.0/docs/LittleGhost/Agent.html">'
     end
@@ -462,7 +475,8 @@ class LittleGhostDocsTest < Minitest::Test
 
         Start with [Getting Started](docs/guides/getting_started.md) and the
         [legacy guide](docs/guides/Legacy%20Guide.md), then use the
-        [Agent](rdoc-ref:LittleGhost::Agent).
+        [Agent](rdoc-ref:LittleGhost::Agent). Run the
+        [basic example](https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent).
       MARKDOWN
       File.write(File.join(source, "docs", "guides", "getting_started.md"), <<~MARKDOWN)
         # Getting Started
@@ -532,6 +546,8 @@ class LittleGhostDocsTest < Minitest::Test
       assert_includes homepage_markdown, "](llms.txt)"
       assert_includes docs_home, "(legacy_guide.md)"
       assert_includes docs_home, "(LittleGhost/Agent.md)"
+      assert_includes docs_home, "https://github.com/littleghostai/little_ghost/tree/v0.1.0/examples/basic_agent"
+      refute_includes docs_home, "https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent"
       refute_includes docs_home, "rdoc-ref:"
       assert_includes agent, '<a id="method-i-ask"></a>'
       assert_includes agent, "#ask(message)"

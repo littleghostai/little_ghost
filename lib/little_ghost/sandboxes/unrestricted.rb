@@ -87,9 +87,10 @@ module LittleGhost
 
       # Executes an argument vector on the host from the workspace root.
       #
-      # Shell syntax is not interpreted. The child starts with an empty environment
-      # unless +inherit_environment+ is true, is terminated when the context is
-      # cancelled or the timeout expires, and has each output stream truncated to
+      # Shell syntax is not interpreted. The child receives workspace routing,
+      # policy, and call-specific environment values without inheriting the host
+      # environment by default. It is terminated when the context is cancelled or
+      # the timeout expires, and each output stream is truncated to
       # +max_output_bytes+.
       def execute_program(
         command,
@@ -121,6 +122,9 @@ module LittleGhost
 
       # Starts a bounded host process. This remains unrestricted host execution,
       # not a containment boundary.
+      #
+      # The child uses the same Workspace, policy, call-specific environment,
+      # and two-part inheritance rules as #execute_program.
       def start_program(command, context: nil, environment: {}, inherit_environment: false,
         scope: nil, cwd: nil, output_bytes: nil, memory_bytes: nil, cpu_seconds: nil, file_bytes: nil,
         allow_subprocesses: true)

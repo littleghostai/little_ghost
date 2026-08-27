@@ -41,6 +41,26 @@ class SandboxBackendsTest < Minitest::Test
     end
   end
 
+  def test_backends_use_the_default_environment_policy
+    Dir.mktmpdir do |root|
+      workspace = LittleGhost::Workspace.new(root:).open
+      unrestricted = LittleGhost::Sandboxes::Unrestricted.new(workspace:)
+      bubblewrap = ProbeBubblewrap.new(
+        workspace:,
+        bubblewrap: "/missing/bwrap",
+        platform: "x86_64-linux"
+      )
+      expected = LittleGhost::Sandbox::EnvironmentPolicy.default.to_h
+
+      [unrestricted, bubblewrap].each do |sandbox|
+        refute_predicate sandbox.effective_policy.environment, :inherit?
+        assert_equal expected, sandbox.effective_policy.environment.to_h
+      end
+    ensure
+      workspace&.close
+    end
+  end
+
   def test_bubblewrap_uses_identity_bindings_for_workspace_paths
     Dir.mktmpdir do |root|
       executable = File.join(root, "bwrap")

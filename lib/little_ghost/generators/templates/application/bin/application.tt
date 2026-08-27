@@ -1,0 +1,10 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+app_root = File.expand_path("..", __dir__)
+ENV["BUNDLE_GEMFILE"] = File.join(app_root, "Gemfile")
+
+require "bundler/setup"
+require "little_ghost/cli"
+
+exit LittleGhost::CLI.new(ARGV, current_directory: app_root).run

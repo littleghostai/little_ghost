@@ -4,14 +4,28 @@ module LittleGhost
   class Sandbox
     # Normalizes requested filesystem, process, environment, and child-network
     # controls into one immutable policy. Policy is a declaration, not proof of
-    # isolation; the selected backend exposes #effective_policy and rejects
-    # controls it cannot enforce.
+    # isolation; the selected backend reports the policy it actually enforces
+    # and rejects controls it cannot enforce.
+    #
+    # When +environment+ is omitted, child processes receive a scrubbed locale
+    # and path baseline without inheriting other host values. An explicit Hash
+    # or EnvironmentPolicy replaces that baseline, including an empty Hash.
+    # Workspace routing values are added separately when a process starts.
+    #
+    #   policy = LittleGhost::Sandbox::Policy.new(
+    #     files: {root: :read_write},
+    #     network: :none
+    #   )
+    #
+    #   policy.root_filesystem       # => :isolated
+    #   policy.environment.inherit?  # => false
     class Policy
       COMMON_KEYS = %i[
         files runtime_paths root_filesystem environment network
       ].freeze # :nodoc:
       ACCESS_MODES = %i[read_only read_write].freeze # :nodoc:
       ROOT_FILESYSTEM_MODES = %i[isolated read_only read_write].freeze # :nodoc:
+      DEFAULT_ENVIRONMENT = Object.new.freeze # :nodoc:
       # Returns an existing policy or builds one from a Hash and keyword options.
       def self.coerce(value = nil, **options)
         return value if value.is_a?(self) && options.empty?
@@ -21,18 +35,26 @@ module LittleGhost
         new(**values.transform_keys(&:to_sym).merge(options))
       end
 
+      # :call-seq:
+      #   new(files: {root: :read_only}, runtime_paths: {}, root_filesystem: :isolated, network: nil)
+      #   new(files: {root: :read_only}, runtime_paths: {}, root_filesystem: :isolated, environment: value, network: nil)
+      #
       # Builds a backend-independent policy from named Workspace paths.
       def initialize(
         files: {root: :read_only},
         runtime_paths: {},
         root_filesystem: :isolated,
-        environment: {},
+        environment: DEFAULT_ENVIRONMENT,
         network: nil
       )
         @files = normalize_paths(files, "files")
         @runtime_paths = normalize_paths(runtime_paths, "runtime_paths")
         @root_filesystem = enum!(root_filesystem, ROOT_FILESYSTEM_MODES, "root filesystem")
-        @environment = EnvironmentPolicy.coerce(environment)
+        @environment = if environment.equal?(DEFAULT_ENVIRONMENT)
+          EnvironmentPolicy.default
+        else
+          EnvironmentPolicy.coerce(environment)
+        end
         @network = NetworkPolicy.coerce(network)
         freeze
       end
@@ -43,9 +65,9 @@ module LittleGhost
       attr_reader :runtime_paths
       # Requested host-root access: +:isolated+, +:read_only+, or +:read_write+.
       attr_reader :root_filesystem
-      # Environment inheritance and explicit values.
+      # Environment inheritance and values requested for child processes.
       attr_reader :environment
-      # Network policy, or +nil+ for a backend-specific secure default.
+      # Network policy, or +nil+ for the backend-specific default.
       attr_reader :network
       # Whether the +:root+ entry in +files+ requests +:read_write+ access.
       def workspace_writable? = files.fetch(:root, :read_only) == :read_write

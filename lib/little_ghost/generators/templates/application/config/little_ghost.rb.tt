@@ -1,0 +1,5 @@
+# frozen_string_literal: true
+
+LittleGhost.configure do |config|
+  config.service_name "{{DIRECTORY_NAME}}"
+end

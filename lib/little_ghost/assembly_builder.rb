@@ -123,7 +123,7 @@ module LittleGhost
       snapshot = definition
       return (runtime || run.runtime).build_assembly(snapshot, run:) if run
 
-      snapshot.implementation.new(runtime:)
+      snapshot.implementation.new(runtime:).bind_assembly_definition(snapshot)
     end
 
     # Executes the current declarations and returns their Run.
@@ -133,7 +133,7 @@ module LittleGhost
     def stream_ask(message, **options)
       snapshot = definition
       Enumerator.new do |events|
-        snapshot.implementation.new(runtime:).stream_ask(message, **options).each { |event| events << event }
+        snapshot.implementation.new(runtime:).bind_assembly_definition(snapshot).stream_ask(message, **options).each { |event| events << event }
       end
     end
 

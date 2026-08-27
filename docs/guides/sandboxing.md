@@ -23,10 +23,7 @@ LittleGhost.configure do |config|
 
   config.sandbox = {
     provider: :native,
-    files: {root: :read_write},
-    root_filesystem: :isolated,
-    environment: {inherit: false, set: {"LANG" => "C.UTF-8"}},
-    network: :none
+    files: {root: :read_write}
   }
 end
 ```
@@ -34,7 +31,9 @@ end
 This example gives each Run a temporary writable root and removes it during
 teardown. The `:native` Sandbox backend selects Seatbelt on macOS or Bubblewrap on
 Linux. It raises instead of running without isolation when the native backend
-is unavailable.
+is unavailable. Unless you configure otherwise, it isolates the host root,
+removes child-process network access, and starts child processes without
+inheriting the host environment.
 
 `LittleGhost::Tools::Filesystem` and `LittleGhost::Tools::Shell` use the Sandbox
 assigned to the current Run. Code-mode interpreters also run inside their own
@@ -148,8 +147,7 @@ config.sandbox = {
   },
   runtime_paths: {
     home: :read_write
-  },
-  network: :none
+  }
 }
 ```
 
@@ -199,6 +197,39 @@ Workspace paths:
 
 On Seatbelt, host-visible modes permit subprocesses because development tools
 often need them. A Scope can remove `process_spawn` for a command that does not.
+
+## Start child processes with only the values they need
+
+When `environment` is omitted, sandboxed processes do not inherit the host
+environment. LittleGhost starts with `LANG`, `LC_ALL`, and `PATH`, then adds
+`LITTLE_GHOST_WORKSPACE_*` variables so the child can locate its Workspace.
+Locale values come from the host when present and otherwise use `C.UTF-8`.
+`PATH` keeps the host's absolute entries, removes empty, relative, and duplicate
+entries, and falls back to `/usr/local/bin:/usr/bin:/bin` when nothing remains.
+Credentials, provider keys, package-manager settings, and home-directory
+variables are not copied into the child.
+
+> **Safety note:** An absolute directory is not necessarily a trusted one. A
+> host `PATH` may include project directories, temporary directories, or
+> user-managed shims. Configure a fixed `PATH` when a model can invoke commands
+> by name and you do not trust every host entry.
+
+Declaring `environment` replaces the locale and path baseline instead of
+merging with it. Use an empty Hash to omit all configurable values, or set
+exactly what the process needs. Workspace routing variables remain available:
+
+```ruby
+config.sandbox = {
+  provider: :native,
+  environment: {
+    inherit: false,
+    set: {"LANG" => "C.UTF-8", "PATH" => "/opt/my-tool/bin:/usr/bin"}
+  }
+}
+```
+
+Host inheritance requires both `inherit: true` in the Sandbox policy and an
+individual process call that opts into inheritance.
 
 ## Choose an enforcement backend
 
@@ -259,6 +290,10 @@ Sandbox networking has three modes:
 - `:inherit` permits the selected Sandbox backend's ordinary network access.
 - `:allowlist` requires an enforcing gateway: a supervised proxy that permits
   only configured destinations.
+
+Seatbelt, Bubblewrap, and `:native` default to `:none`; declare a network mode
+only when the child needs a different policy. The unrestricted backend uses
+`:inherit` because it is not a security boundary.
 
 Proxy environment variables alone are not an allowlist. An external gateway
 uses named, process-only Workspace paths and verifies that they still point to

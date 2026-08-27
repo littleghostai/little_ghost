@@ -1,10 +1,35 @@
 # frozen_string_literal: true
 
+require "pathname"
+
 module LittleGhost
   class Sandbox
-    # Declares whether a child inherits the host environment and which explicit
-    # values are added or replaced.
+    # Declares which environment values a Sandbox may pass to child processes.
+    #
+    # A Policy supplies a scrubbed locale and path baseline when its environment
+    # option is omitted. Declaring an EnvironmentPolicy replaces that baseline.
+    # Workspace routing variables are added separately.
+    # Enabling inheritance here only permits it; an individual process call
+    # must also opt in.
+    #
+    # See the {Workspaces and Sandboxes guide}[rdoc-ref:docs/guides/sandboxing.md]
+    # for defaults and host-path considerations.
     class EnvironmentPolicy
+      DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin" # :nodoc:
+
+      # Builds the safe baseline used when no environment policy is declared.
+      def self.default(environment: ENV) # :nodoc:
+        lang = environment.fetch("LANG", "C.UTF-8")
+        lc_all = environment.fetch("LC_ALL", lang)
+        path = environment.fetch("PATH", DEFAULT_PATH)
+        path = path.split(File::PATH_SEPARATOR).select do |entry|
+          !entry.empty? && Pathname.new(entry).absolute?
+        end.uniq.join(File::PATH_SEPARATOR)
+        path = DEFAULT_PATH if path.empty?
+
+        new(values: {"LANG" => lang, "LC_ALL" => lc_all, "PATH" => path})
+      end
+
       # Returns +value+ unchanged or builds a policy from a Hash.
       def self.coerce(value)
         return value if value.is_a?(self)
@@ -29,10 +54,10 @@ module LittleGhost
         freeze
       end
 
-      # Explicit child environment values.
+      # Explicit child environment values, before Workspace routing values are added.
       attr_reader :values
 
-      # Indicates whether configured backends may inherit host values.
+      # Indicates whether a process call may opt into inheriting host values.
       def inherit? = @inherit
       # Returns the explicit child environment values.
       def to_h = values

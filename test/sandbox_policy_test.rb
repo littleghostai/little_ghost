@@ -3,6 +3,57 @@
 require "test_helper"
 
 class SandboxPolicyTest < Minitest::Test
+  def test_policy_uses_a_safe_default_environment
+    policy = LittleGhost::Sandbox::Policy.new
+
+    expected_lang = ENV.fetch("LANG", "C.UTF-8")
+    expected_lc_all = ENV.fetch("LC_ALL", expected_lang)
+    expected_path = ENV.fetch("PATH", LittleGhost::Sandbox::EnvironmentPolicy::DEFAULT_PATH)
+      .split(File::PATH_SEPARATOR)
+      .select { |entry| !entry.empty? && Pathname.new(entry).absolute? }
+      .uniq
+      .join(File::PATH_SEPARATOR)
+    expected_path = LittleGhost::Sandbox::EnvironmentPolicy::DEFAULT_PATH if expected_path.empty?
+
+    refute_predicate policy.environment, :inherit?
+    assert_equal(
+      {"LANG" => expected_lang, "LC_ALL" => expected_lc_all, "PATH" => expected_path},
+      policy.environment.to_h
+    )
+  end
+
+  def test_default_environment_falls_back_when_host_values_are_missing
+    policy = LittleGhost::Sandbox::EnvironmentPolicy.default(environment: {})
+
+    assert_equal(
+      {
+        "LANG" => "C.UTF-8",
+        "LC_ALL" => "C.UTF-8",
+        "PATH" => LittleGhost::Sandbox::EnvironmentPolicy::DEFAULT_PATH
+      },
+      policy.to_h
+    )
+  end
+
+  def test_default_environment_removes_empty_relative_and_duplicate_path_entries
+    policy = LittleGhost::Sandbox::EnvironmentPolicy.default(
+      environment: {
+        "LANG" => "en_US.UTF-8",
+        "PATH" => ["", "bin", "/opt/bin", "/usr/bin", "/opt/bin"].join(File::PATH_SEPARATOR)
+      }
+    )
+
+    assert_equal "en_US.UTF-8", policy.to_h.fetch("LC_ALL")
+    assert_equal ["/opt/bin", "/usr/bin"].join(File::PATH_SEPARATOR), policy.to_h.fetch("PATH")
+  end
+
+  def test_explicit_empty_environment_replaces_the_default
+    policy = LittleGhost::Sandbox::Policy.new(environment: {})
+
+    refute_predicate policy.environment, :inherit?
+    assert_empty policy.environment.to_h
+  end
+
   def test_policy_uses_named_files_and_process_only_runtime_paths
     policy = LittleGhost::Sandbox::Policy.new(
       files: {root: :read_write, source: :read_only},

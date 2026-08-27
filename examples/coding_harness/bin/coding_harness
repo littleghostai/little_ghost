@@ -1,0 +1,141 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+app_root = File.expand_path("..", __dir__)
+ENV["BUNDLE_GEMFILE"] = File.join(app_root, "Gemfile")
+
+require "bundler/setup"
+require "json"
+require "little_ghost"
+require "little_ghost/tools"
+
+module LittleGhostCoder
+  ROOT = File.expand_path("..", __dir__)
+  STAGES = {
+    plan: "Planning",
+    execute: "Working",
+    confirm: "Checking",
+    report: "Reporting"
+  }.freeze
+  MAX_DETAIL = 160
+
+  class Progress
+    def initialize(output: $stdout)
+      @output = output
+      @agent_text_open = false
+    end
+
+    def call(event)
+      case event.type
+      when :assembly_step_start
+        stage = STAGES.fetch(event.data.fetch(:participant).to_sym)
+        @output.puts "\n== #{stage} =="
+      when :agent_stream
+        render_agent_event(event.data.fetch(:source), event.data.fetch(:event))
+      when :text_delta
+        @output.print event.data.fetch(:text)
+      end
+    end
+
+    private
+
+    def render_agent_event(source, event)
+      case event.type
+      when :text_delta
+        unless source.agent_id == "coding_reporter"
+          @output.print event.data.fetch(:text)
+          @agent_text_open = true
+        end
+      when :invocation_stop
+        finish_agent_text
+      when :tool_start
+        finish_agent_text
+        tool = event.data.fetch(:tool_use)
+        @output.puts "  #{source.agent_id}: #{tool.name} #{compact(tool.input.to_h)}"
+      when :tool_stop
+        result = event.data.fetch(:result)
+        @output.puts "  #{source.agent_id}: #{result.status} #{truncate(result.content.to_s)}"
+      end
+    end
+
+    def compact(value)
+      truncate(JSON.generate(value))
+    end
+
+    def finish_agent_text
+      return unless @agent_text_open
+
+      @output.puts
+      @agent_text_open = false
+    end
+
+    def truncate(value)
+      text = value.gsub(/\s+/, " ").strip
+      return text if text.length <= MAX_DETAIL
+
+      "#{text[0, MAX_DETAIL - 1]}…"
+    end
+  end
+
+  module_function
+
+  def run(arguments = ARGV, input: $stdin, output: $stdout, error: $stderr)
+    if arguments == ["--help"] || arguments == ["-h"]
+      output.puts "Usage: coding_harness [WORKDIR]"
+      return 0
+    end
+    raise ArgumentError, "expected at most one WORKDIR argument" if arguments.length > 1
+
+    workdir = resolve_workdir(arguments.first || Dir.pwd)
+    ensure_native_sandbox!
+    configure(workdir)
+    LittleGhost.runtime
+    CodingGraph.validate!
+
+    output.puts "LittleGhost coder is working in #{workdir}"
+    output.puts "Enter a coding instruction, or `exit` to stop."
+    progress = Progress.new(output:)
+
+    loop do
+      output.print "\ncoder> "
+      output.flush
+      instruction = input.gets
+      break unless instruction
+
+      instruction = instruction.strip
+      break if %w[exit quit].include?(instruction.downcase)
+      next if instruction.empty?
+
+      run = CodingGraph.stream_ask(instruction).each { |event| progress.call(event) }
+      error.puts "Coding run failed: #{run.error.full_message}" if run.failed?
+    end
+  rescue ArgumentError, LittleGhost::Error => exception
+    error.puts "coding_harness: #{exception.message}"
+    1
+  end
+
+  def configure(workdir)
+    LittleGhost.configure do |config|
+      config.root ROOT
+      config.workspace = ->(**) { LittleGhost::Workspace.new(root: workdir) }
+    end
+  end
+
+  def ensure_native_sandbox!
+    probe = LittleGhost::Sandbox.probe(:native)
+    return if probe.fetch(:available)
+
+    raise LittleGhost::DependencyError,
+      "native sandbox unavailable: #{probe.fetch(:reason)}. Use Seatbelt on macOS or install Bubblewrap on Linux."
+  end
+
+  def resolve_workdir(value)
+    path = File.expand_path(value)
+    raise ArgumentError, "workdir does not exist: #{path}" unless File.exist?(path)
+    raise ArgumentError, "workdir is not a directory: #{path}" unless File.directory?(path)
+
+    File.realpath(path)
+  end
+end
+
+exit(LittleGhostCoder.run || 0) if $PROGRAM_NAME == __FILE__

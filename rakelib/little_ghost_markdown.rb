@@ -486,10 +486,7 @@ module LittleGhostDocs
     end
 
     def rewrite_public_urls(contents)
-      return contents if base_path.to_s.empty? || base_path.to_s == "."
-
-      deployed_url = URI.join(SITE_URL, "#{base_path}/").to_s
-      contents.gsub(UNVERSIONED_SITE_URL_PATTERN, deployed_url)
+      LittleGhostDocs.rewrite_public_urls(contents, base_path:, id:)
     end
   end
 end
