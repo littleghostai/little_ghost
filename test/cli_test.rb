@@ -398,9 +398,13 @@ class CLITest < Minitest::Test
       assert_equal File.stat(reference).mode & 0o777, File.stat(root).mode & 0o777
 
       assert_includes File.read(File.join(root, "Gemfile")), %(gem "little_ghost", path: #{repository_root.dump})
+      bundle_environment = {}
+      if (configured_bundle_path = Bundler.settings[:path])
+        bundle_environment["BUNDLE_PATH"] = File.expand_path(configured_bundle_path.to_s, repository_root)
+      end
       bundle_output, bundle_status = Bundler.with_unbundled_env do
         Open3.capture2e(
-          {"BUNDLE_GEMFILE" => File.join(root, "Gemfile")},
+          bundle_environment.merge("BUNDLE_GEMFILE" => File.join(root, "Gemfile")),
           Gem.bin_path("bundler", "bundle"),
           "install",
           "--local",
@@ -411,7 +415,7 @@ class CLITest < Minitest::Test
 
       output, status = Bundler.with_unbundled_env do
         Open3.capture2e(
-          {"BUNDLE_GEMFILE" => File.join(repository_root, "Gemfile")},
+          bundle_environment.merge("BUNDLE_GEMFILE" => File.join(repository_root, "Gemfile")),
           RbConfig.ruby,
           binary,
           "--help"
@@ -422,7 +426,7 @@ class CLITest < Minitest::Test
 
       output, status = Bundler.with_unbundled_env do
         Open3.capture2e(
-          {"BUNDLE_GEMFILE" => File.join(repository_root, "Gemfile")},
+          bundle_environment.merge("BUNDLE_GEMFILE" => File.join(repository_root, "Gemfile")),
           RbConfig.ruby,
           binary,
           "console",
