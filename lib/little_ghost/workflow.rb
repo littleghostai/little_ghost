@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "json"
 require_relative "assembly"
 
 module LittleGhost
@@ -7,8 +8,8 @@ module LittleGhost
   #
   # A workflow is an Assembly whose +perform+ method controls ordering,
   # branching, parallel work, and local variables. Each participant may be an
-  # Agent or another coordinated Assembly. The workflow consumes intermediate
-  # answers and streams one final participant response.
+  # Agent or another coordinated Assembly. The workflow can stream one final
+  # participant response or return a value computed from intermediate answers.
   #
   # A support workflow can guarantee that research happens before the responder
   # writes the caller-visible answer:
@@ -37,9 +38,10 @@ module LittleGhost
   # events.
   #
   # +invoke+ returns a lazy Workflow::Invocation. Reading +output+ consumes an
-  # intermediate invocation and returns RunResult#output; +perform+ must return
-  # its final invocation without consuming it so those events reach the caller.
-  # Intermediate usage is added to the final result.
+  # intermediate invocation and returns RunResult#output. Return a final
+  # invocation without consuming it when its events should reach the caller.
+  # Return a String or JSON-compatible value when Ruby computes the final
+  # answer. Intermediate usage is added to either result.
   #
   # A child receives the Workflow input unless +invoke+ supplies another one.
   # It also inherits history, settings, cancellation, deadline, template paths,
@@ -47,11 +49,15 @@ module LittleGhost
   # child, preventing one intermediate Agent from mutating a sibling's state.
   # Non-JSON-like workflow context raises ArgumentError.
   #
-  # A Workflow instance streams once. Returning the wrong value, returning an
+  # A Workflow instance streams once. Returning +nil+, an unsupported value, an
   # already consumed invocation, or consuming one twice raises ProtocolError.
   # A composition error fails the owning top-level Run. Each child Assembly
   # closes after its attempt, and a cleanup failure raises from that attempt.
   class Workflow < Assembly
+    MAX_DIRECT_RESULT_BYTES = 1_000_000 # :nodoc:
+    MAX_DIRECT_RESULT_DEPTH = 64 # :nodoc:
+    MAX_DIRECT_RESULT_NODES = 100_000 # :nodoc:
+
     # Hold one lazy Assembly call inside a workflow composition.
     # Workflow implementations normally use only its output method or return the
     # object as the final invocation.
@@ -146,9 +152,10 @@ module LittleGhost
 
     # Streams the workflow once as StreamEvent objects.
     #
-    # +perform+ must return a final, unconsumed Workflow::Invocation. The returned
-    # Enumerator is lazy, but calling +stream+ reserves the single-use workflow
-    # instance even when enumeration has not started yet.
+    # +perform+ may return a final, unconsumed Workflow::Invocation, a String, or
+    # a JSON-compatible value. The returned Enumerator is lazy, but calling
+    # +stream+ reserves the single-use workflow instance even when enumeration
+    # has not started yet.
     def stream(
       input = nil,
       history: nil,
@@ -199,25 +206,29 @@ module LittleGhost
         observed_usage = nil
         @workflow_events = events
         ensure_open!
-        final_invocation = perform
-        unless final_invocation.is_a?(Invocation) && !final_invocation.consumed?
-          raise ProtocolError, "#{self.class} must return its final invoke from perform"
-        end
-
-        final_invocation.each(checkpoint: @checkpoint) do |event|
-          error_emitted = true if event.type == :invocation_error
-          event = aggregate_usage(event)
-          observed_usage = case event.type
-          when :invocation_stop
-            event.data.fetch(:result).usage
-          when :invocation_error
-            event.data[:usage] || observed_usage
-          when :assembly_step_error
-            event.data[:usage] || observed_usage
-          else
-            observed_usage
+        final_value = perform
+        if final_value.is_a?(Invocation)
+          if final_value.consumed?
+            raise ProtocolError, "#{self.class} returned an already consumed invocation from perform"
           end
-          events << event
+
+          final_value.each(checkpoint: @checkpoint) do |event|
+            error_emitted = true if event.type == :invocation_error
+            event = aggregate_usage(event)
+            observed_usage = case event.type
+            when :invocation_stop
+              event.data.fetch(:result).usage
+            when :invocation_error
+              event.data[:usage] || observed_usage
+            when :assembly_step_error
+              event.data[:usage] || observed_usage
+            else
+              observed_usage
+            end
+            events << event
+          end
+        else
+          emit_direct_result(final_value, events)
         end
       rescue => error
         unless error_emitted
@@ -262,7 +273,8 @@ module LittleGhost
     attr_reader :input, :history, :context
 
     # :doc:
-    # Implements the composition and returns its final unconsumed invocation.
+    # Implements the composition and returns its final unconsumed invocation or
+    # a directly computed String or JSON-compatible value.
     # Subclasses must override this hook.
     def perform
       raise AbstractMethodError, "#{self.class} must implement #perform"
@@ -443,6 +455,162 @@ module LittleGhost
       else
         event
       end
+    end
+
+    def emit_direct_result(value, events)
+      raise ProtocolError, "#{self.class} returned nil from perform" if value.nil?
+
+      usage = workflow_usage
+      steps = workflow_steps
+      state = DataMap.new(@context)
+      if value.is_a?(String)
+        if value.bytesize > MAX_DIRECT_RESULT_BYTES
+          raise ProtocolError, "Workflow direct result exceeds the maximum serialized size"
+        end
+
+        message = Message.new(role: :assistant, content: value.dup)
+        result = direct_run_result(message:, usage:, state:, steps:)
+        response = ModelResponse.new(message:, stop_reason: :end_turn, usage:)
+        events << StreamEvent.build(:message_start, id: nil, model: nil)
+        events << StreamEvent.build(:text_delta, text: message.text)
+        events << StreamEvent.build(:message_stop, response:)
+      else
+        schema_name = "#{self.class.assembly_id}_result"
+        structured_result = StructuredResult.new(
+          schema_name:,
+          value: normalize_direct_result(value)
+        )
+        message = Message.new(
+          role: :assistant,
+          content: "[Structured result #{schema_name} redacted]"
+        )
+        result = direct_run_result(
+          message:,
+          usage:,
+          state:,
+          steps:,
+          stop_reason: :structured_result,
+          structured_result:
+        )
+      end
+      checkpoint_direct_result(result)
+      events << StreamEvent.build(:invocation_stop, result:, metadata: {})
+    end
+
+    def direct_run_result(
+      message:,
+      usage:,
+      state:,
+      steps:,
+      stop_reason: :end_turn,
+      structured_result: nil
+    )
+      RunResult.new(
+        message:,
+        stop_reason:,
+        usage:,
+        messages: [*@history, @input, message].freeze,
+        state:,
+        structured_result:,
+        steps:
+      )
+    end
+
+    def checkpoint_direct_result(result)
+      return unless @checkpoint
+
+      @checkpoint.call(
+        messages: result.messages,
+        state: result.state,
+        parent_operation_id: @parent_operation_id
+      )
+    end
+
+    def normalize_direct_result(value)
+      counters = {nodes: 0}
+      normalized = normalize_direct_value(value, depth: 1, ancestors: {}, counters:)
+      if JSON.generate(normalized).bytesize > MAX_DIRECT_RESULT_BYTES
+        raise ProtocolError, "Workflow direct result exceeds the maximum serialized size"
+      end
+
+      normalized
+    rescue JSON::GeneratorError
+      raise ProtocolError, "Workflow direct result cannot be serialized"
+    end
+
+    def normalize_direct_value(value, depth:, ancestors:, counters:)
+      counters[:nodes] += 1
+      if depth > MAX_DIRECT_RESULT_DEPTH
+        raise ProtocolError, "Workflow direct result exceeds the maximum nesting depth"
+      end
+      if counters.fetch(:nodes) > MAX_DIRECT_RESULT_NODES
+        raise ProtocolError, "Workflow direct result exceeds the maximum complexity"
+      end
+
+      case value
+      when Hash
+        normalize_direct_hash(value, depth:, ancestors:, counters:)
+      when Array
+        normalize_direct_array(value, depth:, ancestors:, counters:)
+      when String
+        value.dup
+      when Integer, TrueClass, FalseClass, NilClass
+        value
+      when Float
+        unless value.finite?
+          raise ProtocolError, "Workflow direct result must contain only finite numbers"
+        end
+
+        value
+      else
+        raise ProtocolError, "Workflow direct result must be JSON-compatible"
+      end
+    end
+
+    def normalize_direct_hash(value, depth:, ancestors:, counters:)
+      with_direct_container(value, ancestors) do
+        value.each_with_object({}) do |(key, child), normalized|
+          unless key.is_a?(String) || key.is_a?(Symbol)
+            raise ProtocolError, "Workflow direct result keys must be Strings or Symbols"
+          end
+
+          normalized_key = normalize_direct_value(
+            key.to_s,
+            depth: depth + 1,
+            ancestors:,
+            counters:
+          )
+          if normalized.key?(normalized_key)
+            raise ProtocolError, "Workflow direct result keys must be unique after normalization"
+          end
+
+          normalized[normalized_key] = normalize_direct_value(
+            child,
+            depth: depth + 1,
+            ancestors:,
+            counters:
+          )
+        end
+      end
+    end
+
+    def normalize_direct_array(value, depth:, ancestors:, counters:)
+      with_direct_container(value, ancestors) do
+        value.map do |child|
+          normalize_direct_value(child, depth: depth + 1, ancestors:, counters:)
+        end
+      end
+    end
+
+    def with_direct_container(value, ancestors)
+      if ancestors[value.object_id]
+        raise ProtocolError, "Workflow direct result cannot contain cyclic values"
+      end
+
+      ancestors[value.object_id] = true
+      yield
+    ensure
+      ancestors.delete(value.object_id)
     end
 
     def template_locals_for(agent)

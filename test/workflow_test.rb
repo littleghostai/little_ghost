@@ -203,17 +203,145 @@ class WorkflowTest < Minitest::Test
     assert router.closed?
   end
 
-  def test_requires_perform_to_return_the_final_invocation
+  def test_returns_a_direct_string_as_the_terminal_text_result
     workflow_class = Class.new(LittleGhost::Workflow) do
+      assembly_id "computed_response"
+
       private
 
-      def perform = "not a response"
+      def perform = "computed response"
+    end
+    workflow = workflow_class.new(run: Run.new(Application.new({})))
+    checkpoints = []
+    history = [LittleGhost::Message.new(role: :assistant, content: "prior")]
+
+    events = workflow.stream(
+      "question",
+      history:,
+      context: {request_id: "request-1"},
+      parent_operation_id: "run-1",
+      checkpoint: ->(**values) { checkpoints << values }
+    ).to_a
+    result = events.last.data.fetch(:result)
+
+    assert_equal %i[message_start text_delta message_stop invocation_stop], events.map(&:type)
+    assert_equal "computed response", result.text
+    assert_equal :end_turn, result.stop_reason
+    assert_equal %w[prior question computed\ response], result.messages.map(&:text)
+    assert_equal "request-1", result.state.fetch("request_id")
+    assert_equal "computed response", events.fetch(1).data.fetch(:text)
+    assert_equal 1, checkpoints.length
+    assert_equal "run-1", checkpoints.first.fetch(:parent_operation_id)
+    assert_equal result.messages, checkpoints.first.fetch(:messages)
+    assert_equal result.state, checkpoints.first.fetch(:state)
+  end
+
+  def test_returns_a_direct_json_value_as_a_structured_result
+    source = {answer: ["yes"], count: 2}
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      assembly_id "computed_response"
+
+      define_method(:perform) { source }
+      private :perform
     end
     workflow = workflow_class.new(run: Run.new(Application.new({})))
 
+    events = workflow.stream("question").to_a
+    result = events.last.data.fetch(:result)
+    source[:answer] << "later"
+
+    assert_equal [:invocation_stop], events.map(&:type)
+    assert result.structured?
+    assert_equal :structured_result, result.stop_reason
+    assert_equal "computed_response_result", result.structured_result.schema_name
+    assert_equal({"answer" => ["yes"], "count" => 2}, result.output)
+    assert_equal "[Structured result computed_response_result redacted]", result.message.text
+  end
+
+  def test_accepts_direct_array_numeric_and_boolean_results
+    [[1, nil], 42, 1.5, true, false].each do |value|
+      workflow_class = Class.new(LittleGhost::Workflow) do
+        define_method(:perform) { value }
+        private :perform
+      end
+
+      result = workflow_class.new(
+        run: Run.new(Application.new({}))
+      ).stream("question").to_a.last.data.fetch(:result)
+
+      assert_equal value, result.output
+    end
+  end
+
+  def test_rejects_invalid_direct_results
+    cycle = []
+    cycle << cycle
+    invalid = [nil, Object.new, Float::NAN, cycle, {1 => "invalid"}, {:key => 1, "key" => 2}]
+
+    invalid.each do |value|
+      workflow_class = Class.new(LittleGhost::Workflow) do
+        define_method(:perform) { value }
+        private :perform
+      end
+      workflow = workflow_class.new(run: Run.new(Application.new({})))
+
+      assert_raises(LittleGhost::ProtocolError) { workflow.stream("question").to_a }
+    end
+  end
+
+  def test_rejects_direct_results_over_structured_limits
+    oversized = {value: "x" * LittleGhost::Workflow::MAX_DIRECT_RESULT_BYTES}
+    deep = []
+    cursor = deep
+    LittleGhost::Workflow::MAX_DIRECT_RESULT_DEPTH.times do
+      child = []
+      cursor << child
+      cursor = child
+    end
+    complex = Array.new(LittleGhost::Workflow::MAX_DIRECT_RESULT_NODES, nil)
+
+    [oversized, deep, complex].each do |value|
+      workflow_class = Class.new(LittleGhost::Workflow) do
+        define_method(:perform) { value }
+        private :perform
+      end
+      workflow = workflow_class.new(run: Run.new(Application.new({})))
+
+      assert_raises(LittleGhost::ProtocolError) { workflow.stream("question").to_a }
+    end
+  end
+
+  def test_rejects_direct_text_over_the_size_limit
+    value = "x" * (LittleGhost::Workflow::MAX_DIRECT_RESULT_BYTES + 1)
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      define_method(:perform) { value }
+      private :perform
+    end
+    workflow = workflow_class.new(run: Run.new(Application.new({})))
+
+    error = assert_raises(LittleGhost::ProtocolError) do
+      workflow.stream("start").to_a
+    end
+
+    assert_match(/maximum serialized size/, error.message)
+  end
+
+  def test_rejects_an_already_consumed_final_invocation
+    main = FakeAgent.new(result(text: "final"))
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform
+        final = invoke(:main)
+        final.output
+        final
+      end
+    end
+    workflow = workflow_class.new(run: Run.new(Application.new(main: [main])))
+
     error = assert_raises(LittleGhost::ProtocolError) { workflow.stream("question").to_a }
 
-    assert_includes error.message, "final invoke"
+    assert_includes error.message, "already consumed"
   end
 
   def test_preserves_final_usage_when_final_agent_cleanup_fails
@@ -311,6 +439,32 @@ class WorkflowTest < Minitest::Test
     assert_equal %w[first second main], result.steps.map(&:participant)
     assert result.trajectory.concurrent?(result.steps[0].id, result.steps[1].id)
     assert_equal 5, result.usage.input_tokens
+  end
+
+  def test_returns_parallel_outputs_directly_with_usage_and_steps
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform
+        parallel(
+          invoke(:first, as: :first),
+          invoke(:second, as: :second),
+          max_concurrency: 2
+        )
+      end
+    end
+    first = FakeAgent.new(result(text: "one", usage: LittleGhost::Usage.new(input_tokens: 2)))
+    second = FakeAgent.new(result(structured: {"value" => "two"}, usage: LittleGhost::Usage.new(input_tokens: 3)))
+    workflow = workflow_class.new(
+      run: Run.new(Application.new(first: [first], second: [second]))
+    )
+
+    result = workflow.stream("request").to_a.last.data.fetch(:result)
+
+    assert_equal ["one", {"value" => "two"}], result.output
+    assert_equal 5, result.usage.input_tokens
+    assert_equal %w[first second], result.steps.map(&:participant)
+    assert_empty result.trajectory.transitions
   end
 
   def test_parallel_invocations_use_scheduler_fibers

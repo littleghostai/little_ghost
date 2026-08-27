@@ -132,4 +132,29 @@ class AssemblyTest < Minitest::Test
   ensure
     tool&.close
   end
+
+  def test_workflow_tools_return_direct_structured_values
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      assembly_id "account_summary"
+
+      private
+
+      def perform
+        {status: "ready", request: input.text}
+      end
+    end
+    runtime = Object.new
+    run = Struct.new(:runtime, :operation_id, :workspace, :sandbox).new(runtime, "run-1")
+    runtime.define_singleton_method(:build_assembly) do |klass, run:, agent_stream_path:|
+      klass.new(run:, runtime: self).bind_agent_stream_path(agent_stream_path)
+    end
+    assembly = workflow_class.new(run:, runtime:)
+    tool = assembly.as_tool
+
+    execution = tool.execute({"input" => "summarize"})
+
+    assert_equal({"status" => "ready", "request" => "summarize"}, execution.value)
+  ensure
+    tool&.close
+  end
 end
