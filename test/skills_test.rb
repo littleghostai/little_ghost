@@ -35,6 +35,41 @@ class SkillsTest < Minitest::Test
     end
   end
 
+  def test_unknown_skill_error_names_available_skills
+    Dir.mktmpdir do |directory|
+      %w[review security].each do |name|
+        skill_directory = File.join(directory, name)
+        Dir.mkdir(skill_directory)
+        File.write(
+          File.join(skill_directory, "SKILL.md"),
+          "---\nname: #{name}\ndescription: #{name}\n---\nInstructions"
+        )
+      end
+      catalog = LittleGhost::Skills::Catalog.new(paths: directory)
+
+      result = catalog.tool.new.execute({
+        "skill_name" => "review pr https://example.test/pull/123"
+      })
+
+      assert result.error?
+      assert_equal(
+        "Unknown skill: review pr https://example.test/pull/123. Available skills: review, security",
+        result.content
+      )
+      assert_instance_of LittleGhost::ToolError, result.error
+    end
+  end
+
+  def test_unknown_skill_error_omits_available_skills_for_an_empty_catalog
+    Dir.mktmpdir do |directory|
+      catalog = LittleGhost::Skills::Catalog.new(paths: directory)
+
+      error = assert_raises(LittleGhost::ConfigurationError) { catalog.fetch("review") }
+
+      assert_equal "Unknown skill: review", error.message
+    end
+  end
+
   def test_skips_malformed_skills_without_hiding_valid_siblings
     Dir.mktmpdir do |directory|
       skills = {
