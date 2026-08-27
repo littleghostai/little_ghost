@@ -398,31 +398,37 @@ class CLITest < Minitest::Test
       assert_equal File.stat(reference).mode & 0o777, File.stat(root).mode & 0o777
 
       assert_includes File.read(File.join(root, "Gemfile")), %(gem "little_ghost", path: #{repository_root.dump})
-      bundle_output, bundle_status = Open3.capture2e(
-        {"BUNDLE_GEMFILE" => File.join(root, "Gemfile")},
-        Gem.bin_path("bundler", "bundle"),
-        "install",
-        "--local",
-        chdir: root
-      )
+      bundle_output, bundle_status = Bundler.with_unbundled_env do
+        Open3.capture2e(
+          {"BUNDLE_GEMFILE" => File.join(root, "Gemfile")},
+          Gem.bin_path("bundler", "bundle"),
+          "install",
+          "--local",
+          chdir: root
+        )
+      end
       assert_predicate bundle_status, :success?, bundle_output
 
-      output, status = Open3.capture2e(
-        {"BUNDLE_GEMFILE" => File.join(repository_root, "Gemfile")},
-        RbConfig.ruby,
-        binary,
-        "--help"
-      )
+      output, status = Bundler.with_unbundled_env do
+        Open3.capture2e(
+          {"BUNDLE_GEMFILE" => File.join(repository_root, "Gemfile")},
+          RbConfig.ruby,
+          binary,
+          "--help"
+        )
+      end
       assert_predicate status, :success?, output
       assert_includes output, "little_ghost console"
 
-      output, status = Open3.capture2e(
-        {"BUNDLE_GEMFILE" => File.join(repository_root, "Gemfile")},
-        RbConfig.ruby,
-        binary,
-        "console",
-        stdin_data: "puts LittleGhost.runtime.settings.fetch(:service_name)\nputs MyAppAgent.name\nexit\n"
-      )
+      output, status = Bundler.with_unbundled_env do
+        Open3.capture2e(
+          {"BUNDLE_GEMFILE" => File.join(repository_root, "Gemfile")},
+          RbConfig.ruby,
+          binary,
+          "console",
+          stdin_data: "puts LittleGhost.runtime.settings.fetch(:service_name)\nputs MyAppAgent.name\nexit\n"
+        )
+      end
       assert_predicate status, :success?, output
       assert_includes output, "my_app"
       assert_includes output, "MyAppAgent"
