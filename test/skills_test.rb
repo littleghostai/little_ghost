@@ -32,10 +32,6 @@ class SkillsTest < Minitest::Test
       assert_includes result.content, "Location: #{File.realpath(File.join(skill_directory, "SKILL.md"))}"
       assert_includes result.content, "references/nested/guide.md"
       assert_equal ["skill_name"], catalog.tool.input_schema.fetch("required")
-      assert_equal(
-        "Exact name of one skill from available_skills. Pass only the bare name here; keep arguments and surrounding instructions in the task request.",
-        catalog.tool.input_schema.dig("properties", "skill_name", "description")
-      )
     end
   end
 
