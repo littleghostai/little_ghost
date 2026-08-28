@@ -7,13 +7,12 @@
 # Constraints:
 # - Must render non-blank.
 # - Keep skill names and metadata represented so the model can select a valid skill.
+# - Keep the catalog in Markdown.
 -%>
-<available_skills>
+## Available skills
+
 <% skills.each do |skill| -%>
-<skill>
-<name><%= ERB::Util.html_escape(skill.fetch(:name)) %></name>
-<description><%= ERB::Util.html_escape(skill.fetch(:description)) %></description>
-<location><%= ERB::Util.html_escape(skill.fetch(:location)) %></location>
-</skill>
+- **Name:** <%= skill.fetch(:name) %>
+  - **Description:** <%= skill.fetch(:description) %>
+  - **Location:** <%= skill.fetch(:location) %>
 <% end -%>
-</available_skills>

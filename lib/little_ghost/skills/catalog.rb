@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "yaml"
-require "erb"
 require_relative "resource_root"
 
 module LittleGhost
@@ -90,7 +89,7 @@ module LittleGhost
         @skills.keys.freeze
       end
 
-      # Produces the escaped, metadata-only prompt used for discovery.
+      # Produces the Markdown, metadata-only prompt used for discovery.
       def discovery_prompt
         return "" if @skills.empty?
 

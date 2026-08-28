@@ -167,7 +167,8 @@ module LittleGhost
     # object result. When the result is invalid, the default permits one repair
     # attempt. Set +structured_result_repair_attempts+ to an integer from zero
     # through three when a checked result warrants additional attempts.
-    # +template_paths+ accepts trusted invocation-level framework prompt roots.
+    # +template_paths+ accepts application-created TrustedPath values that
+    # override framework prompts for this generation only.
     def generate(...) = runtime.generate(...)
 
     # :call-seq:

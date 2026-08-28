@@ -1665,14 +1665,14 @@ class AgentTest < Minitest::Test
         {messages: [LittleGhost::Message.new(role: :system, content: "Base instructions")]}
       )
       prompt = decision.value.fetch(:messages).first.text
-      assert_includes prompt, "<available_skills>"
-      assert_includes prompt, "<name>inspect</name>"
+      assert_includes prompt, "## Available skills"
+      assert_includes prompt, "**Name:** inspect"
 
       agent.call("Inspect this")
       system_message = model.requests.first.messages.first
       assert_equal :system, system_message.role
-      assert_includes system_message.text, "<available_skills>"
-      assert_includes system_message.text, "<name>inspect</name>"
+      assert_includes system_message.text, "## Available skills"
+      assert_includes system_message.text, "**Name:** inspect"
     ensure
       agent&.close
     end

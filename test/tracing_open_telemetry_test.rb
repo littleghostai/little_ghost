@@ -91,7 +91,7 @@ class TracingOpenTelemetryTest < Minitest::Test
           role: "system",
           content: [
             {type: "text", text: "instructions"},
-            {type: "text", text: "<available_skills>skills</available_skills>"}
+            {type: "text", text: "## Available skills\n\n- skills"}
           ]
         }])
       }
@@ -177,7 +177,7 @@ class TracingOpenTelemetryTest < Minitest::Test
     assert_equal "application/json", model_span.attributes.fetch("input.mime_type")
     assert_equal ["system"], input_messages.map { |message| message.fetch("role") }
     assert_equal(
-      ["instructions", "<available_skills>skills</available_skills>"],
+      ["instructions", "## Available skills\n\n- skills"],
       input_messages.first.fetch("parts").map { |part| part.fetch("content") }
     )
     definitions = JSON.parse(model_span.attributes.fetch("gen_ai.tool.definitions"))

@@ -729,13 +729,12 @@ module LittleGhost
     # Streams one invocation as StreamEvent objects.
     #
     # Agents built inside a run accept history, JSON-like context, cancellation,
-    # deadlines, settings, and trusted invocation template paths. An Agent
+    # deadlines, settings, and invocation-specific prompt roots. An Agent
     # instance may be streamed only by its owning Run. Every template path must
-    # be an application-created TrustedPath;
-    # the wrapper records a trust decision and must never contain unchecked
-    # request or model input. A run-scoped Agent accepts one active invocation;
-    # enumerating an overlapping stream raises AgentBusyError. The instance may
-    # be invoked again after the first stream completes or fails.
+    # be an application-created TrustedPath, never a value selected by a request
+    # or model. A run-scoped Agent accepts one active invocation; enumerating an
+    # overlapping stream raises AgentBusyError. The instance may be invoked
+    # again after the first stream completes or fails.
     def stream(
       input = nil,
       history: nil,

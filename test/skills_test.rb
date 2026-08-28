@@ -23,8 +23,8 @@ class SkillsTest < Minitest::Test
       catalog = LittleGhost::Skills::Catalog.new(paths: directory)
 
       assert_equal ["review"], catalog.names
-      assert_includes catalog.discovery_prompt, "<name>review</name>"
-      assert_includes catalog.discovery_prompt, "<description>Review code carefully</description>"
+      assert_includes catalog.discovery_prompt, "**Name:** review"
+      assert_includes catalog.discovery_prompt, "**Description:** Review code carefully"
       result = catalog.tool.new.execute({"skill_name" => "review"})
       assert_includes result.content, "Read every changed file."
       assert_includes result.content, "Allowed tools: Read, Grep"
@@ -181,7 +181,7 @@ class SkillsTest < Minitest::Test
         review = catalog.fetch("review")
         assert_equal "/skills/review/SKILL.md", review.path
         assert_equal File.realpath(File.join(first_directory, "SKILL.md")), review.source_path
-        assert_includes catalog.discovery_prompt, "<location>/skills/review/SKILL.md</location>"
+        assert_includes catalog.discovery_prompt, "**Location:** /skills/review/SKILL.md"
         result = catalog.tool.new.execute({"skill_name" => "review"})
         assert_includes result.content, "Location: /skills/review/SKILL.md"
         assert_includes result.content, "/skills/review/references/guide.md"
