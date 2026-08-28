@@ -412,7 +412,7 @@ module LittleGhost
     end
 
     def build_tool_assembly
-      child = runtime.build_assembly(self.class, run:, agent_stream_path:)
+      child = runtime.build_assembly(@assembly_definition || self.class, run:, agent_stream_path:)
       child.bind_agent_stream_path(agent_stream_path)
       child
     end
