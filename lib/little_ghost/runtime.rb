@@ -321,7 +321,10 @@ module LittleGhost
         return build_agent(assembly_class_or_name, run:, agent_stream_path:, **options) if assembly_class_or_name.kind == :agent
         raise ArgumentError, "composite assembly definitions do not accept agent build options" unless options.empty?
 
-        return assembly_class_or_name.implementation.new(run:, runtime: self).bind_agent_stream_path(agent_stream_path)
+        return assembly_class_or_name.implementation
+            .new(run:, runtime: self)
+            .bind_assembly_definition(assembly_class_or_name)
+            .bind_agent_stream_path(agent_stream_path)
       end
       if !assembly_class_or_name.is_a?(Class) || assembly_class_or_name <= Agent
         return build_agent(assembly_class_or_name, run:, agent_stream_path:, **options)

@@ -131,8 +131,12 @@ module LittleGhost
 
     def declared_assembly(declaration, run, agent_stream_path:)
       assembly_class = declaration.fetch(:assembly)
-      if assembly_class.is_a?(AssemblyDefinition) && assembly_class.kind == :agent
-        declared_agent(declaration.merge(agent: assembly_class.implementation), run, agent_stream_path:)
+      if assembly_class.is_a?(AssemblyDefinition)
+        if assembly_class.kind == :agent
+          declared_agent(declaration.merge(agent: assembly_class.implementation), run, agent_stream_path:)
+        else
+          runtime.build_assembly(assembly_class, run:, agent_stream_path:)
+        end
       elsif assembly_class <= Agent
         declared_agent(declaration.merge(agent: assembly_class), run, agent_stream_path:)
       else

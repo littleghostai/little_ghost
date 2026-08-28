@@ -1919,6 +1919,37 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
+  def test_agent_definition_builds_declared_workflow_tools
+    workflow = Class.new(LittleGhost::Workflow) do
+      assembly_id "account_summary"
+      description "Summarizes an account"
+
+      private
+
+      def perform = {status: "ready"}
+    end
+    parent = Class.new(LittleGhost::Agent) do
+      model "main"
+      system_prompt "Parent"
+      assembly_as_tool workflow
+    end
+
+    with_runtime(agent: parent) do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
+      agent = harness.build_agent(parent.definition, run:)
+
+      result = agent.tool_registry.fetch("account_summary").execute({"input" => "summarize"})
+      second_result = agent.tool_registry.fetch("account_summary").execute({"input" => "summarize again"})
+
+      assert result.success?, result.error&.full_message
+      assert second_result.success?, second_result.error&.full_message
+      assert_equal({"status" => "ready"}, result.value)
+    ensure
+      agent&.close
+      run&.close
+    end
+  end
+
   def test_sessions_restore_history_and_persist_the_result
     store = LittleGhost::SessionStores::Memory.new
     store.replace(
