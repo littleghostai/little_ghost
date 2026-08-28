@@ -41,9 +41,9 @@ module LittleGhost
   # Agent declarations are inherited. Define a short prompt inline, or place a
   # growing prompt in <tt>app/prompts/customer_support/system_prompt.erb</tt> for
   # +CustomerSupportAgent+. The {Prompts as Views guide}[rdoc-ref:docs/guides/prompt_views.md]
-  # explains conventional lookup, action-prepared values, locals, and partials. Optional features such
-  # as skills, context management, loop detection, and delegation stay inactive
-  # until their DSL is used.
+  # explains conventional lookup, values prepared by the Agent, locals, and
+  # partials. Optional features such as skills, context management, loop
+  # detection, and delegation stay inactive until their DSL is used.
   #
   # Models may return text or locally validated structured data. LittleGhost
   # hides unexpected Tool exception messages from the model. See
@@ -832,19 +832,28 @@ module LittleGhost
     #   system_prompt() -> Object
     #
     # Prepares application values for a file-backed system prompt. Override this
-    # action, assign instance variables, and reference them from the ERB view:
+    # method, assign instance variables, and read them from the ERB view:
     #
     #   def system_prompt
     #     @company_name = "Northstar"
     #   end
     #
-    # LittleGhost calls the action once immediately before each template render.
-    # Its return value is ignored, and exceptions stop the invocation. Inline
-    # system prompts do not call this action. Subclasses may call +super+ to
-    # retain assigns prepared by a parent class. Each action starts from the
-    # application assigns established during initialization. Its changes are
-    # copied into the view context, then the Agent's current state is immediately
-    # restored, including after a failed action.
+    # In <tt>app/prompts/customer_support/system_prompt.erb</tt>:
+    #
+    #   You help customers of <%= @company_name %>.
+    #
+    # LittleGhost calls the action once before rendering the top-level prompt
+    # view. Partials share its prepared values without calling it again. Its
+    # return value is ignored. If it raises, the invocation fails with that
+    # exception. An inline prompt declared on the Agent class takes precedence
+    # and does not call this method.
+    #
+    # Each render starts with the application instance variables captured after
+    # the Agent's +after_initialize+ callbacks finish. LittleGhost copies the
+    # prepared values into the view, then restores the Agent's live instance
+    # variables, even when this method raises. Objects are not duplicated, so
+    # treat mutable values as read-only or assign a copy. Subclasses may call
+    # +super+ before preparing additional values.
     def system_prompt
     end
 

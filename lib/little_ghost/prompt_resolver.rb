@@ -61,7 +61,7 @@ module LittleGhost
   #
   # In +support/system_prompt.erb+:
   #
-  #   <%= partial "shared/rules" %>
+  #   You support <%= @product %> customers.
   #
   # Earlier invocation roots override configured roots. Template names must be
   # relative, and both lexical traversal and symbolic-link escapes are rejected.
@@ -86,10 +86,14 @@ module LittleGhost
       @cache_mutex = Mutex.new
     end
 
-    # Renders +name+ with validated local variables and application assigns.
-    # Assign keys become instance variables in the isolated ERB context and are
-    # inherited by partials. Names beginning with <tt>_little_ghost_</tt> are
-    # reserved for rendering internals. Ordinary partial locals remain explicit.
+    # Renders the ERB template named by +name+ and returns its String output.
+    # Keys in +locals+ become local variables. Keys in +assigns+ become instance
+    # variables and remain available in partials. A partial receives ordinary
+    # locals only when its caller passes them explicitly.
+    #
+    # Local and assign names must begin with a lowercase letter or underscore and
+    # contain only letters, numbers, and underscores. Assign names beginning with
+    # <tt>_little_ghost_</tt> are reserved for rendering internals.
     #
     # +invocation_paths+ accepts only TrustedPath values because those roots
     # take precedence over application configuration. The wrapper records the
