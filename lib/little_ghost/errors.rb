@@ -26,6 +26,9 @@ module LittleGhost
   class CredentialError < ConfigurationError; end
   # Raised when an invocation payload or operation is invalid.
   class InvocationError < Error; end
+  # Raised when a run-scoped Agent is already handling another invocation.
+  # Wait for that invocation to finish or build a separate Agent before retrying.
+  class AgentBusyError < InvocationError; end
   # Base class for failures coordinating one or more assemblies.
   class AssemblyError < Error; end
   # Raised when an assembly exceeds its configured execution bound.

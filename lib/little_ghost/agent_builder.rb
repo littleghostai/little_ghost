@@ -104,12 +104,20 @@ module LittleGhost
       tools = []
       agent_class.assembly_tool_declarations.each do |declaration|
         child = declared_assembly(declaration, run, agent_stream_path:)
+        factory = if !declaration.fetch(:preserve_context) && child.is_a?(Agent)
+          -> { declared_assembly(declaration, run, agent_stream_path:) }
+        end
         begin
-          tools << child.as_tool(
+          options = {
             name: declaration.fetch(:name),
             description: declaration.fetch(:description),
             preserve_context: declaration.fetch(:preserve_context)
-          )
+          }
+          tools << if factory
+            child.as_tool_with_factory(**options, factory:)
+          else
+            child.as_tool(**options)
+          end
         rescue
           child.close
           raise

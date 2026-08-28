@@ -39,11 +39,11 @@ module LittleGhost
   # an explicitly isolated setup.
   #
   # Agent declarations are inherited. Define a short prompt inline, or place a
-  # growing prompt in <tt>app/prompts/customer_support/system.erb</tt> for
+  # growing prompt in <tt>app/prompts/customer_support/system_prompt.erb</tt> for
   # +CustomerSupportAgent+. The {Prompts as Views guide}[rdoc-ref:docs/guides/prompt_views.md]
-  # explains conventional lookup, locals, and partials. Optional features such
-  # as skills, context management, loop detection, and delegation stay inactive
-  # until their DSL is used.
+  # explains conventional lookup, values prepared by the Agent, locals, and
+  # partials. Optional features such as skills, context management, loop
+  # detection, and delegation stay inactive until their DSL is used.
   #
   # Models may return text or locally validated structured data. LittleGhost
   # hides unexpected Tool exception messages from the model. See
@@ -84,7 +84,6 @@ module LittleGhost
     class_attribute :system_prompt_builder_value
     class_attribute :tool_declarations_value, default: []
     class_attribute :code_mode_configuration_value
-    class_attribute :prompt_local_values, default: {}
     class_attribute :callback_values, default: Support::Callbacks.new(*CALLBACKS)
 
     class << self
@@ -283,16 +282,6 @@ module LittleGhost
       end
 
       def code_mode_configuration = code_mode_configuration_value # :nodoc:
-
-      # Adds a named value or resolver to every prompt rendered for the agent.
-      def prompt_local(name, *values, &resolver)
-        raise ArgumentError, "Provide a prompt local value or block" if values.empty? && !resolver
-        raise ArgumentError, "Provide a prompt local value or block, not both" unless values.empty? || !resolver
-
-        self.prompt_local_values = prompt_local_values.merge(name.to_sym => resolver || values.fetch(0))
-      end
-
-      def prompt_local_resolvers = prompt_local_values # :nodoc:
 
       def callbacks = callback_values # :nodoc:
 
@@ -539,7 +528,8 @@ module LittleGhost
     # The first form is the application-facing entrypoint. It may be reused for
     # independent concurrent calls and creates a fresh Run for each one. The
     # second form is run-scoped; Runtime builders supply its dependencies and it
-    # must not outlive or be shared outside its owning Run.
+    # must not outlive its owning Run. Calls on a run-scoped instance must be
+    # sequential. An overlapping call raises AgentBusyError when its stream begins.
     def initialize(
       model: nil,
       runtime: nil,
@@ -606,6 +596,8 @@ module LittleGhost
       @assembly_transitions = {}
       @assembly_tool_batch_sizes = {}
       @assembly_transition = nil
+      @_little_ghost_invocation_mutex = Mutex.new
+      @_little_ghost_invocation_active = false
       raise ArgumentError, "max_turns must be at least 1" if @max_turns < 1
       raise ArgumentError, "max_tool_calls must be at least 1" if @max_tool_calls < 1
       raise ArgumentError, "max_tool_result_tokens must be at least 1" if @max_tool_result_tokens < 1
@@ -613,6 +605,7 @@ module LittleGhost
         resolved_runtime.runtime_hooks.find { |hook| hook.is_a?(Runtime::Hooks::Artifacts) }
       end
       apply_cancellation_decision!(run_callbacks(:after_initialize, self))
+      @_little_ghost_prompt_assign_baseline = prompt_application_state.freeze
     rescue
       @tool_registry&.close
       @code_mode_runtime&.close
@@ -658,7 +651,7 @@ module LittleGhost
 
     # Adds an interjection and returns the model's immediate result details.
     #
-    # Use +target_operation_id+ when an agent has multiple active invocations.
+    # +target_operation_id+ may identify the active model operation.
     # Messages may contain only text, image, or document content. The returned
     # result value exposes +text+, +tool_calls?+, +interjection_ids+, and
     # +batch_key+; tool calls may continue after this result. Depend on these
@@ -733,7 +726,9 @@ module LittleGhost
     # instance may be streamed only by its owning Run. Every template path must
     # be an application-created TrustedPath;
     # the wrapper records a trust decision and must never contain unchecked
-    # request or model input.
+    # request or model input. A run-scoped Agent accepts one active invocation;
+    # enumerating an overlapping stream raises AgentBusyError. The instance may
+    # be invoked again after the first stream completes or fails.
     def stream(
       input = nil,
       history: nil,
@@ -778,18 +773,21 @@ module LittleGhost
       end
       settings = @model_settings.merge(settings)
       Enumerator.new do |events|
+        invocation_acquired = false
         interjections = AgentInterjections.new
-        run_context = RunContext.new(
-          state: context,
-          cancellation_token: cancellation_token,
-          deadline: deadline,
-          metadata: {agent_id: self.class.agent_id},
-          checkpoint:,
-          conversation_id:,
-          interjection_metadata:,
-          interjection_ids:
-        )
         begin
+          begin_invocation!
+          invocation_acquired = true
+          run_context = RunContext.new(
+            state: context,
+            cancellation_token: cancellation_token,
+            deadline: deadline,
+            metadata: {agent_id: self.class.agent_id},
+            checkpoint:,
+            conversation_id:,
+            interjection_metadata:,
+            interjection_ids:
+          )
           with_invocation(run_context) do
             execute(
               input,
@@ -808,23 +806,55 @@ module LittleGhost
           interjections.close(error)
           raise
         ensure
-          @code_mode_runtime&.close(context: run_context)
-          interjections.close(AgentInterjectionError.new("Agent finished before the interjection was delivered"))
-          unregister_interjections(interjections)
+          cleanup_error = nil
+          begin
+            @code_mode_runtime&.close(context: run_context) if run_context
+          rescue => error
+            cleanup_error = error
+          end
+          begin
+            interjections.close(AgentInterjectionError.new("Agent finished before the interjection was delivered"))
+          rescue => error
+            cleanup_error ||= error
+          ensure
+            begin
+              unregister_interjections(interjections)
+            ensure
+              end_invocation! if invocation_acquired
+            end
+          end
+          raise cleanup_error if cleanup_error
         end
       end
     end
 
-    # Materializes and freezes the prompt locals declared on the agent class.
-    def prompt_locals
-      self.class.prompt_local_resolvers.to_h do |name, resolver|
-        value = if resolver.respond_to?(:call)
-          resolver.parameters.empty? ? instance_exec(&resolver) : resolver.call(self)
-        else
-          resolver
-        end
-        [name, value]
-      end.freeze
+    # :call-seq:
+    #   system_prompt() -> Object
+    #
+    # Prepares application values for a file-backed system prompt. Override this
+    # method, assign instance variables, and read them from the ERB view:
+    #
+    #   def system_prompt
+    #     @company_name = "Northstar"
+    #   end
+    #
+    # In <tt>app/prompts/customer_support/system_prompt.erb</tt>:
+    #
+    #   You help customers of <%= @company_name %>.
+    #
+    # LittleGhost calls the action once before rendering the top-level prompt
+    # view. Partials share its prepared values without calling it again. Its
+    # return value is ignored. If it raises, the invocation fails with that
+    # exception. An inline prompt declared on the Agent class takes precedence
+    # and does not call this method.
+    #
+    # Each render starts with the application instance variables captured after
+    # the Agent's +after_initialize+ callbacks finish. LittleGhost copies the
+    # prepared values into the view, then restores the Agent's live instance
+    # variables, even when this method raises. Objects are not duplicated, so
+    # treat mutable values as read-only or assign a copy. Subclasses may call
+    # +super+ before preparing additional values.
+    def system_prompt
     end
 
     # The Tool registry available during this Agent run.
@@ -886,6 +916,72 @@ module LittleGhost
     end
 
     private
+
+    PROTECTED_PROMPT_INSTANCE_VARIABLES = %i[
+      @active_assemblies @active_interjections @agent_path @agent_stream_path
+      @artifact_lifecycle @assembly_closed @assembly_definition @assembly_mutex
+      @assembly_tool_batch_sizes @assembly_transition @assembly_transitions
+      @assembly_transitions_mutex @close_mutex @closed @code_mode_declaration
+      @code_mode_runtime @delegation_activity @exclusive_tools_mutex @executor
+      @interjections_mutex @max_tool_calls @max_tool_result_tokens @max_turns
+      @model @model_settings @owns_resources @run @runtime @sandbox @standalone
+      @structured_output_strategy @task_runner @template_resolver @tool_loop_except
+      @tool_loop_fallback @tool_loop_mutex @tool_loop_runs @tool_loop_terminate_at
+      @tool_loop_warning_at @tool_registry @workspace
+      @_little_ghost_invocation_active @_little_ghost_invocation_mutex
+    ].freeze # :nodoc:
+
+    def begin_invocation!
+      @_little_ghost_invocation_mutex.synchronize do
+        if @_little_ghost_invocation_active
+          raise AgentBusyError,
+            "Agent is already handling an invocation; use the Agent class entrypoint or a fresh Agent for independent calls"
+        end
+
+        @_little_ghost_invocation_active = true
+      end
+    end
+
+    def end_invocation!
+      @_little_ghost_invocation_mutex.synchronize { @_little_ghost_invocation_active = false }
+    end
+
+    def prompt_view_assigns
+      names = prompt_application_instance_variables
+      names.to_h do |name|
+        [name.to_s.delete_prefix("@").to_sym, instance_variable_get(name)]
+      end
+    end
+
+    def prepare_prompt_view_assigns
+      saved = prompt_application_state
+      replace_prompt_application_state(@_little_ghost_prompt_assign_baseline)
+      begin
+        system_prompt
+        prompt_view_assigns
+      ensure
+        replace_prompt_application_state(saved)
+      end
+    end
+
+    def prompt_application_instance_variables
+      instance_variables.reject do |name|
+        PROTECTED_PROMPT_INSTANCE_VARIABLES.include?(name) || name.to_s.start_with?("@_little_ghost_")
+      end
+    end
+
+    def prompt_application_state
+      prompt_application_instance_variables.to_h do |name|
+        [name, instance_variable_get(name)]
+      end
+    end
+
+    def replace_prompt_application_state(state)
+      prompt_application_instance_variables.each { |name| remove_instance_variable(name) }
+      state.each do |name, value|
+        instance_variable_set(name, value)
+      end
+    end
 
     def entrypoint_payload(input, options)
       return options if input.nil?
@@ -2112,12 +2208,13 @@ module LittleGhost
       template = self.class.system_template
       return append_code_mode_instructions(DEFAULT_SYSTEM_PROMPT) if instance_of?(Agent) && run && !template
 
-      template ||= "#{self.class.logical_path}/system" if run
+      template ||= "#{self.class.logical_path}/system_prompt" if run
       return nil unless template
 
       append_code_mode_instructions(@template_resolver.render(
         template,
         locals: locals,
+        assigns: prepare_prompt_view_assigns,
         invocation_paths: invocation_paths
       ))
     end

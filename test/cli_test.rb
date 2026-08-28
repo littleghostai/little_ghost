@@ -449,7 +449,7 @@ class CLITest < Minitest::Test
       "README.md",
       "app/agents/#{directory_name}_agent.rb",
       "app/assemblies/.keep",
-      "app/prompts/#{directory_name}/system.erb",
+      "app/prompts/#{directory_name}/system_prompt.erb",
       "app/skills/.keep",
       "app/tools/.keep",
       "bin/little_ghost",

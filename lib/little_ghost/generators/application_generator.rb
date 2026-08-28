@@ -114,7 +114,7 @@ module LittleGhost
           ["gitignore.tt", ".gitignore"],
           ["config/little_ghost.rb.tt", "config/little_ghost.rb"],
           ["app/agents/application_agent.rb.tt", "app/agents/#{directory_name}_agent.rb"],
-          ["app/prompts/application/system.erb.tt", "app/prompts/#{directory_name}/system.erb"],
+          ["app/prompts/application/system_prompt.erb.tt", "app/prompts/#{directory_name}/system_prompt.erb"],
           ["bin/application.tt", "bin/little_ghost"],
           *EMPTY_DIRECTORIES.map { |directory| ["keep.tt", "#{directory}/.keep"] }
         ]

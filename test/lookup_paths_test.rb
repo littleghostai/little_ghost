@@ -46,9 +46,9 @@ class LookupPathsTest < Minitest::Test
   def test_runtime_paths_drive_prompt_and_skill_resolution
     Dir.mktmpdir do |application_root|
       Dir.mktmpdir do |shared_root|
-        write(application_root, "app/prompts/example/system.erb", "application")
+        write(application_root, "app/prompts/example/system_prompt.erb", "application")
         write(application_root, "app/skills/review/SKILL.md", skill("application"))
-        write(shared_root, "example/system.erb", "shared")
+        write(shared_root, "example/system_prompt.erb", "shared")
         write(shared_root, "review/SKILL.md", skill("shared"))
         configuration = LittleGhost::Configuration.new(root: application_root)
         configuration.prompt_paths << shared_root
@@ -58,7 +58,7 @@ class LookupPathsTest < Minitest::Test
         resolver = LittleGhost::PromptResolver.new(paths: runtime.prompt_paths)
         catalog = LittleGhost::Skills::Catalog.new(paths: runtime.skill_paths)
 
-        assert_equal "application", resolver.render("example/system")
+        assert_equal "application", resolver.render("example/system_prompt")
         assert_equal "shared", catalog.fetch("review").instructions
       end
     end

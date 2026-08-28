@@ -197,7 +197,7 @@ app/
 │   └── response_workflow.rb
 ├── prompts/
 │   └── customer_support/
-│       └── system.erb
+│       └── system_prompt.erb
 └── tools/
     └── help_center_lookup_tool.rb
 ```

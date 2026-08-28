@@ -102,6 +102,225 @@ class AgentTest < Minitest::Test
     assert_equal({provider: "openai", model: "gpt-5.6-luna"}, direct)
   end
 
+  def test_system_prompt_action_assigns_values_to_a_template_once_per_invocation
+    Dir.mktmpdir do |root|
+      File.write(File.join(root, "system.erb"), "<%= @name %>:<%= invocation.message.text %>")
+      calls = 0
+      agent_class = Class.new(LittleGhost::Agent) do
+        system_template "system"
+
+        define_method(:system_prompt) do
+          calls += 1
+          @name = "Superman"
+          "ignored"
+        end
+      end
+      model = ScriptedModel.new(response("done"), response("done again"))
+      agent = agent_class.new(
+        model:,
+        template_resolver: LittleGhost::PromptResolver.new(paths: [root])
+      )
+
+      agent.call("first", template_locals: {
+        invocation: LittleGhost::Invocation.new(message: "first"), run: nil, agent:
+      })
+      agent.call("second", template_locals: {
+        invocation: LittleGhost::Invocation.new(message: "second"), run: nil, agent:
+      })
+
+      assert_equal 2, calls
+      assert_equal ["Superman:first", "Superman:second"], model.requests.map { |request| request.messages.first.text }
+    ensure
+      agent&.close
+    end
+  end
+
+  def test_system_prompt_action_inherits_with_super_and_does_not_expose_framework_state
+    Dir.mktmpdir do |root|
+      File.write(
+        File.join(root, "system.erb"),
+        "<%= @base %>:<%= @child %>:<%= @runtime.inspect %>:<%= @_little_ghost_private.inspect %>"
+      )
+      parent = Class.new(LittleGhost::Agent) do
+        def system_prompt
+          @base = "base"
+        end
+      end
+      child = Class.new(parent) do
+        system_template "system"
+
+        def system_prompt
+          super
+          @child = "child"
+          @_little_ghost_private = "hidden"
+        end
+      end
+      model = ScriptedModel.new(response("done"))
+      agent = child.new(model:, template_resolver: LittleGhost::PromptResolver.new(paths: [root]))
+
+      agent.call("hello")
+
+      assert_equal "base:child:nil:nil", model.requests.first.messages.first.text
+    ensure
+      agent&.close
+    end
+  end
+
+  def test_system_prompt_action_errors_propagate
+    agent_class = Class.new(LittleGhost::Agent) do
+      system_template "system"
+
+      def system_prompt
+        raise "prompt failed"
+      end
+    end
+    resolver = Object.new
+    resolver.define_singleton_method(:render) { |*| raise "template should not render" }
+    agent = agent_class.new(model: ScriptedModel.new(response("done")), template_resolver: resolver)
+
+    error = assert_raises(RuntimeError) { agent.call("hello") }
+
+    assert_equal "prompt failed", error.message
+  ensure
+    agent&.close
+  end
+
+  def test_system_prompt_action_assigns_are_reset_before_sequential_reuse
+    Dir.mktmpdir do |root|
+      File.write(File.join(root, "system.erb"), "<%= @conditional.inspect %>")
+      calls = 0
+      agent_class = Class.new(LittleGhost::Agent) do
+        system_template "system"
+
+        define_method(:system_prompt) do
+          calls += 1
+          @conditional = "first" if calls == 1
+        end
+      end
+      model = ScriptedModel.new(response("first"), response("second"))
+      agent = agent_class.new(model:, template_resolver: LittleGhost::PromptResolver.new(paths: [root]))
+
+      agent.call("first")
+      agent.call("second")
+
+      assert_equal ["\"first\"", "nil"], model.requests.map { |request| request.messages.first.text }
+    ensure
+      agent&.close
+    end
+  end
+
+  def test_failed_system_prompt_action_assigns_are_reset_before_retry
+    Dir.mktmpdir do |root|
+      File.write(File.join(root, "system.erb"), "<%= @conditional.inspect %>")
+      calls = 0
+      agent_class = Class.new(LittleGhost::Agent) do
+        system_template "system"
+
+        define_method(:system_prompt) do
+          calls += 1
+          if calls == 1
+            @conditional = "leaked"
+            raise "prompt failed"
+          end
+        end
+      end
+      model = ScriptedModel.new(response("done"))
+      agent = agent_class.new(model:, template_resolver: LittleGhost::PromptResolver.new(paths: [root]))
+
+      assert_raises(RuntimeError) { agent.call("first") }
+      agent.call("second")
+
+      assert_equal "nil", model.requests.first.messages.first.text
+    ensure
+      agent&.close
+    end
+  end
+
+  def test_system_prompt_action_starts_from_initialization_assigns_without_exporting_callback_state
+    Dir.mktmpdir do |root|
+      File.write(
+        File.join(root, "system.erb"),
+        "<%= @baseline %>:<%= @status %>:<%= @secret.inspect %>"
+      )
+      calls = 0
+      agent_class = Class.new(LittleGhost::Agent) do
+        system_template "system"
+        after_initialize do
+          @baseline = "base"
+          @status = "initial"
+        end
+        after_invocation do
+          @status = "callback"
+          @secret = "hidden"
+        end
+
+        define_method(:system_prompt) do
+          calls += 1
+          @status = "prompt" if calls == 1
+        end
+      end
+      model = ScriptedModel.new(response("first"), response("second"))
+      agent = agent_class.new(model:, template_resolver: LittleGhost::PromptResolver.new(paths: [root]))
+
+      agent.call("first")
+      agent.call("second")
+
+      assert_equal ["base:prompt:nil", "base:initial:nil"], model.requests.map { |request| request.messages.first.text }
+      assert_equal "callback", agent.instance_variable_get(:@status)
+      assert_equal "hidden", agent.instance_variable_get(:@secret)
+    ensure
+      agent&.close
+    end
+  end
+
+  def test_baseline_is_captured_before_an_earlier_inline_invocation_updates_callback_state
+    Dir.mktmpdir do |root|
+      File.write(File.join(root, "system.erb"), "<%= @secret.inspect %>")
+      calls = 0
+      agent_class = Class.new(LittleGhost::Agent) do
+        system_prompt do
+          calls += 1
+          "Inline" if calls == 1
+        end
+        system_template "system"
+        after_invocation { @secret = "hidden" }
+      end
+      model = ScriptedModel.new(response("first"), response("second"))
+      agent = agent_class.new(model:, template_resolver: LittleGhost::PromptResolver.new(paths: [root]))
+
+      agent.call("first")
+      agent.call("second")
+
+      assert_equal ["Inline", "nil"], model.requests.map { |request| request.messages.first.text }
+      assert_equal "hidden", agent.instance_variable_get(:@secret)
+    ensure
+      agent&.close
+    end
+  end
+
+  def test_inline_system_prompt_does_not_call_the_system_prompt_action
+    calls = 0
+    agent_class = Class.new(LittleGhost::Agent) do
+      system_prompt "Inline"
+
+      define_method(:system_prompt) { calls += 1 }
+    end
+    model = ScriptedModel.new(response("done"))
+    agent = agent_class.new(model:)
+
+    agent.call("hello")
+
+    assert_equal 0, calls
+    assert_equal "Inline", model.requests.first.messages.first.text
+  ensure
+    agent&.close
+  end
+
+  def test_prompt_local_dsl_is_not_available
+    refute_respond_to Class.new(LittleGhost::Agent), :prompt_local
+    refute_includes LittleGhost::AgentBuilder::DECLARATIONS, :prompt_local
+  end
+
   def test_model_dsl_rejects_unsupported_declarations
     error = assert_raises(LittleGhost::ConfigurationError) do
       Class.new(LittleGhost::Agent) { model 123 }
@@ -1439,7 +1658,7 @@ class AgentTest < Minitest::Test
       agent = agent_class.new(model:, run:)
 
       assert_equal %w[write_todos skills].sort, agent.tool_registry.names.sort
-      assert_includes agent.prompt_locals.fetch(:skills_prompt), "inspect"
+      assert_includes agent.send(:skills_prompt), "inspect"
       decision = agent.send(
         :include_skills_prompt,
         {messages: [LittleGhost::Message.new(role: :system, content: "Base instructions")]}

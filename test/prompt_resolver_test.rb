@@ -47,6 +47,22 @@ class PromptResolverTest < Minitest::Test
     assert_equal "Hello Ghost! Value: 42", result
   end
 
+  def test_renders_assigns_in_parent_and_partial_without_inheriting_parent_locals
+    write(@application, "agents/system.erb", '<%= @name %>:<%= partial "detail" %>')
+    write(@application, "agents/_detail.erb", "<%= @name %>")
+
+    result = @resolver.render("agents/system", assigns: {name: "Ghost"})
+
+    assert_equal "Ghost:Ghost", result
+  end
+
+  def test_rejects_invalid_and_framework_reserved_assign_names
+    write(@application, "system.erb", "prompt")
+
+    assert_raises(ArgumentError) { @resolver.render("system", assigns: {"not-valid" => true}) }
+    assert_raises(ArgumentError) { @resolver.render("system", assigns: {_little_ghost_state: true}) }
+  end
+
   def test_partial_does_not_implicitly_inherit_parent_locals
     write(@application, "system.erb", "<%= partial \"detail\" %>")
     write(@application, "_detail.erb", "<%= secret %>")

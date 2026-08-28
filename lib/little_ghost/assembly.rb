@@ -256,7 +256,29 @@ module LittleGhost
     # the invoking Tool's current RunContext#state, which may include current
     # request values or values restored from a Session. Nested tools must still
     # authorize privileged work with current, application-established values.
+    # A directly bound Agent remains the target for every call, so overlapping
+    # calls raise AgentBusyError. Class-level Agent#agent_as_tool declarations
+    # build a fresh Agent per context-free call.
     def as_tool(name: self.class.assembly_id, description: self.class.description, preserve_context: false)
+      build_tool(name:, description:, preserve_context:, factory: nil)
+    end
+
+    def as_tool_with_factory(name:, description:, preserve_context:, factory:) # :nodoc:
+      first_target = self
+      first_target_mutex = Mutex.new
+      target_factory = lambda do
+        first_target_mutex.synchronize do
+          target = first_target
+          first_target = nil
+          target
+        end || factory.call
+      end
+      build_tool(name:, description:, preserve_context:, factory: target_factory)
+    end
+
+    private
+
+    def build_tool(name:, description:, preserve_context:, factory:)
       assembly = self
       description = "Delegate a task to #{name}." if description.to_s.empty?
       mutex = Mutex.new
@@ -272,7 +294,10 @@ module LittleGhost
         }
       ) do |input, context: nil|
         invocation = lambda do
-          target = if assembly.is_a?(Agent)
+          factory_target = !factory.nil?
+          target = if factory_target
+            factory.call
+          elsif assembly.is_a?(Agent)
             assembly
           elsif assembly.run
             assembly.send(:build_tool_assembly)
@@ -301,7 +326,7 @@ module LittleGhost
           retained_history.replace(result.messages.reject { |message| message.role == :system }) if preserve_context
           result.structured? ? result.structured_result.value : result.text
         ensure
-          target&.close unless target.equal?(assembly)
+          target&.close if factory_target || !target.equal?(assembly)
         end
         preserve_context ? mutex.synchronize(&invocation) : invocation.call
       end
@@ -315,6 +340,8 @@ module LittleGhost
         sandbox:
       ))
     end
+
+    public
 
     # Adds an interjection to the single active leaf Agent.
     def interject(message, **options)
