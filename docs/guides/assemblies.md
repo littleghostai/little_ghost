@@ -15,7 +15,7 @@ run = entrypoint.ask(question)
 
 ## Use a Workflow for explicit application logic
 
-A Workflow's `perform` method is ordinary Ruby. Inside it, `invoke` prepares a child call. Read `.output` when you need an intermediate answer. Return the final `invoke` call untouched so its response can stream to the caller.
+A Workflow's `perform` method is ordinary Ruby. Inside it, `invoke` prepares a child call. Read `.output` when you need an intermediate answer. Return the final `invoke` call untouched so its response can stream to the caller, or return a value that Ruby computes from the intermediate answers.
 
 ```ruby
 class ResponseWorkflow < LittleGhost::Workflow
@@ -41,25 +41,37 @@ Every participant passed to `invoke` can be an Agent or another Assembly. By def
 
 Each child Agent keeps its own [prompt view](prompt_views.md). The Workflow supplies request-specific input; it does not replace that Agent's reusable system instructions.
 
-The last child is special because its events become the Workflow's public stream. Return that `invoke` without consuming it:
+The last child is special when its events should become the Workflow's public stream. Return that `invoke` without consuming it:
 
 ```ruby
-# Wrong: this returns a String after consuming the final invocation.
-def perform
-  invoke(CustomerSupportAgent).output
-end
-
-# Right: this returns the lazy invocation itself.
 def perform
   invoke CustomerSupportAgent
 end
 ```
 
-The first version produces a failed top-level Run whose error is `ProtocolError`. Use `.output` only when Ruby needs an intermediate answer before choosing the next step.
+When Ruby should compute the caller-visible result, consume every child and return the computed value:
+
+```ruby
+class EvidenceWorkflow < LittleGhost::Workflow
+  private
+
+  def perform
+    findings = parallel(
+      invoke(LedgerResearchAgent),
+      invoke(PolicyResearchAgent),
+      max_concurrency: 2
+    )
+
+    {"findings" => findings}
+  end
+end
+```
+
+A returned String becomes the Workflow's textual response. Arrays, mappings, numbers, and booleans become a structured result available through `RunResult#output`, including when the Workflow is exposed with `assembly_as_tool`. Direct structured results must be JSON-compatible and stay within LittleGhost's structured-result size, depth, and complexity limits. Return an explicit value: `nil` remains a `ProtocolError`, which catches forgotten returns.
 
 ### Choose a branch in Ruby
 
-Each branch should end with its final unconsumed invocation:
+Each branch should end with its final unconsumed invocation or a directly computed value:
 
 ```ruby
 class RoutedResponseWorkflow < LittleGhost::Workflow
