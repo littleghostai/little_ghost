@@ -17,8 +17,8 @@ class AgentToolLoopTest < Minitest::Test
     fourth_before = run_callback(agent, :before_tool, {tool_use: tool_use.with(id: "4"), tool: tool}, context)
 
     assert first.continue?
-    assert_includes second.value.fetch(:result).content, LittleGhost::Agent::ToolLoop::WARNING
-    assert_includes third.value.fetch(:result).content, LittleGhost::Agent::ToolLoop::FINAL_WARNING
+    assert_includes second.value.fetch(:result).content, framework_prompt("tools/loop/notices/warning")
+    assert_includes third.value.fetch(:result).content, framework_prompt("tools/loop/notices/final_warning")
     assert fourth_before.cancel?
     assert_raises(LittleGhost::ToolLoopError) { run_callback(agent, :before_model, {}, context) }
   end
@@ -81,7 +81,7 @@ class AgentToolLoopTest < Minitest::Test
     warning = call_tool(agent, use.with(id: "2"), tool, execution("same"), context)
 
     assert warning.replace?
-    assert_includes warning.value.fetch(:result).content, LittleGhost::Agent::ToolLoop::WARNING
+    assert_includes warning.value.fetch(:result).content, framework_prompt("tools/loop/notices/warning")
   end
 
   def test_bounds_invocation_state_left_by_failed_runs
@@ -111,7 +111,7 @@ class AgentToolLoopTest < Minitest::Test
 
     next_call = call_tool(agent, first.with(id: "3"), tool, execution("same"), context)
     assert next_call.replace?
-    assert_includes next_call.value.fetch(:result).content, LittleGhost::Agent::ToolLoop::WARNING
+    assert_includes next_call.value.fetch(:result).content, framework_prompt("tools/loop/notices/warning")
   end
 
   def test_still_working_subagent_waits_do_not_count_as_repetitions
@@ -175,6 +175,10 @@ class AgentToolLoopTest < Minitest::Test
   end
 
   private
+
+  def framework_prompt(key)
+    LittleGhost::FrameworkPrompts.new.render(key)
+  end
 
   def build_agent
     agent_class = Class.new(LittleGhost::Agent) do

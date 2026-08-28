@@ -1,0 +1,11 @@
+<%#
+# Key: skills/feedback/unknown
+# Purpose: Unknown-skill Tool feedback.
+# Used: Returned to the model when LittleGhost produces unknown-skill Tool feedback.
+# Locals:
+# - name: Name of the Tool, skill, path, or resource referenced by the prompt.
+# - available: Names available for the model to choose from.
+# Constraints:
+# - Must render non-blank.
+-%>
+Unknown skill: <%= name %><% unless available.empty? %>. Available skills: <%= available.join(", ") %><% end %>

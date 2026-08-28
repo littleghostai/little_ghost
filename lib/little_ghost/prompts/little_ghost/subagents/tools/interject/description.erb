@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/tools/interject/description
+# Purpose: Subagent interjection Tool description.
+# Used: Included in a Tool or Tool-input specification shown to the model as the subagent interjection Tool description.
+# Locals:
+# - None.
+# Constraints:
+# - Must render non-blank.
+-%>
+Interrupt an actively running subagent in its current turn. The message is added at the next model boundary. This call waits for that model response and reports its text, whether it also initiated tool work, and the current lifecycle state. Delivery does not stop the subagent; tool work from the response remains with it and the run may continue.

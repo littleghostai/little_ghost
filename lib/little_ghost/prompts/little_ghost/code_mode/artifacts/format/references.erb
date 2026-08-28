@@ -1,0 +1,12 @@
+<%#
+# Key: code_mode/artifacts/format/references
+# Purpose: Code-mode artifact reference appendix.
+# Used: Appended to code-mode Tool output when artifact content cannot be presented directly.
+# Locals:
+# - references: Collection of model-visible artifact references.
+# Constraints:
+# - Must render non-blank.
+# - This output is embedded inside a larger model-visible message.
+-%>
+Artifacts:
+<%= references.join("\n") %>

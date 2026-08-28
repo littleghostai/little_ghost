@@ -1,0 +1,13 @@
+<%#
+# Key: graph/context/format/previous_input
+# Purpose: Graph predecessor label.
+# Used: Included in model-visible content when LittleGhost needs the graph predecessor label.
+# Locals:
+# - name: Name of the Tool, skill, path, or resource referenced by the prompt.
+# - output: Model-visible output produced by the predecessor.
+# Constraints:
+# - Must render non-blank.
+# - This output is embedded inside a larger model-visible message.
+-%>
+From <%= name %>:
+<%= output %>

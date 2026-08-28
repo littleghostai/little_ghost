@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/feedback/message_limit
+# Purpose: Subagent message length feedback.
+# Used: Returned to the model when LittleGhost produces subagent message length feedback.
+# Locals:
+# - limit: Name or value of the exceeded limit.
+# Constraints:
+# - Must render non-blank.
+-%>
+Subagent messages cannot exceed <%= limit %> characters.

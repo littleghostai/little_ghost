@@ -15,13 +15,7 @@ module LittleGhost
     # retains fallback state on its instance.
     class WriteTodos < Tool
       tool_name "write_todos"
-      description <<~DESCRIPTION.strip
-        Replace the plan for meaningful multi-step work. Skip this for simple requests. Give the plan and every todo a
-        short user-facing title. Put longer private working notes in details. Publish the full list before substantive
-        work, allow at most one in-progress step, and replace the full list as work progresses. Preserve IDs for todos
-        that remain, update titles and statuses in place, never reuse an ID for a different todo, and remove todos that
-        no longer apply. Complete every remaining todo before the final response; use an empty list when no plan remains.
-      DESCRIPTION
+      description FrameworkPrompts.new.render("tools/built_in/write_todos/description")
       input_schema(
         type: "object",
         properties: {
@@ -51,13 +45,19 @@ module LittleGhost
         super(normalize_titles(input), context:)
       end
 
+      def description
+        framework_prompt("tools/built_in/write_todos/description")
+      end
+
       # Replaces the stored plan after enforcing progress and ID invariants.
       def call(input)
         todos = input.fetch("todos")
-        raise ToolError, "only one todo may be in progress" if todos.count { |todo| todo["status"] == "in_progress" } > 1
+        if todos.count { |todo| todo["status"] == "in_progress" } > 1
+          raise ToolError, framework_prompt("tools/built_in/write_todos/feedback/single_progress")
+        end
 
         ids = todos.map { |todo| todo.fetch("id") }
-        raise ToolError, "todo IDs must be unique" unless ids.uniq.length == ids.length
+        raise ToolError, framework_prompt("tools/built_in/write_todos/feedback/unique_ids") unless ids.uniq.length == ids.length
 
         if context
           context.state["little_ghost.plan"] ||= empty_plan

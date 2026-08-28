@@ -197,6 +197,7 @@ module LittleGhost
       usage = Usage.new
       error_emitted = false
       Enumerator.new do |events|
+        @framework_prompt_invocation_paths = template_paths
         members, current, topology = self.class.swarm_definition!
         steps = []
         transitions = Hash.new(0)
@@ -322,9 +323,11 @@ module LittleGhost
         description = member_description(member.agent)
         description.empty? ? id : "#{id}: #{description}"
       end.join("; ")
+      description = framework_prompt("swarm/tools/handoff/description", descriptions:)
+      prompt_renderer = method(:framework_prompt)
       Class.new(Tool) do
         tool_name "handoff_to_agent"
-        description "Hand the request to one available swarm member: #{descriptions}"
+        description description
         input_schema(
           type: "object",
           properties: {
@@ -343,7 +346,7 @@ module LittleGhost
             context: input["context"]
           }.compact.freeze
           agent.request_assembly_transition(payload, context: context)
-          "Handing off to #{payload.fetch(:agent_id)}."
+          prompt_renderer.call("swarm/handoff/notice", agent_id: payload.fetch(:agent_id))
         end
       end
     end
@@ -375,14 +378,24 @@ module LittleGhost
     def step_error_usage(error) = error.instance_variable_get(:@little_ghost_step_usage) || Usage.new
 
     def handoff_input(from:, transition:)
-      text = "Handoff from #{from}:\n#{transition.fetch(:message)}"
-      if transition[:context]
-        text << "\n\nAdditional context supplied by the previous agent:\n"
-        text << JSON.generate(transition.fetch(:context))
-      end
+      text = framework_prompt(
+        "swarm/handoff/request",
+        from:,
+        message: transition.fetch(:message),
+        context: transition[:context]
+      )
       Message.new(role: :user, content: text)
     rescue JSON::GeneratorError
       raise AssemblyRoutingError, "swarm handoff context must be JSON-compatible"
+    end
+
+    def framework_prompt(key, **locals)
+      prompts = FrameworkPrompts.for_runtime(runtime)
+      prompts.render(
+        key,
+        locals:,
+        invocation_paths: @framework_prompt_invocation_paths || []
+      )
     end
 
     def release_final_events(events, final)

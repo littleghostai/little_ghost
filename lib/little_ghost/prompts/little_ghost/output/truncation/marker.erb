@@ -1,0 +1,11 @@
+<%#
+# Key: output/truncation/marker
+# Purpose: Middle-truncation marker.
+# Used: Inserted into larger model-visible content as the middle-truncation marker.
+# Locals:
+# - removed_tokens: Approximate number of tokens removed by truncation.
+# Constraints:
+# - Must render non-blank.
+# - Keep this concise because it counts against the configured output token budget.
+-%>
+…<%= removed_tokens %> tokens truncated…

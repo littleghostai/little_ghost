@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/feedback/duplicate_path
+# Purpose: Duplicate subagent path feedback.
+# Used: Returned to the model when LittleGhost produces duplicate subagent path feedback.
+# Locals:
+# - path: Path or validation location referenced by the prompt.
+# Constraints:
+# - Must render non-blank.
+-%>
+Agent path <%= path.inspect %> already exists; choose a different task_name.

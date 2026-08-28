@@ -1,0 +1,28 @@
+<%#
+# Key: skills/tools/activate/content
+# Purpose: Activated skill instructions and metadata.
+# Used: Included in model-visible content when LittleGhost needs the activated skill instructions and metadata.
+# Locals:
+# - instructions: Complete instructions loaded from the selected skill.
+# - allowed_tools: Names of Tools the activated skill permits.
+# - compatibility: Optional compatibility guidance declared by the skill.
+# - location: Display location of the activated skill.
+# - resources: Resource paths exposed by the activated skill.
+# Constraints:
+# - Must render non-blank.
+-%>
+<%= instructions %>
+
+---
+<% unless allowed_tools.empty? -%>
+Allowed tools: <%= allowed_tools.join(", ") %>
+<% end -%>
+<% if compatibility -%>
+Compatibility: <%= compatibility %>
+<% end -%>
+Location: <%= location %>
+<% unless resources.empty? -%>
+
+Available resources:
+<%= resources.map { |path| "  #{path}" }.join("\n") %>
+<% end -%>

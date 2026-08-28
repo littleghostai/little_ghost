@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/feedback/interjection_chars_limit
+# Purpose: Subagent interjection length feedback.
+# Used: Returned to the model when LittleGhost produces subagent interjection length feedback.
+# Locals:
+# - limit: Name or value of the exceeded limit.
+# Constraints:
+# - Must render non-blank.
+-%>
+Subagent interjection messages cannot exceed <%= limit %> total characters.

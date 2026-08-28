@@ -31,6 +31,7 @@ class CLITest < Minitest::Test
 
     assert_equal 0, LittleGhost::CLI.new(["--help"], stdout:, stderr:).run
     assert_includes stdout.string, "little_ghost new APP_NAME"
+    assert_includes stdout.string, "little_ghost prompts copy --all"
     assert_empty stderr.string
 
     stdout = StringIO.new
@@ -437,6 +438,237 @@ class CLITest < Minitest::Test
       assert_includes output, "my_app"
       assert_includes output, "MyAppAgent"
     end
+  end
+
+  def test_lists_and_shows_bundled_framework_prompts
+    stdout = StringIO.new
+    stderr = StringIO.new
+
+    assert_equal 0, LittleGhost::CLI.new(["prompts", "list"], stdout:, stderr:).run
+    lines = stdout.string.lines
+    assert_equal lines.sort, lines
+    assert_includes lines, "agent/\tDefault Agent instructions and interjection prompts\t2 templates\n"
+    assert_includes lines, "output/\tShared model-visible output formatting\t1 template\n"
+    assert_empty stderr.string
+
+    stdout = StringIO.new
+    assert_equal 0, LittleGhost::CLI.new(["prompts", "list", "agent"], stdout:, stderr:).run
+    assert_equal [
+      "agent/interjections/\tAgent interjection behavior\t1 template\n",
+      "agent/system/\tSystem instructions\t1 template\n"
+    ], stdout.string.lines
+
+    stdout = StringIO.new
+    assert_equal 0, LittleGhost::CLI.new(["prompts", "list", "agent/system"], stdout:, stderr:).run
+    assert_equal "agent/system/default\tDefault system instruction\n", stdout.string
+
+    stdout = StringIO.new
+    assert_equal 0, LittleGhost::CLI.new(["prompts", "list", "agent", "--all"], stdout:, stderr:).run
+    assert_includes stdout.string, "agent/system/default\tDefault system instruction\n"
+    assert_includes stdout.string, "agent/interjections/instructions\tInstruction preceding an interjection\n"
+
+    stdout = StringIO.new
+    assert_equal 0, LittleGhost::CLI.new(
+      ["prompts", "show", "agent/system/default"],
+      stdout:,
+      stderr:
+    ).run
+    assert_equal File.binread(
+      LittleGhost::FrameworkPrompts.new.source("agent/system/default")
+    ), stdout.string
+    assert stdout.string.start_with?("<%#\n# Key: agent/system/default\n")
+    assert_empty stderr.string
+  end
+
+  def test_prompt_list_rejects_template_keys_unknown_prefixes_and_unsafe_arguments
+    {
+      ["prompts", "list", "agent/system/default"] => "use prompts show agent/system/default",
+      ["prompts", "list", "not/a/prefix"] => "Unknown framework prompt prefix",
+      ["prompts", "list", "../escape"] => "PREFIX must be a lowercase logical path",
+      ["prompts", "list", "agent", "extra"] => "at most one PREFIX",
+      ["prompts", "list", "--wat"] => "Unknown option",
+      ["prompts", "list", "--all", "--all"] => "--all may only be specified once"
+    }.each do |arguments, expected|
+      stdout = StringIO.new
+      stderr = StringIO.new
+
+      assert_equal 1, LittleGhost::CLI.new(arguments, stdout:, stderr:).run
+      assert_empty stdout.string
+      assert_includes stderr.string, expected
+    end
+  end
+
+  def test_copies_a_framework_prompt_to_the_default_runtime_location
+    Dir.mktmpdir do |directory|
+      stdout = StringIO.new
+      stderr = StringIO.new
+
+      assert_equal 0, LittleGhost::CLI.new(
+        ["prompts", "copy", "agent/system/default"],
+        stdout:,
+        stderr:,
+        current_directory: directory
+      ).run
+
+      destination = File.join(directory, "app/prompts/little_ghost/agent/system/default.erb")
+      assert_equal File.binread(
+        LittleGhost::FrameworkPrompts.new.source("agent/system/default")
+      ), File.binread(destination)
+      assert_includes stdout.string, destination
+      assert_empty stderr.string
+    end
+  end
+
+  def test_copies_to_an_agent_scoped_custom_root
+    Dir.mktmpdir do |directory|
+      stdout = StringIO.new
+      stderr = StringIO.new
+
+      assert_equal 0, LittleGhost::CLI.new(
+        [
+          "prompts", "copy", "agent/interjections/instructions",
+          "--root", "config/prompts", "--agent", "admin/customer_support"
+        ],
+        stdout:,
+        stderr:,
+        current_directory: directory
+      ).run
+
+      destination = File.join(
+        directory,
+        "config/prompts/admin/customer_support/little_ghost/agent/interjections/instructions.erb"
+      )
+      assert_path_exists destination
+      assert_includes stdout.string, destination
+      assert_empty stderr.string
+    end
+  end
+
+  def test_copy_all_refuses_existing_destinations_before_writing_any_prompt
+    Dir.mktmpdir do |directory|
+      existing = File.join(directory, "prompts/little_ghost/agent/interjections/instructions.erb")
+      FileUtils.mkdir_p(File.dirname(existing))
+      File.write(existing, "keep me")
+      stdout = StringIO.new
+      stderr = StringIO.new
+
+      assert_equal 1, LittleGhost::CLI.new(
+        ["prompts", "copy", "--all", "--root", "prompts"],
+        stdout:,
+        stderr:,
+        current_directory: directory
+      ).run
+
+      assert_equal "keep me", File.read(existing)
+      assert_empty stdout.string
+      assert_includes stderr.string, "Refusing to overwrite"
+      assert_equal [existing], Dir.glob(File.join(directory, "prompts/**/*")).reject { |path| File.directory?(path) }
+    end
+  end
+
+  def test_copy_all_writes_every_catalog_entry
+    Dir.mktmpdir do |directory|
+      stdout = StringIO.new
+      stderr = StringIO.new
+
+      assert_equal 0, LittleGhost::CLI.new(
+        ["prompts", "copy", "--all"],
+        stdout:,
+        stderr:,
+        current_directory: directory
+      ).run
+
+      copied = Dir.glob(File.join(directory, "app/prompts/little_ghost/**/*.erb"))
+      assert_equal LittleGhost::FrameworkPrompts.entries.length, copied.length
+      assert_equal copied.length, stdout.string.lines.length
+      assert_empty stderr.string
+    end
+  end
+
+  def test_prompt_commands_reject_unknown_keys_and_unsafe_arguments
+    [
+      ["prompts"],
+      ["prompts", "unknown"],
+      ["prompts", "show"],
+      ["prompts", "show", "not/a/key"],
+      ["prompts", "copy"],
+      ["prompts", "copy", "--all", "agent/system/default"],
+      ["prompts", "copy", "agent/system/default", "--root"],
+      ["prompts", "copy", "agent/system/default", "--agent", "../escape"],
+      ["prompts", "copy", "agent/system/default", "--force"]
+    ].each do |arguments|
+      Dir.mktmpdir do |directory|
+        stdout = StringIO.new
+        stderr = StringIO.new
+
+        assert_equal 1, LittleGhost::CLI.new(
+          arguments,
+          stdout:,
+          stderr:,
+          current_directory: directory
+        ).run
+        assert_empty stdout.string
+        assert_includes stderr.string, "Error:"
+        assert_empty Dir.children(directory)
+      end
+    end
+  end
+
+  def test_copy_rejects_a_root_that_is_not_a_directory
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "prompts")
+      File.write(root, "keep me")
+      stdout = StringIO.new
+      stderr = StringIO.new
+
+      assert_equal 1, LittleGhost::CLI.new(
+        ["prompts", "copy", "agent/system/default", "--root", root],
+        stdout:,
+        stderr:,
+        current_directory: directory
+      ).run
+
+      assert_equal "keep me", File.read(root)
+      assert_empty stdout.string
+      assert_includes stderr.string, "--root is not a directory"
+    end
+  end
+
+  def test_copy_refuses_symlinked_destination_components
+    [
+      ["app/prompts/little_ghost", []],
+      ["app/prompts/admin", ["--agent", "admin/customer_support"]]
+    ].each do |relative_symlink, arguments|
+      Dir.mktmpdir do |directory|
+        outside = Dir.mktmpdir
+        symlink = File.join(directory, relative_symlink)
+        FileUtils.mkdir_p(File.dirname(symlink))
+        File.symlink(outside, symlink)
+        stdout = StringIO.new
+        stderr = StringIO.new
+
+        assert_equal 1, LittleGhost::CLI.new(
+          ["prompts", "copy", "agent/system/default", *arguments],
+          stdout:,
+          stderr:,
+          current_directory: directory
+        ).run
+
+        assert_empty stdout.string
+        assert_includes stderr.string, "symbolic link"
+        assert_empty Dir.children(outside)
+      ensure
+        FileUtils.remove_entry(outside) if outside && File.exist?(outside)
+      end
+    end
+  end
+
+  def test_gem_packages_bundled_framework_prompt_templates
+    specification = Gem::Specification.load(File.expand_path("../little_ghost.gemspec", __dir__))
+    packaged = specification.files.grep(%r{\Alib/little_ghost/prompts/.+\.erb\z})
+
+    assert_equal LittleGhost::FrameworkPrompts.entries.length, packaged.length
+    assert_includes packaged, "lib/little_ghost/prompts/little_ghost/agent/system/default.erb"
   end
 
   private

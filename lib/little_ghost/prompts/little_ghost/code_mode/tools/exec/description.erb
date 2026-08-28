@@ -1,0 +1,10 @@
+<%#
+# Key: code_mode/tools/exec/description
+# Purpose: Code-mode exec Tool description.
+# Used: Included in a Tool or Tool-input specification shown to the model as the code-mode exec Tool description.
+# Locals:
+# - None.
+# Constraints:
+# - Must render non-blank.
+-%>
+Run one fresh code-mode program to orchestrate available tools. The program is observed for up to one minute. If it finishes, use the result directly. If it returns still_working, call wait to observe the same program.

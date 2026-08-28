@@ -169,6 +169,125 @@ Applications can add prompt lookup roots through `Configuration#prompt_paths`.
 Earlier roots win, so an application can override a view from a shared prompt
 package.
 
+## Override LittleGhost's framework prompts
+
+LittleGhost also uses prompt views for its own model-facing language: Tool
+descriptions, structured-result repair requests, context summaries, code-mode
+instructions, and similar framework messages. The gem includes a complete
+default catalog under the `little_ghost/` namespace. Inspect it from an
+application without searching the gem's source:
+
+```sh
+$ little_ghost prompts list
+$ little_ghost prompts list structured_output
+$ little_ghost prompts list structured_output/repair
+$ little_ghost prompts show structured_output/repair/request
+```
+
+The bare `list` command shows feature groups with template counts. Pass a group
+prefix to browse its immediate children, or use `list --all` to print every
+canonical key. Framework prompt keys follow `feature/component/purpose`, with
+`feedback` for conditions the model can correct and `errors` for operational
+failures. For example, built-in Tool descriptions live under
+`tools/built_in`, while JSON Schema feedback lives under
+`tools/validation/schema`.
+
+`show` prints the bundled ERB source. Every bundled template starts with a
+structured ERB comment that explains where LittleGhost renders it, its locals,
+and any formatting constraints. These headers use `<%# ... -%>`, so neither the
+comment nor its trailing newline enters the rendered prompt. Each interior line
+also starts with `#` so Ruby-aware editors recognize the whole header as a
+comment. A `#` line outside `<%# ... -%>` and an HTML comment are output text and
+would be sent to the model.
+
+Copy one template into the default application prompt root before editing it:
+
+```sh
+$ little_ghost prompts copy structured_output/repair/request
+```
+
+That creates
+`app/prompts/little_ghost/structured_output/repair/request.erb`. Use `--root` when the
+application configures a different prompt root:
+
+```sh
+$ little_ghost prompts copy structured_output/repair/request --root config/prompts
+```
+
+Use `--agent` when one Agent needs different wording from the rest of the
+application. Pass the Agent's logical path, which is its underscored class name
+without the `Agent` suffix:
+
+```sh
+$ little_ghost prompts copy structured_output/repair/request --agent customer_support
+```
+
+That creates
+`app/prompts/customer_support/little_ghost/structured_output/repair/request.erb`.
+Namespaced classes use a namespaced logical path, such as
+`Admin::CustomerSupportAgent` becoming `admin/customer_support`.
+
+Copy the complete catalog when an application deliberately wants to own every
+piece of framework wording:
+
+```sh
+$ little_ghost prompts copy --all
+```
+
+Copy commands refuse to overwrite any existing destination. With `--all`, the
+command checks every destination before it starts writing. Copied templates
+retain their invisible documentation headers so the override remains
+self-explanatory in the application.
+
+For every framework prompt that applies to an Agent invocation, LittleGhost
+uses the first matching template in this order:
+
+1. An invocation-specific `TrustedPath` root
+2. The Agent-scoped directory inside a configured prompt root
+3. The runtime-wide directory inside a configured prompt root
+4. The template bundled with LittleGhost
+
+Each root keeps the same `little_ghost/<key>.erb` namespace. Agent scope inserts
+the logical path before that namespace.
+
+Runtime-wide overrides normally live in the default `app/prompts` root. Add or
+replace configured roots when the application uses another location:
+
+```ruby
+LittleGhost.configure do |config|
+  config.prompt_paths = ["config/prompts", "app/prompts"]
+end
+```
+
+The uncommon invocation-specific layer is explicit because it can change model
+instructions for only one call:
+
+```ruby
+campaign_prompts = LittleGhost::TrustedPath.new(
+  path: File.expand_path("config/campaign_prompts", __dir__)
+)
+
+CustomerSupportAgent.ask(
+  "Where is my order?",
+  template_paths: [campaign_prompts]
+)
+```
+
+The invocation root would contain
+`little_ghost/structured_output/repair/request.erb`, just like a runtime root. Direct
+`LittleGhost.generate` calls accept the same `template_paths:` option.
+
+Only application code should construct a `TrustedPath`. Never build its path
+from request parameters, model output, Tool arguments, or other untrusted input.
+The wrapper records an application trust decision; it does not sanitize the
+directory or restrict what ERB can execute.
+
+Framework templates control model-facing language, not protocol roles, Tool
+names, schemas, validation behavior, security checks, or execution limits. A
+required template also cannot render as blank. LittleGhost is pre-1.0; template
+keys and their documented locals are maintained on a best-effort basis until
+1.0, so review release notes and copied overrides when upgrading.
+
 ## Treat views as application code
 
 Prompt views run as ERB inside the Ruby process and can call Ruby. Keep prompt

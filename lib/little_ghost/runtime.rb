@@ -76,6 +76,7 @@ module LittleGhost
     attr_reader :loader
     # Ordered directories searched for prompt templates.
     attr_reader :prompt_paths
+    attr_reader :framework_prompts # :nodoc:
     # Ordered directories searched for skill definitions.
     attr_reader :skill_paths
     # Root used for skill-owned resources, when configured.
@@ -136,7 +137,6 @@ module LittleGhost
         @invocation_class = @settings[:invocation] || Invocation
         @model_resolver = @settings.fetch(:model_resolver)
         @default_model = @settings.fetch(:default_model, "default").to_s
-        @model_operations = ModelOperations.new(model_resolver:)
 
         @startup_phase = "session_store"
         @session_store = build_session_store(@settings[:session_store])
@@ -144,7 +144,9 @@ module LittleGhost
 
         @startup_phase = "prompts"
         @prompt_paths = build_lookup_paths(:prompt_paths)
+        @framework_prompts = FrameworkPrompts.new(paths: @prompt_paths)
         @skill_paths = build_lookup_paths(:skill_paths)
+        @model_operations = ModelOperations.new(model_resolver:, framework_prompts:)
 
         @startup_phase = "agent_factory"
         @agent_factory = AgentFactory.new(
@@ -185,7 +187,7 @@ module LittleGhost
     end
 
     # :call-seq:
-    #   generate(model:, messages:, result_schema: nil, settings: {}, structured_result_repair_attempts: 1, cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
+    #   generate(model:, messages:, result_schema: nil, settings: {}, structured_result_repair_attempts: 1, template_paths: [], cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
     #
     # Generates one response through this Runtime's model resolver.
     #

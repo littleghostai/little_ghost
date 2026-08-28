@@ -18,7 +18,7 @@ module LittleGhost
       MAX_OUTPUT_BYTES = 1_000_000 # :nodoc:
 
       tool_name "shell"
-      description "Run one executable with arguments in the configured workspace. Shell syntax is not interpreted."
+      description FrameworkPrompts.new.render("tools/built_in/shell/description")
       input_schema type: "object", properties: {
         command: {type: "array", items: {type: "string"}}
       }, required: ["command"], additionalProperties: false
@@ -40,6 +40,10 @@ module LittleGhost
           exit_status: result.exit_code,
           success: result.success?
         )
+      end
+
+      def description
+        framework_prompt("tools/built_in/shell/description")
       end
     end
   end

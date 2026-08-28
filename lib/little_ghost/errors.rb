@@ -69,9 +69,24 @@ module LittleGhost
 
   # Raised when repeated identical tool calls reach the configured termination limit.
   class ToolLoopError < ProtocolError; end
+
   # Base class for expected failures while executing a Tool. Its message may be
   # returned to the model, so it must be safe to disclose.
-  class ToolError < Error; end
+  class ToolError < Error
+    attr_reader :framework_prompt # :nodoc:
+
+    # Creates a safe Tool failure from application prose or a framework prompt reference.
+    def initialize(message = nil, framework_prompt: nil)
+      reference = framework_prompt
+      if !reference && defined?(FrameworkPrompts::Reference) && message.is_a?(FrameworkPrompts::Reference)
+        reference = message
+      end
+      @framework_prompt = reference
+      message = FrameworkPrompts.new.render_reference(reference) if reference
+      super(message)
+    end
+  end
+
   # Raised when an active run cannot accept an interjection.
   class AgentInterjectionError < InvocationError; end
   # Raised when cancellation stops an operation. A started top-level Run

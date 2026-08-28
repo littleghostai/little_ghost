@@ -350,12 +350,18 @@ module LittleGhost
 
     # Model-visible name declared by the tool class.
     def tool_name = self.class.tool_name
+
     # Model-visible description declared by the tool class.
     def description = self.class.description
+
     # Normalized JSON input schema declared by the tool class.
     def input_schema = self.class.input_schema
+
     # Frozen provider-facing tool specification.
-    def specification = self.class.specification
+    def specification
+      {name: tool_name, description:, input_schema:}.freeze
+    end
+
     # Indicates whether calls use the run-wide exclusive-tool lock.
     def exclusive? = self.class.exclusive
 
@@ -386,12 +392,12 @@ module LittleGhost
     def execute(input, context: RunContext.new)
       context ||= RunContext.new
       errors = if self.class.validate_input_schema_value
-        SchemaValidator.new(self.class.input_schema).validate(input)
+        SchemaValidator.new(self.class.input_schema, prompt_renderer: method(:framework_prompt)).validate(input)
       else
         []
       end
       unless errors.empty?
-        message = "Invalid tool input: #{errors.join("; ")}"
+        message = framework_prompt("tools/feedback/invalid_input", errors:)
         return failure(message, error: ToolError.new(message))
       end
 
@@ -403,9 +409,14 @@ module LittleGhost
     rescue CancelledError, DeadlineExceededError, CleanupError
       raise
     rescue ToolError => error
-      failure(error.message, error:)
+      content = if error.framework_prompt
+        framework_prompt(error.framework_prompt.key, **error.framework_prompt.locals)
+      else
+        error.message
+      end
+      failure(content, error:)
     rescue => error
-      failure("Tool failed (#{error.class})", error:)
+      failure(framework_prompt("tools/errors/unexpected_failure", error_class: error.class.name), error:)
     end
 
     # Implements the model-requested operation.
@@ -441,7 +452,7 @@ module LittleGhost
       else value.to_s
       end
     rescue JSON::GeneratorError
-      raise ToolError, "Tool returned content that cannot be serialized"
+      raise ToolError, framework_prompt("tools/errors/unserializable_result")
     end
 
     def success(value, artifacts: [])
@@ -463,11 +474,18 @@ module LittleGhost
       )
     end
 
+    def framework_prompt(key, **locals)
+      return agent.render_framework_prompt(key, **locals) if agent
+      FrameworkPrompts.for_runtime(runtime).render(key, locals:)
+    end
+
     class SchemaValidator # :nodoc:
       REGEXP_TIMEOUT = 0.05
 
-      def initialize(schema)
+      def initialize(schema, prompt_renderer: nil)
         @schema = schema
+        prompts = FrameworkPrompts.new
+        @prompt_renderer = prompt_renderer || ->(key, **locals) { prompts.render(key, locals:) }
       end
 
       def validate(value)
@@ -492,20 +510,20 @@ module LittleGhost
       def validate_type(type, value, path, errors)
         return if type.nil? || Array(type).any? { |candidate| type_matches?(candidate, value) }
 
-        errors << "#{path} must be #{Array(type).join(" or ")}"
+        errors << prompt("tools/validation/schema/type", path:, types: Array(type))
       end
 
       def validate_enum(enum, value, path, errors)
         return if enum.nil? || enum.include?(value)
 
-        errors << "#{path} must be one of #{enum.map(&:inspect).join(", ")}"
+        errors << prompt("tools/validation/schema/enum", path:, values: enum)
       end
 
       def validate_number(schema, value, path, errors)
         minimum = schema["minimum"]
         maximum = schema["maximum"]
-        errors << "#{path} must be at least #{minimum}" if minimum && value < minimum
-        errors << "#{path} must be at most #{maximum}" if maximum && value > maximum
+        errors << prompt("tools/validation/schema/minimum", path:, minimum:) if minimum && value < minimum
+        errors << prompt("tools/validation/schema/maximum", path:, maximum:) if maximum && value > maximum
       end
 
       def validate_object(schema, value, path, errors)
@@ -513,7 +531,7 @@ module LittleGhost
         required = schema.fetch("required", [])
 
         required.each do |key|
-          errors << "#{path}.#{key} is required" unless key?(value, key)
+          errors << prompt("tools/validation/schema/required", path: "#{path}.#{key}") unless key?(value, key)
         end
 
         value.each do |key, child|
@@ -521,7 +539,7 @@ module LittleGhost
           if property_schema
             validate_value(property_schema, child, "#{path}.#{key}", errors)
           elsif schema["additionalProperties"] == false
-            errors << "#{path}.#{key} is not allowed"
+            errors << prompt("tools/validation/schema/additional_property", path: "#{path}.#{key}")
           elsif schema["additionalProperties"].is_a?(Hash)
             validate_value(schema["additionalProperties"], child, "#{path}.#{key}", errors)
           end
@@ -532,22 +550,22 @@ module LittleGhost
         minimum = schema["minLength"]
         maximum = schema["maxLength"]
         pattern = schema["pattern"]
-        errors << "#{path} must have at least #{minimum} characters" if minimum && value.length < minimum
-        errors << "#{path} must have at most #{maximum} characters" if maximum && value.length > maximum
+        errors << prompt("tools/validation/schema/min_length", path:, minimum:) if minimum && value.length < minimum
+        errors << prompt("tools/validation/schema/max_length", path:, maximum:) if maximum && value.length > maximum
         if pattern && !Regexp.new(pattern, timeout: REGEXP_TIMEOUT).match?(value)
-          errors << "#{path} has an invalid format"
+          errors << prompt("tools/validation/schema/invalid_format", path:)
         end
       rescue Regexp::TimeoutError
-        errors << "#{path} has an invalid format"
+        errors << prompt("tools/validation/schema/invalid_format", path:)
       rescue RegexpError
-        errors << "#{path} has an invalid schema pattern"
+        errors << prompt("tools/validation/schema/invalid_pattern", path:)
       end
 
       def validate_array(schema, value, path, errors)
         minimum = schema["minItems"]
         maximum = schema["maxItems"]
-        errors << "#{path} must contain at least #{minimum} items" if minimum && value.length < minimum
-        errors << "#{path} must contain at most #{maximum} items" if maximum && value.length > maximum
+        errors << prompt("tools/validation/schema/min_items", path:, minimum:) if minimum && value.length < minimum
+        errors << prompt("tools/validation/schema/max_items", path:, maximum:) if maximum && value.length > maximum
         return unless schema["items"].is_a?(Hash)
 
         value.each_with_index do |child, index|
@@ -570,6 +588,10 @@ module LittleGhost
 
       def key?(value, key)
         value.key?(key) || value.key?(key.to_sym)
+      end
+
+      def prompt(key, **locals)
+        @prompt_renderer.call(key, **locals)
       end
     end
   end

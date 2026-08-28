@@ -57,11 +57,12 @@ require_relative "little_ghost/sandboxes/native"
 require_relative "little_ghost/tool"
 require_relative "little_ghost/tool_execution"
 require_relative "little_ghost/tool_registry"
+require_relative "little_ghost/prompt_resolver"
+require_relative "little_ghost/framework_prompts"
 require_relative "little_ghost/code_mode"
 require_relative "little_ghost/code_mode/ruby_engine"
 require_relative "little_ghost/code_mode/runtime"
 require_relative "little_ghost/structured_output"
-require_relative "little_ghost/prompt_resolver"
 require_relative "little_ghost/session_store"
 require_relative "little_ghost/session_stores/memory"
 require_relative "little_ghost/session_stores/filesystem"
@@ -156,7 +157,7 @@ module LittleGhost
     def model_resolver = configuration.model_resolver
 
     # :call-seq:
-    #   LittleGhost.generate(model:, messages:, result_schema: nil, settings: {}, structured_result_repair_attempts: 1, cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
+    #   LittleGhost.generate(model:, messages:, result_schema: nil, settings: {}, structured_result_repair_attempts: 1, template_paths: [], cancellation_token: Support::CancellationToken.new, deadline: nil) -> RunResult
     #
     # Generates one model response and returns a RunResult.
     #
@@ -166,6 +167,7 @@ module LittleGhost
     # object result. When the result is invalid, the default permits one repair
     # attempt. Set +structured_result_repair_attempts+ to an integer from zero
     # through three when a checked result warrants additional attempts.
+    # +template_paths+ accepts trusted invocation-level framework prompt roots.
     def generate(...) = runtime.generate(...)
 
     # :call-seq:

@@ -1,7 +1,10 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "fileutils"
 require "tmpdir"
+
+class ArtifactPromptAgent < LittleGhost::Agent; end
 
 class ArtifactsTest < Minitest::Test
   def test_inline_and_deferred_artifacts_are_immutable_and_redacted
@@ -422,6 +425,43 @@ class ArtifactsTest < Minitest::Test
       assert_includes prepared.content, "Full result:"
       assert_operator prepared.content.length, :<, JSON.generate(value).length
       assert_empty prepared.presentation_content
+    end
+  end
+
+  def test_oversized_result_notice_uses_the_agent_prompt_scope
+    Dir.mktmpdir do |application_root|
+      prompt_root = File.join(application_root, "prompts")
+      path = File.join(prompt_root, "artifact_prompt/little_ghost/artifacts/presentation/notices/full_result.erb")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "Agent artifact: <%= artifact %>\n<%= preview %>")
+      configuration = LittleGhost::Configuration.new(root: application_root)
+      configuration.prompt_paths = [prompt_root]
+      runtime = LittleGhost::Runtime.new(configuration:)
+      value = {"data" => "x" * 50_000}
+      result = LittleGhost::Tool::ExecutionResult.new(value:, status: :success)
+      tool_use = LittleGhost::Content::ToolUse.new(id: "call-1", name: "report", input: {})
+      hook = LittleGhost::Runtime::Hooks::Artifacts.configured.new
+
+      with_workspace do |workspace|
+        run = LittleGhost::Run.new(
+          invocation: LittleGhost::Invocation.new(message: "start"),
+          runtime:,
+          entrypoint_class: ArtifactPromptAgent,
+          workspace:
+        )
+        prepared = hook.prepare_tool_result(
+          result,
+          tool_use:,
+          run:,
+          agent: ArtifactPromptAgent.allocate,
+          workspace:,
+          context: run.context
+        )
+
+        assert_includes prepared.content, "Agent artifact: workspace://artifacts/"
+      ensure
+        run&.close
+      end
     end
   end
 

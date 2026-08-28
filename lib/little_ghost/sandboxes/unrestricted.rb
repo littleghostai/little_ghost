@@ -102,7 +102,7 @@ module LittleGhost
         scope: nil
       )
         argv = Array(command).map(&:to_s)
-        raise ToolError, "Command must contain an executable" if argv.empty? || argv.first.empty?
+        raise ToolError, FrameworkPrompts.reference("sandbox/process/feedback/executable_required") if argv.empty? || argv.first.empty?
 
         timeout = Float(timeout)
         max_output_bytes = Integer(max_output_bytes || limits.output_bytes)
@@ -163,7 +163,7 @@ module LittleGhost
           stdin.close
           stdout_reader = Thread.new { drain(stdout, max_output_bytes) }
           stderr_reader = Thread.new { drain(stderr, max_output_bytes) }
-          wait_for(wait_thread, [stdout_reader, stderr_reader], deadline, context)
+          wait_for(wait_thread, [stdout_reader, stderr_reader], deadline, context, timeout)
           result = [stdout_reader.value, stderr_reader.value, wait_thread.value]
         ensure
           stdout_reader&.kill
@@ -172,10 +172,12 @@ module LittleGhost
         result
       end
 
-      def wait_for(wait_thread, readers, deadline, context)
+      def wait_for(wait_thread, readers, deadline, context, timeout)
         until !wait_thread.alive? && readers.none?(&:alive?)
           context&.check!
-          raise ToolError, "Command timed out" if monotonic_time >= deadline
+          if monotonic_time >= deadline
+            raise ToolError, FrameworkPrompts.reference("sandbox/process/feedback/command_timed_out", timeout: nil)
+          end
 
           wait_thread.join(0.01)
         end
@@ -228,9 +230,11 @@ module LittleGhost
 
       def validate_root!
         identity = File.stat(File.realpath(@root)).then { |stat| [stat.dev, stat.ino] }
-        raise ToolError, "Workspace root changed after initialization" unless identity == @root_identity
+        unless identity == @root_identity
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/errors/workspace_root_changed")
+        end
       rescue Errno::ENOENT
-        raise ToolError, "Workspace root changed after initialization"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/errors/workspace_root_changed")
       end
 
       def capture_root_identity

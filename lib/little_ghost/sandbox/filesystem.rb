@@ -40,7 +40,7 @@ module LittleGhost
           stat = File.stat(root)
           [mount, [root.freeze, stat.dev, stat.ino].freeze]
         rescue Errno::ENOENT
-          raise ToolError, "Sandbox mount source does not exist"
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/mount_missing")
         end.freeze
       end
 
@@ -63,18 +63,20 @@ module LittleGhost
           validate_regular_file!(file)
 
           content = file.read(@max_read_bytes + 1)
-          raise ToolError, "File exceeds the read limit" if content.bytesize > @max_read_bytes
+          if content.bytesize > @max_read_bytes
+            raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/file_read_limit")
+          end
 
           content.force_encoding(Encoding::UTF_8)
-          raise ToolError, "File is not valid UTF-8 text" unless content.valid_encoding?
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/invalid_utf8") unless content.valid_encoding?
           content
         end
       rescue Encoding::InvalidByteSequenceError, Encoding::UndefinedConversionError
-        raise ToolError, "File is not valid UTF-8 text"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/invalid_utf8")
       rescue Errno::ELOOP
-        raise ToolError, "Path cannot be a symbolic link"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/symlink_path")
       rescue Errno::ENOENT, Errno::ENOTDIR
-        raise ToolError, "Path does not exist"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/path_missing")
       end
 
       def list(path = ".", context: nil)
@@ -88,7 +90,9 @@ module LittleGhost
         mount, relative = resolve(normalized_path, allow_root: true)
         listing = with_directory(mount, relative) do |directory|
           entries = directory_children(directory)
-          raise ToolError, "Directory exceeds the listing limit" if entries.length > @max_list_entries
+          if entries.length > @max_list_entries
+            raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/directory_listing_limit")
+          end
 
           entries.sort.map do |entry|
             directory_entry?(directory, entry) ? "#{entry}/" : entry
@@ -96,18 +100,20 @@ module LittleGhost
         end
         (listing + children).uniq.sort.join("\n")
       rescue Errno::ELOOP
-        raise ToolError, "Path cannot traverse a symbolic link"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/path_traverses_symlink")
       rescue Errno::ENOENT
-        raise ToolError, "Path does not exist"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/path_missing")
       rescue Errno::ENOTDIR
-        raise ToolError, "Path is not a directory"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/not_directory")
       end
 
       def write(path, content, context: nil)
         context&.check!
         mount, relative = resolve(path)
-        raise ToolError, "Sandbox scope is read-only" unless mount.writable?
-        raise ToolError, "Content exceeds the write limit" if content.bytesize > @max_write_bytes
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/read_only") unless mount.writable?
+        if content.bytesize > @max_write_bytes
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/write_limit")
+        end
 
         with_file(mount, relative, flags: write_flags, mode: "w", permissions: 0o644) do |file|
           validate_regular_file!(file)
@@ -117,19 +123,23 @@ module LittleGhost
         end
         "Wrote #{content.bytesize} bytes to #{display_path(path)}"
       rescue Errno::ELOOP
-        raise ToolError, "Write target cannot be a symbolic link"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/write_target_symlink")
       rescue Errno::ENOENT, Errno::ENOTDIR
-        raise ToolError, "Write target parent does not exist"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/write_parent_missing")
       end
 
       def replace(path, old_text, new_text, context: nil)
         context&.check!
-        raise ToolError, "Text to replace cannot be empty" if old_text.empty?
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/replace_empty") if old_text.empty?
 
         content = read(path, context:)
         occurrences = content.scan(old_text).length
-        raise ToolError, "Text was not found in #{display_path(path)}" if occurrences.zero?
-        raise ToolError, "Text occurs more than once in #{display_path(path)}" if occurrences > 1
+        if occurrences.zero?
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/text_not_found", path: display_path(path))
+        end
+        if occurrences > 1
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/text_multiple", path: display_path(path))
+        end
 
         write(path, content.sub(old_text, new_text), context:)
       end
@@ -139,21 +149,25 @@ module LittleGhost
       def resolve(path, allow_root: false)
         virtual = virtual_path(path)
         lexical_mount = mounts.find { |candidate| candidate.covers?(virtual) }
-        raise ToolError, "Path is outside the sandbox scope" unless lexical_mount
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/outside_scope") unless lexical_mount
 
         relative = virtual.delete_prefix(lexical_mount.target).delete_prefix("/")
-        raise ToolError, "Path must identify a sandbox entry" if relative.empty? && !allow_root
+        if relative.empty? && !allow_root
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/entry_required")
+        end
         physical_path = File.join(canonical_root(lexical_mount), relative)
         protected_mounts = mounts.select do |candidate|
           (candidate.protect_aliases? || !candidate.tool_visible?) &&
             contained?(physical_path, canonical_root(candidate))
         end
         effective_mount = [*protected_mounts, lexical_mount].max_by { |candidate| canonical_root(candidate).length }
-        raise ToolError, "Path is outside the sandbox scope" unless effective_mount.tool_visible?
+        unless effective_mount.tool_visible?
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/outside_scope")
+        end
 
         effective_root = canonical_root(effective_mount)
         unless contained?(physical_path, effective_root)
-          raise ToolError, "Path escapes the sandbox mount"
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/mount_escape")
         end
 
         effective_relative = physical_path.delete_prefix(effective_root).delete_prefix(File::SEPARATOR)
@@ -164,7 +178,7 @@ module LittleGhost
 
       def virtual_path(path)
         value = String(path)
-        raise ToolError, "Path contains a null byte" if value.include?("\0")
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/null_byte") if value.include?("\0")
         if value.start_with?(File::SEPARATOR)
           clean_virtual_path(value)
         else
@@ -174,7 +188,7 @@ module LittleGhost
 
       def clean_virtual_path(value)
         components = value.split(File::SEPARATOR)
-        raise ToolError, "Path escapes the sandbox scope" if components.include?("..")
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/parent_escape") if components.include?("..")
 
         Mount.send(:normalize_virtual_path, value)
       end
@@ -184,10 +198,10 @@ module LittleGhost
         current_root = File.realpath(mount.source)
         stat = File.stat(current_root)
         unless [current_root, stat.dev, stat.ino] == [expected_root, expected_dev, expected_ino]
-          raise ToolError, "Sandbox mount source changed after initialization"
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/errors/mount_changed")
         end
       rescue Errno::ENOENT
-        raise ToolError, "Sandbox mount source changed after initialization"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/errors/mount_changed")
       end
 
       def canonical_root(mount)
@@ -211,7 +225,7 @@ module LittleGhost
           directory.close
           directory = child
         end
-        raise ToolError, "Path is not a directory" unless directory.stat.directory?
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/not_directory") unless directory.stat.directory?
 
         yield directory
       ensure
@@ -220,7 +234,7 @@ module LittleGhost
 
       def with_parent_directory(mount, relative)
         entries = components(relative)
-        raise ToolError, "Path must identify a sandbox entry" if entries.empty?
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/entry_required") if entries.empty?
 
         entry = entries.pop
         directory = open_mount_root(mount)
@@ -239,13 +253,13 @@ module LittleGhost
         directory = File.open(root, directory_flags)
         stat = directory.stat
         unless stat.directory? && [stat.dev, stat.ino] == [expected_dev, expected_ino]
-          raise ToolError, "Sandbox mount source changed after initialization"
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/errors/mount_changed")
         end
 
         directory
       rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR
         directory&.close
-        raise ToolError, "Sandbox mount source changed after initialization"
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/errors/mount_changed")
       rescue
         directory&.close
         raise
@@ -299,7 +313,7 @@ module LittleGhost
 
       def open_at(directory, entry, flags, permissions = 0)
         unless OPENAT
-          raise ToolError, "Secure sandbox filesystem traversal is unavailable on this platform"
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/errors/secure_traversal_unavailable")
         end
 
         descriptor = OPENAT.call(directory, entry, flags, Fiddle::TYPE_UINT, permissions)
@@ -317,8 +331,10 @@ module LittleGhost
 
       def validate_regular_file!(file)
         stat = file.stat
-        raise ToolError, "Path is not a file" unless stat.file?
-        raise ToolError, "Multiply-linked files are not accessible through sandbox tools" if stat.nlink > 1
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/not_file") unless stat.file?
+        if stat.nlink > 1
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/multiply_linked")
+        end
       end
 
       def contained?(path, root) = path == root || path.start_with?("#{root}#{File::SEPARATOR}")
@@ -353,7 +369,9 @@ module LittleGhost
       end
 
       def directory_flags
-        raise ToolError, "Secure sandbox filesystem traversal is unavailable on this platform" unless PLATFORM_OPEN_FLAGS
+        unless PLATFORM_OPEN_FLAGS
+          raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/errors/secure_traversal_unavailable")
+        end
 
         read_flags
       end

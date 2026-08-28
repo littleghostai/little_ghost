@@ -25,7 +25,15 @@ module LittleGhost
 
       def broker = @catalog_broker
       def catalog = @catalog_broker.catalog
-      def instructions = engine.instructions(catalog:)
+
+      def instructions
+        parameters = engine.method(:instructions).parameters
+        if parameters.any? { |kind, name| kind == :keyrest || (%i[key keyreq].include?(kind) && name == :prompts) }
+          engine.instructions(catalog:, prompts: method(:prompt))
+        else
+          engine.instructions(catalog:)
+        end
+      end
 
       def execute(source:, context:, **options)
         state = state_for(context)
@@ -39,7 +47,7 @@ module LittleGhost
 
       def wait(context:, **options)
         state = existing_state(context)
-        raise ToolError, "there is no active code-mode program" unless state
+        raise ToolError, prompt("code_mode/feedback/not_active") unless state
 
         with_control(state) do
           bind_broker(state.broker, context)
@@ -49,7 +57,7 @@ module LittleGhost
 
       def stop(context:, **options)
         state = existing_state(context)
-        raise ToolError, "there is no active code-mode program" unless state
+        raise ToolError, prompt("code_mode/feedback/not_active") unless state
 
         with_control(state) do
           bind_broker(state.broker, context)
@@ -80,6 +88,10 @@ module LittleGhost
 
       private
 
+      def prompt(key, **locals)
+        @agent.render_framework_prompt(key, **locals)
+      end
+
       def bind_broker(broker, context)
         execution = ExecutionState[:tool_execution]
         trace_context = if execution
@@ -99,7 +111,7 @@ module LittleGhost
         presentations, artifacts, fallback_references = broker.drain_delivery
         output = result.output
         unless fallback_references.empty?
-          fallback = "Artifacts:\n#{fallback_references.join("\n")}"
+          fallback = prompt("code_mode/artifacts/format/references", references: fallback_references)
           output = output.to_s.empty? ? fallback : "#{output}\n\n#{fallback}"
         end
         ProgramResult.new(
@@ -117,7 +129,7 @@ module LittleGhost
 
       def state_for(context)
         @states_mutex.synchronize do
-          raise ToolError, "code-mode runtime is closed" if @closed
+          raise ToolError, prompt("code_mode/feedback/closed", resource: "runtime") if @closed
 
           @states[context] ||= State.new(
             Broker.new(agent: @agent, except: @except),
@@ -138,18 +150,25 @@ module LittleGhost
       end
 
       def session_for(state)
-        state.session ||= engine.open_session(
-          broker: state.broker,
-          sandbox_factory: sandbox_factory,
-          limits: @limits
-        )
+        state.session ||= begin
+          options = {
+            broker: state.broker,
+            sandbox_factory: sandbox_factory,
+            limits: @limits
+          }
+          parameters = engine.method(:open_session).parameters
+          if parameters.any? { |kind, name| kind == :keyrest || (%i[key keyreq].include?(kind) && name == :framework_prompt_scope) }
+            options[:framework_prompt_scope] = @agent.framework_prompt_scope
+          end
+          engine.open_session(**options)
+        end
       end
 
       def with_control(state)
         acquired = false
         state.mutex.synchronize do
-          raise ToolError, "code-mode session is closing" if state.closing
-          raise ToolError, "a code-mode control call is already active" if state.active
+          raise ToolError, prompt("code_mode/feedback/closed", resource: "session") if state.closing
+          raise ToolError, prompt("code_mode/feedback/control_active") if state.active
 
           state.active = true
           acquired = true
@@ -174,7 +193,7 @@ module LittleGhost
         session = state.mutex.synchronize do
           if state.active && brokered_lifecycle_reentry?
             state.deferred_close = true
-            raise ToolError, "cannot close code mode from a brokered tool while a program is active"
+            raise ToolError, prompt("code_mode/errors/brokered_close")
           end
           state.condition.wait(state.mutex) while state.active || state.cleaning
           raise state.cleanup_error if state.cleanup_error
@@ -236,10 +255,7 @@ module LittleGhost
 
     class ExecTool < Tool # :nodoc:
       tool_name "exec"
-      description <<~TEXT.strip
-        Run one fresh code-mode program to orchestrate available tools. The program is observed for up to one minute.
-        If it finishes, use the result directly. If it returns still_working, call wait to observe the same program.
-      TEXT
+      description FrameworkPrompts.new.render("code_mode/tools/exec/description")
       exclusive true
       input_schema(
         type: "object",
@@ -262,7 +278,19 @@ module LittleGhost
         serialize(result)
       end
 
+      def description = agent.render_framework_prompt("code_mode/tools/exec/description")
+
+      def specification = {name: tool_name, description:, input_schema:}.freeze
+
       private
+
+      def schema_with_description(key)
+        schema = self.class.input_schema
+        property = schema.dig("properties", "max_output_tokens").merge(
+          "description" => agent.render_framework_prompt(key)
+        ).freeze
+        schema.merge("properties" => schema.fetch("properties").merge("max_output_tokens" => property).freeze).freeze
+      end
 
       def serialize(result)
         value = {
@@ -283,16 +311,13 @@ module LittleGhost
 
     class WaitTool < ExecTool # :nodoc:
       tool_name "wait"
-      description <<~TEXT.strip
-        Observe the active code-mode program for up to one minute. The program keeps running continuously; wait does
-        not resume or restart it. Call again only after exec or wait returned still_working.
-      TEXT
+      description FrameworkPrompts.new.render("code_mode/tools/wait/description")
       input_schema(
         type: "object",
         properties: {
           max_output_tokens: {
             type: "integer", minimum: 1,
-            description: "Maximum output tokens returned by this observation."
+            description: FrameworkPrompts.new.render("code_mode/tools/wait/inputs/max_output_tokens/description")
           }
         },
         additionalProperties: false
@@ -307,17 +332,21 @@ module LittleGhost
         )
         serialize(result)
       end
+
+      def description = agent.render_framework_prompt("code_mode/tools/wait/description")
+
+      def input_schema = schema_with_description("code_mode/tools/wait/inputs/max_output_tokens/description")
     end
 
     class StopTool < ExecTool # :nodoc:
       tool_name "stop"
-      description "Stop the active code-mode program and return any output produced since the previous observation."
+      description FrameworkPrompts.new.render("code_mode/tools/stop/description")
       input_schema(
         type: "object",
         properties: {
           max_output_tokens: {
             type: "integer", minimum: 1,
-            description: "Maximum output tokens returned while stopping the program."
+            description: FrameworkPrompts.new.render("code_mode/tools/stop/inputs/max_output_tokens/description")
           }
         },
         additionalProperties: false
@@ -330,6 +359,10 @@ module LittleGhost
         )
         serialize(result)
       end
+
+      def description = agent.render_framework_prompt("code_mode/tools/stop/description")
+
+      def input_schema = schema_with_description("code_mode/tools/stop/inputs/max_output_tokens/description")
     end
   end
 end

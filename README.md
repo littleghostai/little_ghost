@@ -148,7 +148,7 @@ upgrading, because interfaces may change between releases.
 - [Core Concepts](docs/guides/core_concepts.md) builds the mental model from Agent to Assembly.
 - [Models and Providers](docs/guides/models_and_providers.md) explains targets, shared roles, and per-request model selection.
 - [Provider Support](docs/guides/providers.md) has copyable setup for hosted APIs and local model servers.
-- [Prompts as Views](docs/guides/prompt_views.md) gives growing instructions, shared pieces, and application values a natural home.
+- [Prompts as Views](docs/guides/prompt_views.md) covers Agent instructions, shared pieces, and overriding LittleGhost's bundled framework prompts.
 - [Tools](docs/guides/tools.md) explains how models call focused Ruby operations.
 - [MCP](docs/guides/mcp.md) connects agents to operations published through the Model Context Protocol.
 - [Structured Results and Content](docs/guides/structured_outputs_and_content.md) covers checked result shapes, images, and documents.

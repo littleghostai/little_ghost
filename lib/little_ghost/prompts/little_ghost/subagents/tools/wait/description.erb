@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/tools/wait/description
+# Purpose: Wait-for-subagents Tool description.
+# Used: Included in a Tool or Tool-input specification shown to the model as the wait-for-subagents Tool description.
+# Locals:
+# - None.
+# Constraints:
+# - Must render non-blank.
+-%>
+Wait briefly for selected subagents, or all subagents when omitted. A still_working response is expected when work exceeds this check-in window. Call again to keep waiting; timeout is not an error and does not cancel work. A settled successful turn is returned as response. During newer queued, running, persisting, failed, or cancelled work, the latest successful result may appear as previous_response only for context. Inspect each status and keep waiting while selected work is active.

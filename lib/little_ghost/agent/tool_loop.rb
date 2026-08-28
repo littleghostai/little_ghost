@@ -27,8 +27,6 @@ module LittleGhost
     # changed result resets that sequence, while a terminating repeat prevents
     # the duplicate tool body from running again.
     module ToolLoop
-      WARNING = "Repeated tool call detected. Change the approach or arguments before calling this tool again." # :nodoc:
-      FINAL_WARNING = "Final repeated tool call warning. Calling this tool again with identical arguments and result will stop the run." # :nodoc:
       TRACKED_INVOCATION_LIMIT = 1_000 # :nodoc:
 
       def self.included(base) # :nodoc:
@@ -120,7 +118,7 @@ module LittleGhost
           newly_terminated = false
           if repeat && repeat[:count] >= @tool_loop_terminate_at - 1
             unless state[:termination]
-              state[:termination] = "Stopped after detecting a repeated tool-call loop in #{tool_use.name.inspect}."
+              state[:termination] = render_framework_prompt("tools/loop/notices/termination", tool_name: tool_use.name)
               newly_terminated = true
             end
           end
@@ -165,7 +163,9 @@ module LittleGhost
         return Support::Callbacks.continue unless count == @tool_loop_warning_at || count == @tool_loop_terminate_at - 1
 
         action = (count == @tool_loop_warning_at) ? :warn : :final_warning
-        warning = (action == :warn) ? WARNING : FINAL_WARNING
+        warning = render_framework_prompt(
+          (action == :warn) ? "tools/loop/notices/warning" : "tools/loop/notices/final_warning"
+        )
         Instrumentation.publish(
           :tool_loop,
           operation_id: payload[:operation_id],

@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "fileutils"
+require "tmpdir"
 
 class ModelOperationsTest < Minitest::Test
   class Provider < LittleGhost::Providers::Base
@@ -160,6 +162,32 @@ class ModelOperationsTest < Minitest::Test
     assert_equal :user, provider.requests.last.messages.last.role
     assert_includes provider.requests.last.messages.last.text, "Call answer exactly once"
     assert_equal({name: "answer"}, provider.requests.last.tool_choice)
+  end
+
+  def test_direct_generation_uses_invocation_framework_prompt_overrides
+    Dir.mktmpdir("little-ghost-direct-prompts") do |directory|
+      path = File.join(directory, "little_ghost/structured_output/tools/result/description.erb")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "Return the custom final value.")
+      provider = Provider.new(capabilities: tool_capabilities, responses: [tool_response({"answer" => "yes"})])
+
+      operations_for(provider).generate(
+        model: :writer,
+        messages: [{role: :user, content: "Answer"}],
+        result_schema: result_schema,
+        template_paths: [LittleGhost::TrustedPath.new(path: directory)]
+      )
+
+      assert_equal "Return the custom final value.", provider.requests.first.tools.first.fetch(:description)
+    end
+  end
+
+  def test_direct_generation_rejects_untrusted_framework_prompt_paths
+    error = assert_raises(ArgumentError) do
+      operations_for(Provider.new).generate(model: :writer, messages: [], template_paths: ["app/prompts"])
+    end
+
+    assert_includes error.message, "TrustedPath"
   end
 
   def test_raises_after_one_invalid_structured_repair

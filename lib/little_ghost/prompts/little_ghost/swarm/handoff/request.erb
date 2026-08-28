@@ -1,0 +1,16 @@
+<%#
+# Key: swarm/handoff/request
+# Purpose: Swarm handoff input.
+# Used: Included in model-visible content when LittleGhost needs the swarm handoff input.
+# Locals:
+# - from: Identifier of the Agent initiating the handoff.
+# - message: Dynamic message or failure detail.
+# - context: Optional context supplied with the handoff.
+# Constraints:
+# - Must render non-blank.
+-%>
+Handoff from <%= from %>:
+<%= message %><% if context %>
+
+Additional context supplied by the previous agent:
+<%= JSON.generate(context) %><% end %>

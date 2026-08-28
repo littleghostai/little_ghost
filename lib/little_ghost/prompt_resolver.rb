@@ -82,7 +82,7 @@ module LittleGhost
       @max_depth = Integer(max_depth)
       raise ArgumentError, "max_depth must be positive" unless @max_depth.positive?
 
-      @cache = {}
+      @cache = {}.freeze
       @cache_mutex = Mutex.new
     end
 
@@ -162,13 +162,15 @@ module LittleGhost
     def compiled_template(path)
       stat = File.stat(path)
       fingerprint = [stat.mtime.to_r, stat.size]
+      cached = @cache[path]
+      return cached[:template] if cached && cached[:fingerprint] == fingerprint
 
       @cache_mutex.synchronize do
         cached = @cache[path]
         return cached[:template] if cached && cached[:fingerprint] == fingerprint
 
         template = ERB.new(File.read(path), trim_mode: "-")
-        @cache[path] = {fingerprint: fingerprint, template: template}
+        @cache = @cache.merge(path => {fingerprint: fingerprint, template: template}.freeze).freeze
         template
       end
     end

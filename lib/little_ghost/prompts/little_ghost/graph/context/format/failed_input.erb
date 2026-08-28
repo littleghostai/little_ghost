@@ -1,0 +1,11 @@
+<%#
+# Key: graph/context/format/failed_input
+# Purpose: Graph predecessor failure.
+# Used: Returned to the model when LittleGhost produces graph predecessor failure.
+# Locals:
+# - error_class: Safe exception class name describing the failure.
+# Constraints:
+# - Must render non-blank.
+# - This output is embedded inside a larger model-visible message.
+-%>
+Failed with <%= error_class %>.

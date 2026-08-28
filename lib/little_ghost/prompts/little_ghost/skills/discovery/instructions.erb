@@ -1,0 +1,19 @@
+<%#
+# Key: skills/discovery/instructions
+# Purpose: Available-skill discovery section.
+# Used: Included in model-visible content when LittleGhost needs the available-skill discovery section.
+# Locals:
+# - skills: Available skill metadata rendered into the system prompt.
+# Constraints:
+# - Must render non-blank.
+# - Keep skill names and metadata represented so the model can select a valid skill.
+-%>
+<available_skills>
+<% skills.each do |skill| -%>
+<skill>
+<name><%= ERB::Util.html_escape(skill.fetch(:name)) %></name>
+<description><%= ERB::Util.html_escape(skill.fetch(:description)) %></description>
+<location><%= ERB::Util.html_escape(skill.fetch(:location)) %></location>
+</skill>
+<% end -%>
+</available_skills>

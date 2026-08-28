@@ -28,15 +28,39 @@ module LittleGhost
 
       # Keeps text within budget or produces a middle-truncated
       # UTF-8 string and the original approximate token count.
-      def truncate_middle_with_token_budget(text, max_tokens)
+      def truncate_middle_with_token_budget(
+        text,
+        max_tokens,
+        framework_prompts: nil,
+        invocation_paths: [],
+        agent_path: nil
+      )
         content = utf8_content(text)
         max_tokens = Integer(max_tokens)
         max_bytes = approx_bytes_for_tokens(max_tokens)
         return [content, nil] if max_tokens.positive? && content.bytesize <= max_bytes
+        framework_prompts ||= LittleGhost::FrameworkPrompts.new
 
-        prefix, suffix = split_string(content, max_bytes / 2, max_bytes - (max_bytes / 2))
-        removed_tokens = approx_tokens_from_byte_count([content.bytesize - max_bytes, 0].max)
-        truncated = "#{prefix}…#{removed_tokens} tokens truncated…#{suffix}"
+        marker = ""
+        available_bytes = max_bytes
+        3.times do
+          removed_tokens = approx_tokens_from_byte_count([content.bytesize - available_bytes, 0].max)
+          marker = framework_prompts.render(
+            "output/truncation/marker",
+            locals: {removed_tokens:},
+            invocation_paths:,
+            agent_path:
+          )
+          available_bytes = [max_bytes - marker.bytesize, 0].max
+        end
+        if marker.bytesize >= max_bytes
+          marker = split_string(marker, [max_bytes, 0].max, 0).first
+          return [marker, approx_token_count(content)]
+        end
+
+        prefix_bytes = available_bytes / 2
+        prefix, suffix = split_string(content, prefix_bytes, available_bytes - prefix_bytes)
+        truncated = "#{prefix}#{marker}#{suffix}"
         [truncated, approx_token_count(content)]
       end
 

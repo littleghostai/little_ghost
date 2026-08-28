@@ -1,0 +1,11 @@
+<%#
+# Key: tools/validation/schema/minimum
+# Purpose: Schema numeric minimum feedback.
+# Used: Returned to the model when LittleGhost produces schema numeric minimum feedback.
+# Locals:
+# - path: Path or validation location referenced by the prompt.
+# - minimum: Configured minimum required by validation.
+# Constraints:
+# - Must render non-blank.
+-%>
+<%= path %> must be at least <%= minimum %>

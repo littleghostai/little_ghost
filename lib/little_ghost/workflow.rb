@@ -482,7 +482,11 @@ module LittleGhost
         )
         message = Message.new(
           role: :assistant,
-          content: "[Structured result #{schema_name} redacted]"
+          content: FrameworkPrompts.for_runtime(runtime).render(
+            "structured_output/persistence/format/redaction",
+            locals: {schema_name:},
+            invocation_paths: @template_paths
+          )
         )
         result = direct_run_result(
           message:,

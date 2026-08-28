@@ -1,0 +1,11 @@
+<%#
+# Key: structured_output/repair/feedback/schema_errors
+# Purpose: Structured-result Tool repair feedback.
+# Used: Returned to the model when LittleGhost produces structured-result Tool repair feedback.
+# Locals:
+# - errors: Local validation messages to return to the model.
+# Constraints:
+# - Must render non-blank.
+# - Keep the wording consistent with LittleGhost's enforced structured-result protocol.
+-%>
+The structured result did not match the required schema: <%= errors.join("; ") %>. Submit it again using the required schema.

@@ -1,0 +1,10 @@
+<%#
+# Key: sandbox/process/errors/program_supervisor_failed
+# Purpose: Sandbox supervisor failure feedback.
+# Used: Returned to the model when LittleGhost produces sandbox supervisor failure feedback.
+# Locals:
+# - error_class: Safe exception class name describing the failure.
+# Constraints:
+# - Must render non-blank.
+-%>
+Program memory supervisor failed (<%= error_class %>)

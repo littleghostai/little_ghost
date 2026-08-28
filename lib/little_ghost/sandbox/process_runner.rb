@@ -22,7 +22,9 @@ module LittleGhost
         @inherit_environment = inherit_environment
         @chdir = chdir
 
-        raise ToolError, "Command must contain an executable" if @command.empty? || @command.first.empty?
+        if @command.empty? || @command.first.empty?
+          raise ToolError, FrameworkPrompts.reference("sandbox/process/feedback/executable_required")
+        end
         raise ArgumentError, "timeout must be positive" unless @timeout.positive? && @timeout.finite?
         raise ArgumentError, "max_output_bytes must be positive" unless @max_output_bytes.positive?
       end
@@ -56,7 +58,9 @@ module LittleGhost
         deadline = monotonic_time + @timeout
         until !wait_thread.alive? && readers.none?(&:alive?)
           @context&.check!
-          raise ToolError, "Command timed out after #{@timeout} seconds" if monotonic_time >= deadline
+          if monotonic_time >= deadline
+            raise ToolError, FrameworkPrompts.reference("sandbox/process/feedback/command_timed_out", timeout: @timeout)
+          end
 
           wait_thread.join(POLL_INTERVAL)
         end

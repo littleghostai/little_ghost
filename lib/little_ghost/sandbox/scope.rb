@@ -275,7 +275,10 @@ module LittleGhost
       def require_capability!(feature)
         return if supports?(feature)
 
-        raise ToolError, "Sandbox scope does not allow #{feature.to_s.tr("_", " ")}"
+        raise ToolError, FrameworkPrompts.reference(
+          "sandbox/policy/feedback/feature_denied",
+          feature: feature.to_s.tr("_", " ")
+        )
       end
 
       def mount_identities

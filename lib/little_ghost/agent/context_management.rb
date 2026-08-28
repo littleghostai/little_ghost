@@ -35,17 +35,6 @@ module LittleGhost
       DEFAULT_PRESERVE_RECENT_MESSAGES = 10 # :nodoc:
       ESTIMATED_CHARS_PER_TOKEN = 4 # :nodoc:
       OUTPUT_LIMIT_STOP_REASONS = %i[max_tokens limit_output_tokens limit_total_tokens limit_turns].freeze # :nodoc:
-      SUMMARIZATION_PROMPT = <<~PROMPT # :nodoc:
-        You are a conversation summarizer. Provide a concise summary of the conversation history.
-
-        Format requirements:
-        - Create a structured, concise summary in bullet-point format.
-        - Do not respond conversationally, address the user directly, or comment on tool availability.
-        - Preserve key topics, questions, significant tool executions and results, code or technical information, and key insights.
-        - Do not assume tool executions failed unless otherwise stated.
-        - Write the summary in the third person.
-      PROMPT
-
       def self.included(base) # :nodoc:
         base.extend(ClassMethods)
         base.class_attribute :context_management_configuration_value
@@ -193,9 +182,9 @@ module LittleGhost
         started_at = monotonic_time
         summary_request = ModelRequest.new(
           messages: [
-            Message.new(role: :system, content: SUMMARIZATION_PROMPT),
+            Message.new(role: :system, content: render_framework_prompt("context_management/summary/system_instruction")),
             *messages,
-            Message.new(role: :user, content: "Please summarize this conversation.")
+            Message.new(role: :user, content: render_framework_prompt("context_management/summary/request"))
           ],
           tools: [],
           settings: request.settings,

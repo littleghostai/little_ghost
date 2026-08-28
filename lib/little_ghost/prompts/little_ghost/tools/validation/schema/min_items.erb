@@ -1,0 +1,11 @@
+<%#
+# Key: tools/validation/schema/min_items
+# Purpose: Schema array minimum-size feedback.
+# Used: Returned to the model when LittleGhost produces schema array minimum-size feedback.
+# Locals:
+# - path: Path or validation location referenced by the prompt.
+# - minimum: Configured minimum required by validation.
+# Constraints:
+# - Must render non-blank.
+-%>
+<%= path %> must contain at least <%= minimum %> items

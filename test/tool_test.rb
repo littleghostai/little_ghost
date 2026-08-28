@@ -93,6 +93,22 @@ class ToolTest < Minitest::Test
     assert_instance_of LittleGhost::ToolError, result.error
   end
 
+  def test_execute_renders_framework_tool_errors_in_the_agent_prompt_scope
+    agent = Object.new
+    def agent.render_framework_prompt(key, **locals)
+      "custom #{key}: #{locals.fetch(:name)}"
+    end
+    tool = LittleGhost::Tool.define(name: "missing", description: "Fails safely") do |_input|
+      raise LittleGhost::ToolError, LittleGhost::FrameworkPrompts.reference("tools/feedback/unknown", name: "search")
+    end
+    binding = LittleGhost::Tool::Binding.new(agent:)
+
+    result = tool.new(binding:).execute({})
+
+    assert_equal "custom tools/feedback/unknown: search", result.content
+    assert_equal "Unknown Tool: search", result.error.message
+  end
+
   def test_execute_propagates_cleanup_errors
     error = LittleGhost::CleanupError.new("work is still running")
     tool = LittleGhost::Tool.define(name: "unclean", description: "Fails to stop") do |_input|

@@ -1,0 +1,11 @@
+<%#
+# Key: tools/validation/schema/min_length
+# Purpose: Schema string minimum-length feedback.
+# Used: Returned to the model when LittleGhost produces schema string minimum-length feedback.
+# Locals:
+# - path: Path or validation location referenced by the prompt.
+# - minimum: Configured minimum required by validation.
+# Constraints:
+# - Must render non-blank.
+-%>
+<%= path %> must have at least <%= minimum %> characters

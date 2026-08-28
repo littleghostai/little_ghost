@@ -12,13 +12,17 @@ module LittleGhost
       class Session < CodeMode::Session # :nodoc:
         OBSERVATION_SECONDS = 60
 
-        def initialize(broker:, sandbox_factory:, subprocess_policy:, limits:, observation_seconds: OBSERVATION_SECONDS)
+        def initialize(
+          broker:, sandbox_factory:, subprocess_policy:, limits:, observation_seconds: OBSERVATION_SECONDS,
+          framework_prompt_scope: {}
+        )
           @broker = broker
           @task_runner = broker.task_runner
           @sandbox_factory = sandbox_factory
           @subprocess_policy = subprocess_policy
           @limits = limits
           @observation_seconds = Float(observation_seconds)
+          @framework_prompt_scope = framework_prompt_scope.freeze
           raise ArgumentError, "observation_seconds must be positive" unless @observation_seconds.positive?
           @session = nil
           @workspace = nil
@@ -65,7 +69,7 @@ module LittleGhost
           @closed = true
           acquired = @control_mutex.try_lock
           unless acquired
-            raise ToolError, "cannot close while another code-mode control operation is active"
+            raise ToolError, prompt("code_mode/feedback/control_active")
           end
           cleanup_error = begin
             close_process
@@ -87,13 +91,23 @@ module LittleGhost
 
         private
 
+        def prompt(key, **locals)
+          framework_prompts = @framework_prompt_scope[:framework_prompts] || FrameworkPrompts.new
+          framework_prompts.render(
+            key,
+            locals:,
+            invocation_paths: @framework_prompt_scope.fetch(:invocation_paths, []),
+            agent_path: @framework_prompt_scope[:agent_path]
+          )
+        end
+
         def execute_program(source:, catalog:, frame:, max_output_tokens:, context:)
-          raise ToolError, "code-mode session is closed" if @closed
+          raise ToolError, prompt("code_mode/feedback/closed", resource: "session") if @closed
           ensure_program_can_start!
           @programs += 1
-          raise ToolError, "code-mode program limit exceeded" if @programs > @limits.fetch(:programs)
+          raise ToolError, prompt("code_mode/feedback/limit_exceeded", limit: "program") if @programs > @limits.fetch(:programs)
           source = String(source)
-          raise ToolError, "code-mode source exceeds the limit" if source.bytesize > @limits.fetch(:source_bytes)
+          raise ToolError, prompt("code_mode/feedback/limit_exceeded", limit: "source size") if source.bytesize > @limits.fetch(:source_bytes)
           normalized_catalog = Catalog.new(catalog).host_definitions
 
           generation, process = open_process
@@ -103,7 +117,16 @@ module LittleGhost
             catalog: normalized_catalog,
             frame:,
             tool_calls: @limits.fetch(:tool_calls),
-            concurrency: @limits.fetch(:concurrency)
+            concurrency: @limits.fetch(:concurrency),
+            messages: {
+              parallel_callables: prompt("code_mode/ruby/feedback/parallel_callables"),
+              tool_calls_limit: prompt("code_mode/feedback/limit_exceeded", limit: "Tool call"),
+              execution_failed: prompt(
+                "code_mode/errors/execution_failed",
+                error_class: "__ERROR_CLASS__",
+                message: "__ERROR_MESSAGE__"
+              )
+            }
           ))
           drive(generation:, process:, max_output_tokens:, context:)
         rescue
@@ -144,7 +167,7 @@ module LittleGhost
         def with_control
           acquired = @control_mutex.try_lock
           unless acquired
-            raise ToolError, "another code-mode control operation is already active"
+            raise ToolError, prompt("code_mode/feedback/control_active")
           end
 
           yield
@@ -156,7 +179,7 @@ module LittleGhost
           error = @lifecycle_mutex.synchronize do
             @lifecycle_condition.wait(@lifecycle_mutex) while @expiring_generation
             pending = take_pending_program_error
-            raise ToolError, "a code-mode program is already active" if !pending && (@generation || @session)
+            raise ToolError, prompt("code_mode/feedback/program_active") if !pending && (@generation || @session)
 
             pending
           end
@@ -178,7 +201,7 @@ module LittleGhost
             factory.new(workspace: @workspace)
           end
           @sandbox.open
-          raise ToolError, "code-mode session is closed" if @closed
+          raise ToolError, prompt("code_mode/feedback/closed", resource: "session") if @closed
           @session = @sandbox.start_program(
             [RbConfig.ruby, "-e", Host::SOURCE],
             output_bytes: @limits.fetch(:output_bytes),
@@ -275,7 +298,7 @@ module LittleGhost
             active = @call_tasks.count(&:alive?)
             raise ProtocolError, "code-mode concurrent tool call limit exceeded" if active >= @limits.fetch(:concurrency)
             @tool_calls += 1
-            raise ToolError, "tool call limit exceeded" if @tool_calls > @limits.fetch(:tool_calls)
+            raise ToolError, prompt("code_mode/feedback/limit_exceeded", limit: "Tool call") if @tool_calls > @limits.fetch(:tool_calls)
 
             call_errors = @call_errors
             closing_marker = @closing_marker
@@ -290,7 +313,7 @@ module LittleGhost
         def append_output(value)
           value = String(value).dup.force_encoding(Encoding::UTF_8).scrub
           @output_bytes += value.bytesize
-          raise ToolError, "code-mode output exceeded the limit" if @output_bytes > @limits.fetch(:output_bytes)
+          raise ToolError, prompt("code_mode/feedback/limit_exceeded", limit: "output") if @output_bytes > @limits.fetch(:output_bytes)
 
           @output << value
         end
@@ -314,7 +337,11 @@ module LittleGhost
           @output = +""
           return output unless max_output_tokens
 
-          Support::OutputTruncation.truncate_middle_with_token_budget(output, max_output_tokens).first
+          Support::OutputTruncation.truncate_middle_with_token_budget(
+            output,
+            max_output_tokens,
+            **@framework_prompt_scope
+          ).first
         end
 
         def active_process
@@ -323,7 +350,7 @@ module LittleGhost
             @lifecycle_condition.wait(@lifecycle_mutex) while @expiring_generation
             error = take_pending_program_error
             raise error if error
-            raise ToolError, "there is no active code-mode program" unless @generation && @session
+            raise ToolError, prompt("code_mode/feedback/not_active") unless @generation && @session
 
             [@generation, @session]
           end
@@ -442,7 +469,7 @@ module LittleGhost
           end
           return unless process
 
-          error = ToolError.new("code-mode program timed out")
+          error = ToolError.new(FrameworkPrompts.reference("code_mode/feedback/program_timed_out"))
           begin
             mark_process_closing
             process.terminate

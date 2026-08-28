@@ -17,12 +17,14 @@ module LittleGhost
       Deadline = Struct.new(:task, :cancelled, :expiring, :finished, :error)
 
       def initialize(broker:, client:, sandbox: nil, workspace: nil, max_concurrency: 8,
-        wall_seconds: 3_600, observation_seconds: OBSERVATION_SECONDS, cleanup_timeout: CLEANUP_TIMEOUT)
+        wall_seconds: 3_600, observation_seconds: OBSERVATION_SECONDS, cleanup_timeout: CLEANUP_TIMEOUT,
+        framework_prompt_scope: {})
         @broker = broker
         @task_runner = broker.task_runner
         @client = client
         @sandbox = sandbox
         @workspace = workspace
+        @framework_prompt_scope = framework_prompt_scope.freeze
         @max_concurrency = Integer(max_concurrency)
         raise ArgumentError, "max_concurrency must be positive" unless @max_concurrency.positive?
         @wall_seconds = Float(wall_seconds)
@@ -119,6 +121,16 @@ module LittleGhost
 
       private
 
+      def prompt(key, **locals)
+        framework_prompts = @framework_prompt_scope[:framework_prompts] || FrameworkPrompts.new
+        framework_prompts.render(
+          key,
+          locals:,
+          invocation_paths: @framework_prompt_scope.fetch(:invocation_paths, []),
+          agent_path: @framework_prompt_scope[:agent_path]
+        )
+      end
+
       def execute_program(source:, catalog:, frame:, max_output_tokens:, context:)
         ensure_open
         raise_pending_deadline_error!
@@ -126,7 +138,7 @@ module LittleGhost
         program_id = SecureRandom.uuid
         @frames_mutex.synchronize do
           if @current_program_id
-            raise LittleGhost::ToolError, "Wait for or stop the active JavaScript program before starting another"
+            raise LittleGhost::ToolError, prompt("code_mode/feedback/program_active")
           end
           @frames[program_id] = javascript_catalog
           @current_program_id = program_id
@@ -152,7 +164,7 @@ module LittleGhost
         ensure_open
         program_id = @frames_mutex.synchronize { @current_program_id }
         raise_pending_deadline_error! unless program_id
-        raise LittleGhost::ToolError, "There is no active JavaScript program" unless program_id
+        raise LittleGhost::ToolError, prompt("code_mode/feedback/not_active") unless program_id
         result = @client.observe(
           owner: self, program_id:, timeout: @observation_seconds,
           max_tokens: output_tokens(max_output_tokens), context:
@@ -175,7 +187,7 @@ module LittleGhost
         context&.check!
         program_id = @frames_mutex.synchronize { @current_program_id }
         raise_pending_deadline_error! unless program_id
-        raise LittleGhost::ToolError, "There is no active JavaScript program" unless program_id
+        raise LittleGhost::ToolError, prompt("code_mode/feedback/not_active") unless program_id
 
         finish(program_id, terminate_program(program_id, max_output_tokens:))
       rescue LittleGhost::CleanupError
@@ -196,7 +208,7 @@ module LittleGhost
           )
         end
         @mutex.synchronize do
-          raise LittleGhost::ToolError, "Code-mode session is closed" if @closed
+          raise LittleGhost::ToolError, prompt("code_mode/feedback/closed", resource: "session") if @closed
 
           ensure_worker
           register_dispatch(batch)
@@ -213,7 +225,7 @@ module LittleGhost
       def with_control
         acquired = @control_mutex.try_lock
         unless acquired
-          raise LittleGhost::ToolError, "another code-mode control operation is already active"
+          raise LittleGhost::ToolError, prompt("code_mode/feedback/control_active")
         end
 
         yield
@@ -441,8 +453,8 @@ module LittleGhost
 
       def ensure_open
         @mutex.synchronize do
-          raise LittleGhost::ToolError, "Code-mode session is closed" if @closed
-          raise LittleGhost::ToolError, "Code-mode session cannot be reused after cleanup failed" if @poisoned
+          raise LittleGhost::ToolError, prompt("code_mode/feedback/closed", resource: "session") if @closed
+          raise LittleGhost::ToolError, prompt("code_mode/errors/cleanup_failed") if @poisoned
         end
       end
 
@@ -482,7 +494,7 @@ module LittleGhost
         end
         return unless current
 
-        error = LittleGhost::ToolError.new("code-mode program timed out")
+        error = LittleGhost::ToolError.new(FrameworkPrompts.reference("code_mode/feedback/program_timed_out"))
         begin
           terminate_program(program_id)
         rescue => cleanup_error

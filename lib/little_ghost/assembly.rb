@@ -280,7 +280,13 @@ module LittleGhost
 
     def build_tool(name:, description:, preserve_context:, factory:)
       assembly = self
-      description = "Delegate a task to #{name}." if description.to_s.empty?
+      if description.to_s.empty?
+        description = if is_a?(Agent)
+          render_framework_prompt("assembly/tools/fallback/description", name: name.to_s)
+        else
+          FrameworkPrompts.for_runtime(runtime).render("assembly/tools/fallback/description", locals: {name: name.to_s})
+        end
+      end
       mutex = Mutex.new
       retained_history = []
       tool_class = Tool.define(

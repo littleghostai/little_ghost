@@ -226,6 +226,8 @@ module LittleGhost
         parent_agent_path: AgentPath::ROOT
       )
         @runtime = runtime
+        @framework_prompts = FrameworkPrompts.for_runtime(runtime)
+        @prompt_renderer = ->(key, **locals) { @framework_prompts.render(key, locals:) }
         validate_limit(:max_concurrent, max_concurrent)
         validate_limit(:max_identities, max_identities)
         validate_limit(:max_turns, max_turns)
@@ -274,6 +276,10 @@ module LittleGhost
         restore_identities
       end
 
+      def bind_prompt_renderer(renderer) # :nodoc:
+        @prompt_renderer = renderer
+      end
+
       # Creates a unique child identity and queues its first task.
       #
       # +mode+ is <tt>"sync"</tt> or <tt>"async"</tt>. Synchronous mode waits for the turn;
@@ -298,7 +304,7 @@ module LittleGhost
             status: "failed",
             subagent_id: subagent_id,
             kind: definition.kind,
-            error: "Subagent could not be created."
+            error: prompt("subagents/errors/create_failed")
           }
         end
 
@@ -396,10 +402,10 @@ module LittleGhost
       # stopped.
       def interject(subagent_id:, message:, cancellation_token: @cancellation_token, deadline: @deadline)
         unless message.is_a?(String)
-          raise ToolError, "Subagent messages must be strings."
+          raise ToolError, prompt("subagents/feedback/message_type")
         end
         if message.length > @max_message_chars
-          raise ToolError, "Subagent messages cannot exceed #{@max_message_chars} characters."
+          raise ToolError, prompt("subagents/feedback/message_limit", limit: @max_message_chars)
         end
 
         exchange = InterjectionExchange.new(message:, complete: false)
@@ -407,17 +413,17 @@ module LittleGhost
           ensure_open!
           value = fetch_identity!(subagent_id)
           unless value.agent.respond_to?(:interject)
-            raise ToolError, "Subagent #{subagent_id.inspect} does not support interjections."
+            raise ToolError, prompt("subagents/feedback/interjection_unsupported", id: subagent_id)
           end
           unless value.status == "running"
-            raise ToolError, "Subagent #{subagent_id.inspect} is not currently running."
+            raise ToolError, prompt("subagents/feedback/not_running", id: subagent_id)
           end
           if value.current.interjections.length >= @max_queued_turns_per_identity
-            raise ToolError, "Subagent #{subagent_id.inspect} has reached its interject limit."
+            raise ToolError, prompt("subagents/feedback/interjection_limit", id: subagent_id)
           end
           interjection_chars = value.current.interjections.sum { |pending| pending.message.length }
           if interjection_chars + message.length > @max_message_chars
-            raise ToolError, "Subagent interjection messages cannot exceed #{@max_message_chars} total characters."
+            raise ToolError, prompt("subagents/feedback/interjection_chars_limit", limit: @max_message_chars)
           end
 
           value.current.interjections << exchange
@@ -504,10 +510,10 @@ module LittleGhost
       def list(kind: nil, limit: DEFAULT_LIST_LIMIT, cursor: nil)
         cursor = nil if cursor == ""
         unless limit.is_a?(Integer) && limit.between?(1, MAX_LIST_LIMIT)
-          raise ToolError, "limit must be between 1 and #{MAX_LIST_LIMIT}"
+          raise ToolError, prompt("subagents/feedback/list_limit", maximum: MAX_LIST_LIMIT)
         end
         if kind && !definitions.key?(kind)
-          raise ToolError, "Unknown subagent kind: #{kind}"
+          raise ToolError, prompt("subagents/feedback/unknown_kind", kind:)
         end
 
         @mutex.synchronize do
@@ -540,31 +546,25 @@ module LittleGhost
         tools = [
           ControlTool.define(
             name: "spawn_subagent",
-            description: <<~DESCRIPTION.strip,
-              Create a new subagent identity for an independent task. Mode controls delivery: sync waits for the
-              response in this call, while async returns immediately and leaves the response for
-              wait_for_subagents. Several sync spawns requested together can still run in parallel. Give the task a
-              concise lowercase name. The returned identity is its canonical path beneath the current agent. Task
-              names must be unique among that agent's children.
-            DESCRIPTION
+            description: "",
             input_schema: {
               type: "object",
               properties: {
                 kind: {
                   type: "string",
                   enum: definitions.keys,
-                  description: "Kind of subagent to create.\n#{kind_descriptions}"
+                  description: ""
                 },
                 task_name: {
                   type: "string",
                   pattern: "^[a-z0-9_]+$",
                   maxLength: AgentPath::MAX_NAME_LENGTH,
-                  description: "Friendly task name using lowercase letters, digits, and underscores."
+                  description: ""
                 },
-                task: {type: "string", description: "Independent task to delegate."},
+                task: {type: "string", description: ""},
                 mode: {
                   type: "string", enum: %w[sync async],
-                  description: "sync waits for the response; async returns while the subagent continues."
+                  description: ""
                 }
               },
               required: %w[kind task_name task mode],
@@ -579,24 +579,28 @@ module LittleGhost
               context:,
               parent_operation_id: context&.agent_operation_id
             )
+          end.tap do |tool|
+            tool.framework_prompts(
+              description: FrameworkPrompts.reference("subagents/tools/spawn/description"), manager:,
+              schema: {
+                %w[properties kind description] => FrameworkPrompts.reference("subagents/tools/spawn/inputs/kind/description", kinds: kind_descriptions),
+                %w[properties task_name description] => FrameworkPrompts.reference("subagents/tools/spawn/inputs/task_name/description"),
+                %w[properties task description] => FrameworkPrompts.reference("subagents/tools/spawn/inputs/task/description"),
+                %w[properties mode description] => FrameworkPrompts.reference("subagents/tools/spawn/inputs/spawn_mode/description")
+              }
+            )
           end,
           ControlTool.define(
             name: "send_message_to_subagent",
-            description: <<~DESCRIPTION.strip,
-              Send a follow-up turn to an existing active or persisted subagent identity. Persisted conversations
-              are restored transparently before the follow-up. Messages are processed in order after the
-              current turn and never interject active work. Do not use this for status, steering, stopping, or
-              finalization; use interject_subagent for an active subagent. Mode controls delivery: sync waits for the
-              later turn's response, while async enqueues the turn and returns immediately.
-            DESCRIPTION
+            description: "",
             input_schema: {
               type: "object",
               properties: {
-                subagent_id: {type: "string", description: "Existing subagent identity."},
-                message: {type: "string", description: "Follow-up task or context."},
+                subagent_id: {type: "string", description: ""},
+                message: {type: "string", description: ""},
                 mode: {
                   type: "string", enum: %w[sync async],
-                  description: "sync waits for this turn; async enqueues it and returns immediately."
+                  description: ""
                 }
               },
               required: %w[subagent_id message mode],
@@ -610,20 +614,24 @@ module LittleGhost
               context:,
               parent_operation_id: context&.agent_operation_id
             )
+          end.tap do |tool|
+            tool.framework_prompts(
+              description: FrameworkPrompts.reference("subagents/tools/send/description"), manager:,
+              schema: {
+                %w[properties subagent_id description] => FrameworkPrompts.reference("subagents/tools/send/inputs/id/description"),
+                %w[properties message description] => FrameworkPrompts.reference("subagents/tools/send/inputs/message/description"),
+                %w[properties mode description] => FrameworkPrompts.reference("subagents/tools/send/inputs/send_mode/description")
+              }
+            )
           end,
           ControlTool.define(
             name: "interject_subagent",
-            description: <<~DESCRIPTION.strip,
-              Interrupt an actively running subagent in its current turn. The message is added at the next model
-              boundary. This call waits for that model response and reports its ordinary text, whether the same
-              response also initiated tool work, and the subagent's current lifecycle state. Delivery is distinct
-              from stopping: tool work from that response remains with the subagent and its current run may continue.
-            DESCRIPTION
+            description: "",
             input_schema: {
               type: "object",
               properties: {
-                subagent_id: {type: "string", description: "Actively running subagent identity."},
-                message: {type: "string", description: "Status question, steering context, or request to finish."}
+                subagent_id: {type: "string", description: ""},
+                message: {type: "string", description: ""}
               },
               required: %w[subagent_id message],
               additionalProperties: false
@@ -637,35 +645,39 @@ module LittleGhost
               message: input.fetch("message"),
               **options
             )
+          end.tap do |tool|
+            tool.framework_prompts(
+              description: FrameworkPrompts.reference("subagents/tools/interject/description"), manager:,
+              schema: {
+                %w[properties subagent_id description] => FrameworkPrompts.reference("subagents/tools/interject/inputs/active_id/description"),
+                %w[properties message description] => FrameworkPrompts.reference("subagents/tools/interject/inputs/message/description")
+              }
+            )
           end,
           ControlTool.define(
             name: "wait_for_subagents",
-            description: <<~DESCRIPTION.strip,
-              Wait briefly for selected subagents, or all subagents when omitted. A still_working response is expected
-              when work takes longer than this check-in window. Call this tool again to keep waiting; timeout is not an
-              error and does not cancel the subagents. A successful settled turn is returned as response. When newer
-              work is queued, running, persisting, failed, or cancelled, the most recent successful result may instead
-              appear as previous_response for context; it is not the result of that newer work. Inspect each subagent's
-              status and keep waiting while selected work is active.
-            DESCRIPTION
+            description: "",
             input_schema: {
               type: "object",
               properties: {
                 subagent_ids: {
                   type: "array", items: {type: "string"},
-                  description: "Subagent identities to wait for; omit to wait for all."
+                  description: ""
                 }
               },
               additionalProperties: false
             }
-          ) { |input| manager.wait(subagent_ids: input["subagent_ids"]) },
+          ) { |input| manager.wait(subagent_ids: input["subagent_ids"]) }.tap do |tool|
+            tool.framework_prompts(
+              description: FrameworkPrompts.reference("subagents/tools/wait/description"), manager:,
+              schema: {
+                %w[properties subagent_ids description] => FrameworkPrompts.reference("subagents/tools/wait/inputs/ids/description")
+              }
+            )
+          end,
           ControlTool.define(
             name: "list_subagents",
-            description: <<~DESCRIPTION.strip,
-              List active and persisted subagent conversations newest-first without restoring inactive agents.
-              Use kind to filter. Omit cursor for the first page; to continue, pass the exact non-empty next_cursor
-              from the preceding result.
-            DESCRIPTION
+            description: "",
             input_schema: {
               type: "object",
               properties: {
@@ -681,6 +693,8 @@ module LittleGhost
               limit: input.fetch("limit", DEFAULT_LIST_LIMIT),
               cursor: input["cursor"]
             )
+          end.tap do |tool|
+            tool.framework_prompts(description: FrameworkPrompts.reference("subagents/tools/list/description"), manager:)
           end
         ]
         tools.first.define_method(:close) { manager.close }
@@ -695,6 +709,10 @@ module LittleGhost
       end
 
       private
+
+      def prompt(key, **locals)
+        @prompt_renderer.call(key, **locals)
+      end
 
       def synchronize_close
         @close_monitor.synchronize do
@@ -941,7 +959,7 @@ module LittleGhost
         agent.close if agent&.respond_to?(:close)
         warn_failure("factory", identity.subagent_id, error)
         emit_factory_failure(identity.definition, identity.subagent_id, error)
-        raise ToolError, "Subagent could not be restored."
+        raise ToolError, prompt("subagents/errors/restore_failed")
       end
 
       def persist_registry(identity, message_count:, state:)
@@ -1075,23 +1093,23 @@ module LittleGhost
       end
 
       def decode_cursor(cursor)
-        raise ToolError, "Invalid subagent list cursor" if String(cursor).bytesize > CURSOR_MAX_BYTES
+        raise ToolError, prompt("subagents/feedback/invalid_cursor") if String(cursor).bytesize > CURSOR_MAX_BYTES
 
         value = JSON.parse(Base64.urlsafe_decode64(String(cursor)))
         unless value.is_a?(Array) && value.length == 2 && value.all? { |part| part.is_a?(String) }
-          raise ToolError, "Invalid subagent list cursor"
+          raise ToolError, prompt("subagents/feedback/invalid_cursor")
         end
 
         value
       rescue ArgumentError, JSON::ParserError
-        raise ToolError, "Invalid subagent list cursor"
+        raise ToolError, prompt("subagents/feedback/invalid_cursor")
       end
 
       def reserve_identity(kind, task, task_name:)
         @mutex.synchronize do
           ensure_open!
           definition = @definitions[kind]
-          raise ToolError, "Unknown subagent kind: #{kind}" unless definition
+          raise ToolError, prompt("subagents/feedback/unknown_kind", kind:) unless definition
 
           return [nil, identity_capacity_response] if @identity_slots >= @max_identities
 
@@ -1107,10 +1125,16 @@ module LittleGhost
       end
 
       def agent_path(task_name)
-        name = AgentPath.validate_name!(task_name)
+        name = String(task_name)
+        if name.length > AgentPath::MAX_NAME_LENGTH
+          raise ToolError, prompt("subagents/feedback/task_name_limit", maximum: AgentPath::MAX_NAME_LENGTH)
+        end
+        if name == "root" || !name.match?(AgentPath::NAME_PATTERN)
+          raise ToolError, prompt("subagents/feedback/task_name_invalid")
+        end
         candidate = AgentPath.join(@parent_agent_path, name)
         if @identities.key?(candidate) || @reserved_agent_paths.key?(candidate)
-          raise ToolError, "Agent path #{candidate.inspect} already exists; choose a different task_name."
+          raise ToolError, prompt("subagents/feedback/duplicate_path", path: candidate)
         end
         candidate
       rescue ArgumentError => error
@@ -1140,8 +1164,9 @@ module LittleGhost
           ensure_open!
           if enforce_limits
             if %w[failed cancelled].include?(identity.status)
-              raise ToolError,
-                "Subagent #{identity.subagent_id.inspect} is #{identity.status}; spawn a new identity."
+              raise ToolError, prompt(
+                "subagents/feedback/terminal_identity", id: identity.subagent_id, status: identity.status
+              )
             end
             rejection = reject_turn_locked(message, identity: identity)
             return rejection if rejection
@@ -1432,7 +1457,7 @@ module LittleGhost
 
           warn_failure("turn", identity.subagent_id, error)
           identity.latest_turn = turn.number
-          identity.latest_error = "Subagent turn failed."
+          identity.latest_error = prompt("subagents/errors/turn_failed")
           identity.progress_message = nil
           identity.current_turn = nil
           identity.current = nil
@@ -1477,7 +1502,7 @@ module LittleGhost
           subagent_id: identity.subagent_id,
           kind: identity.definition.kind,
           turn: turn.number,
-          error: "Subagent turn was cancelled."
+          error: prompt("subagents/notices/turn_cancelled")
         }
       end
 
@@ -1496,7 +1521,7 @@ module LittleGhost
             subagent_id: identity.subagent_id,
             kind: identity.definition.kind,
             turn: turn.number,
-            error: "A previous turn failed; spawn a new identity."
+            error: prompt("subagents/errors/previous_turn_failed")
           )
           queue_observer_event("turn_failed", identity, turn:)
         end
@@ -1505,26 +1530,26 @@ module LittleGhost
 
       def reject_turn_locked(message, identity: nil)
         unless message.is_a?(String)
-          return {status: "invalid_request", message: "Subagent messages must be strings."}
+          return {status: "invalid_request", message: prompt("subagents/feedback/message_type")}
         end
         if message.length > @max_message_chars
           return {
             status: "invalid_request",
-            message: "Subagent messages cannot exceed #{@max_message_chars} characters."
+            message: prompt("subagents/feedback/message_limit", limit: @max_message_chars)
           }
         end
         if @turn_count >= @max_turns
           return {
             status: "capacity_reached",
             limit: @max_turns,
-            message: "This run has reached its subagent turn limit."
+            message: prompt("subagents/feedback/turn_capacity")
           }
         end
         if identity && identity.queue.length >= @max_queued_turns_per_identity
           return {
             status: "capacity_reached",
             limit: @max_queued_turns_per_identity,
-            message: "Subagent #{identity.subagent_id.inspect} has reached its queued turn limit.",
+            message: prompt("subagents/feedback/queue_capacity", id: identity.subagent_id),
             subagent: snapshot(identity)
           }
         end
@@ -1535,7 +1560,7 @@ module LittleGhost
         {
           status: "capacity_reached",
           limit: @max_identities,
-          message: "This run has reached its subagent identity limit."
+          message: prompt("subagents/feedback/identity_capacity")
         }
       end
 
@@ -1543,19 +1568,19 @@ module LittleGhost
         if subagent_ids.nil?
           return @identities.values.reject { |identity| identity.resumed && identity.agent.nil? }
         end
-        raise ToolError, "subagent_ids must be unique" if subagent_ids.uniq.length != subagent_ids.length
+        raise ToolError, prompt("subagents/feedback/duplicate_ids") if subagent_ids.uniq.length != subagent_ids.length
 
         subagent_ids.map do |subagent_id|
           identity = fetch_identity!(subagent_id)
           if identity.resumed && identity.agent.nil?
-            raise ToolError, "Subagent #{subagent_id.inspect} is not active in this invocation."
+            raise ToolError, prompt("subagents/feedback/inactive", id: subagent_id)
           end
           identity
         end
       end
 
       def fetch_identity!(subagent_id)
-        @identities.fetch(subagent_id) { raise ToolError, "Unknown subagent id: #{subagent_id}" }
+        @identities.fetch(subagent_id) { raise ToolError, prompt("subagents/feedback/unknown_id", id: subagent_id) }
       end
 
       def snapshot(identity, include_response: false, include_progress: false)
@@ -1688,7 +1713,7 @@ module LittleGhost
       end
 
       def validate_mode(mode)
-        raise ToolError, "mode must be 'sync' or 'async'" unless %w[sync async].include?(mode)
+        raise ToolError, prompt("subagents/feedback/invalid_mode") unless %w[sync async].include?(mode)
       end
 
       def validate_limit(name, value)

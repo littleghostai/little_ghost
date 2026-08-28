@@ -1,0 +1,10 @@
+<%#
+# Key: tools/errors/unexpected_failure
+# Purpose: Sanitized unexpected Tool failure.
+# Used: Returned to the model when LittleGhost produces sanitized unexpected Tool failure.
+# Locals:
+# - error_class: Safe exception class name describing the failure.
+# Constraints:
+# - Must render non-blank.
+-%>
+Tool failed (<%= error_class %>)

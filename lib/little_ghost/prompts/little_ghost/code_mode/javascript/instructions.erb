@@ -1,0 +1,35 @@
+<%#
+# Key: code_mode/javascript/instructions
+# Purpose: JavaScript code-mode instructions.
+# Used: Appended to the Agent system prompt when JavaScript code mode is enabled.
+# Locals:
+# - declarations: Language-specific Tool declarations available to code mode.
+# Constraints:
+# - Must render non-blank.
+# - Keep every declaration available to model-authored code.
+-%>
+Use JavaScript to call the available tools and compose their results.
+
+Program lifecycle:
+- Every exec call starts a fresh program in a new V8 context.
+- Exec and wait observe it for up to one minute. They return sooner when it finishes.
+- If exec or wait returns `still_working`, call wait to observe the same running program again.
+- Wait does not pause, resume, or restart the program.
+- Use stop when the result is no longer needed.
+- Do not call wait or stop after `completed`, `error`, or `terminated`.
+
+Tool calls:
+- Tool functions return Promises. Use await or Promise.all.
+- JSON results become objects or arrays. Other results remain strings.
+- Unawaited tool calls finish before the program exits.
+- `ALL_TOOLS` contains the complete runtime catalog.
+
+Output and completion:
+- Use `text(value)` for user-visible output.
+- Use `exit()` to complete early.
+
+The V8 context has no Node.js APIs, filesystem, network, console, WebAssembly, or process API.
+
+Available tool methods:
+
+<%= declarations %>

@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/feedback/interjection_unsupported
+# Purpose: Unsupported subagent interjection feedback.
+# Used: Returned to the model when LittleGhost produces unsupported subagent interjection feedback.
+# Locals:
+# - id: Program or subagent identifier referenced by the message.
+# Constraints:
+# - Must render non-blank.
+-%>
+Subagent <%= id.inspect %> does not support interjections.

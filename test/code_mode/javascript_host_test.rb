@@ -118,7 +118,7 @@ class CodeModeHostTest < Minitest::Test
       {
         "type" => "failed",
         "program_id" => "8",
-        "error" => "Code-mode host has too many active programs",
+        "error" => "The code-mode host has too many active programs.",
         "fatal" => true
       },
       messages.first
@@ -132,7 +132,13 @@ class CodeModeHostTest < Minitest::Test
 
     runner.send(
       :receive,
-      {"type" => "execute", "program_id" => "oversized", "source" => source, "tools" => []}
+      {
+        "type" => "execute",
+        "program_id" => "oversized",
+        "source" => source,
+        "tools" => [],
+        "messages" => {"invalid_request" => "Bad __DETAIL__ / __DETAIL__"}
+      }
     )
 
     output.rewind
@@ -141,7 +147,7 @@ class CodeModeHostTest < Minitest::Test
     assert_equal "oversized", message.fetch("program_id")
     assert_equal true, message.fetch("fatal")
     assert_equal(
-      "Invalid code-mode request: Code-mode source exceeds the size limit",
+      "Bad Code-mode source exceeds the size limit. / Code-mode source exceeds the size limit.",
       message.fetch("error")
     )
   end
@@ -213,11 +219,47 @@ class CodeModeHostTest < Minitest::Test
 
       assert_equal "failed", terminal.fetch(:type)
       assert_equal true, terminal.fetch(:fatal)
-      assert_equal "JavaScript context cleanup failed", terminal.fetch(:error)
+      assert_equal "JavaScript context cleanup failed.", terminal.fetch(:error)
       refute_includes terminal.fetch(:error), "sensitive cleanup detail"
       assert program.join(1), "JavaScript host program did not finish after failed disposal"
       assert Timeout.timeout(1) { finished.pop }
     end
+  end
+
+  def test_execution_failure_uses_the_supplied_framework_message
+    messages = Queue.new
+    finished = Queue.new
+    MiniRacer::Context.stub(:new, ->(**) { raise "boom" }) do
+      program = LittleGhost::CodeMode::Javascript::Host::Program.new(
+        id: "failed",
+        source: "1",
+        tools: [],
+        messages: {"execution_failed" => "Failure __ERROR_CLASS__ / __ERROR_MESSAGE__"},
+        writer: ->(**message) { messages << message },
+        finished: ->(*) { finished << true }
+      )
+      terminal = Timeout.timeout(1) { messages.pop }
+
+      assert_equal "failed", terminal.fetch(:type)
+      assert_equal "Failure RuntimeError / boom", terminal.fetch(:error)
+      assert program.join(1)
+      assert Timeout.timeout(1) { finished.pop }
+    ensure
+      program&.terminate
+      program&.join(0.5)
+    end
+  end
+
+  def test_unknown_tool_failure_uses_the_supplied_framework_message
+    messages = run_program(
+      "await tools.missing();",
+      framework_messages: {
+        "unavailable_tool" => "Custom missing Tool: __TOOL_NAME__ / __TOOL_NAME__"
+      }
+    )
+
+    assert_equal "failed", messages.last.fetch(:type)
+    assert_includes messages.last.fetch(:error), "Custom missing Tool: missing / missing"
   end
 
   def test_program_id_remains_reserved_until_terminal_result_is_written
@@ -259,12 +301,13 @@ class CodeModeHostTest < Minitest::Test
 
   private
 
-  def run_program(source, tools: [])
+  def run_program(source, tools: [], framework_messages: nil)
     messages = Queue.new
     program = LittleGhost::CodeMode::Javascript::Host::Program.new(
       id: "test-program",
       source:,
       tools:,
+      messages: framework_messages,
       writer: ->(**message) { messages << message },
       finished: ->(*) {}
     )

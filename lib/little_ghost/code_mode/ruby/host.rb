@@ -35,6 +35,7 @@ module LittleGhost
             response_queues = {}
             calls = 0
             max_calls = request.fetch("tool_calls")
+            messages = request.fetch("messages")
             output_buffer = +""
             flush_output = lambda do
               unless output_buffer.empty?
@@ -81,7 +82,7 @@ module LittleGhost
             invoke = lambda do |name, arguments|
               id, queue = queues_lock.synchronize do
                 calls += 1
-                raise "tool call limit exceeded" if calls > max_calls
+                raise messages.fetch("tool_calls_limit") if calls > max_calls
                 id = "call-#{calls}"
                 queue = Queue.new
                 response_queues[id] = queue
@@ -102,7 +103,7 @@ module LittleGhost
             end
             concurrency = request.fetch("concurrency")
             tools.define_singleton_method(:parallel) do |*operations|
-              raise ArgumentError, "parallel accepts callables" unless operations.all? { |operation| operation.respond_to?(:call) }
+              raise ArgumentError, messages.fetch("parallel_callables") unless operations.all? { |operation| operation.respond_to?(:call) }
               operations.each_slice(concurrency).flat_map do |batch|
                 batch.map { |operation| Thread.new { operation.call } }.map(&:value)
               end
@@ -130,8 +131,11 @@ module LittleGhost
           rescue SignalException
             exit 0
           rescue Exception => error
-            STDERR.puts("#{error.class}: #{error.message}")
-            error_frame = {type: "error", error: "#{error.class}: #{error.message}"}
+            failure = messages.fetch("execution_failed")
+              .gsub("__ERROR_CLASS__") { error.class.to_s }
+              .gsub("__ERROR_MESSAGE__") { error.message }
+            STDERR.puts(failure)
+            error_frame = {type: "error", error: failure}
             emit ? emit.call(error_frame) : write_frame&.call(error_frame)
             exit 1
             end
