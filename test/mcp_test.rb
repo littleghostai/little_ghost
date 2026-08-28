@@ -208,6 +208,32 @@ class MCPTest < Minitest::Test
     assert_equal 2, transport.requests.last.dig(:params, :arguments, "count")
   end
 
+  def test_blank_description_uses_bundled_fallback_with_a_non_agent_binding
+    transport = Transport.new(tool_pages: [[{
+      "name" => "search",
+      "inputSchema" => {"type" => "object"}
+    }]])
+    application_agent = Class.new.new
+    binding = LittleGhost::Tool::Binding.new(agent: application_agent)
+
+    tool = client_toolset(transport).tools(binding).fetch(0)
+
+    assert_equal "MCP Tool from MCP Toolset", tool.description
+  end
+
+  def test_blank_server_error_uses_bundled_fallback_with_a_non_agent_binding
+    failure = ::MCP::Client::ServerError.new("", code: -32_000)
+    transport = Transport.new(request_error: failure)
+    application_agent = Class.new.new
+    binding = LittleGhost::Tool::Binding.new(agent: application_agent)
+
+    error = assert_raises(LittleGhost::ToolError) do
+      client_toolset(transport).tools(binding)
+    end
+
+    assert_equal "MCP request failed", error.message
+  end
+
   def test_map_tool_can_omit_and_rename_without_changing_dispatch
     transport = Transport.new(tool_pages: [[
       {"name" => "search", "description" => "Search", "inputSchema" => {"type" => "object"}},

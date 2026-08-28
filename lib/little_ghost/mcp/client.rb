@@ -369,10 +369,7 @@ module LittleGhost
         description = mcp_tool.description.to_s
         return description unless description.empty?
 
-        return binding.agent.render_framework_prompt("mcp/tools/fallback/description", server_name: @name) if binding.agent
-
-        prompts = FrameworkPrompts.for_runtime(binding.runtime)
-        prompts.render("mcp/tools/fallback/description", locals: {server_name: @name})
+        framework_prompt(binding, "mcp/tools/fallback/description", server_name: @name)
       end
 
       def validate_tool_names!(tools, context:)
@@ -486,7 +483,7 @@ module LittleGhost
       end
 
       def framework_prompt(binding, key, **locals)
-        return binding.agent.render_framework_prompt(key, **locals) if binding.agent
+        return binding.agent.render_framework_prompt(key, **locals) if binding.agent.is_a?(Agent)
 
         FrameworkPrompts.for_runtime(binding.runtime).render(key, locals:)
       end
