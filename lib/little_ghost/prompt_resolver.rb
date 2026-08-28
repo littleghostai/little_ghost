@@ -56,17 +56,17 @@ module LittleGhost
   # name to escape those roots.
   #
   #   resolver = LittleGhost::PromptResolver.new(paths: ["app/prompts"])
-  #   prompt = resolver.render("support/system", locals: {product: "Acme"})
+  #   prompt = resolver.render("support/system_prompt", assigns: {product: "Acme"})
   #   prompt.include?("Acme") # => true
   #
-  # In +support/system.erb+:
+  # In +support/system_prompt.erb+:
   #
-  #   <%= partial "shared/rules", locals: {product: product} %>
+  #   <%= partial "shared/rules" %>
   #
   # Earlier invocation roots override configured roots. Template names must be
   # relative, and both lexical traversal and symbolic-link escapes are rejected.
-  # Partials use an underscore-prefixed filename and receive only their
-  # explicitly supplied locals.
+  # Partials use an underscore-prefixed filename, receive only their explicitly
+  # supplied locals, and share the parent view's application assigns.
   #
   # Every configured root is trusted Ruby code because ERB executes inside the
   # current process. Keep roots application-controlled and non-user-writable.
@@ -86,27 +86,30 @@ module LittleGhost
       @cache_mutex = Mutex.new
     end
 
-    # Renders +name+ with validated local variables.
+    # Renders +name+ with validated local variables and application assigns.
+    # Assign keys become instance variables in the isolated ERB context and are
+    # inherited by partials. Names beginning with <tt>_little_ghost_</tt> are
+    # reserved for rendering internals. Ordinary partial locals remain explicit.
     #
     # +invocation_paths+ accepts only TrustedPath values because those roots
     # take precedence over application configuration. The wrapper records the
     # directory selected by application code; it does not inspect who can modify
     # that directory.
-    def render(name, locals: {}, invocation_paths: [])
+    def render(name, locals: {}, assigns: {}, invocation_paths: [])
       roots = normalize_invocation_roots(invocation_paths) + @paths
-      render_template(normalize_name(name), locals, roots, [])
+      render_template(normalize_name(name), locals, assigns, roots, [])
     end
 
     private
 
-    def render_template(name, locals, roots, stack)
+    def render_template(name, locals, assigns, roots, stack)
       raise InvalidPromptTemplateError, "Prompt template recursion exceeds #{@max_depth} levels" if stack.length >= @max_depth
 
       path = resolve(name, roots)
       raise InvalidPromptTemplateError, "Prompt template cycle detected: #{(stack + [path]).join(" -> ")}" if stack.include?(path)
 
       template = compiled_template(path)
-      context = RenderContext.new(self, roots, stack + [path], name, locals)
+      context = RenderContext.new(self, roots, stack + [path], name, locals, assigns)
       template.result(context.template_binding)
     rescue NameError => error
       if error.name && local_name?(error.name)
@@ -116,9 +119,9 @@ module LittleGhost
       raise
     end
 
-    def render_partial(name, locals, roots, stack, parent_name)
+    def render_partial(name, locals, assigns, roots, stack, parent_name)
       logical_name = partial_name(name, parent_name)
-      render_template(logical_name, locals, roots, stack)
+      render_template(logical_name, locals, assigns, roots, stack)
     end
 
     def partial_name(name, parent_name)
@@ -214,21 +217,31 @@ module LittleGhost
     end
 
     class RenderContext # :nodoc:
-      def initialize(resolver, roots, stack, name, locals)
-        @resolver = resolver
-        @roots = roots
-        @stack = stack
-        @name = name
-        @locals = validate_locals(locals)
+      def initialize(resolver, roots, stack, name, locals, assigns)
+        @_little_ghost_resolver = resolver
+        @_little_ghost_roots = roots
+        @_little_ghost_stack = stack
+        @_little_ghost_name = name
+        @_little_ghost_locals = validate_locals(locals)
+        @_little_ghost_assigns = validate_assigns(assigns)
       end
 
       def partial(name, locals: {})
-        @resolver.send(:render_partial, name, locals, @roots, @stack, @name)
+        @_little_ghost_resolver.send(
+          :render_partial,
+          name,
+          locals,
+          @_little_ghost_assigns,
+          @_little_ghost_roots,
+          @_little_ghost_stack,
+          @_little_ghost_name
+        )
       end
 
       def template_binding
+        @_little_ghost_assigns.each { |name, value| instance_variable_set("@#{name}", value) }
         context_binding = binding
-        @locals.each { |name, value| context_binding.local_variable_set(name, value) }
+        @_little_ghost_locals.each { |name, value| context_binding.local_variable_set(name, value) }
         context_binding
       end
 
@@ -243,6 +256,21 @@ module LittleGhost
           symbol = name.to_sym
           unless symbol.to_s.match?(/\A[a-z_]\w*\z/)
             raise ArgumentError, "Invalid local name: #{name.inspect}"
+          end
+
+          result[symbol] = value
+        end
+      end
+
+      def validate_assigns(assigns)
+        unless assigns.respond_to?(:each_pair)
+          raise ArgumentError, "assigns must be a hash"
+        end
+
+        assigns.each_with_object({}) do |(name, value), result|
+          symbol = name.to_sym
+          unless symbol.to_s.match?(/\A[a-z_]\w*\z/) && !symbol.to_s.start_with?("_little_ghost_")
+            raise ArgumentError, "Invalid assign name: #{name.inspect}"
           end
 
           result[symbol] = value

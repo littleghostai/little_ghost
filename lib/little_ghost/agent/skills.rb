@@ -70,10 +70,6 @@ module LittleGhost
           end
           self.skills_configuration_value = options.merge(paths: configured_paths)
           tools CatalogTools
-          prompt_local(:skills_prompt) do
-            tool = tools.fetch("skills") if tools.names.include?("skills")
-            tool&.catalog&.discovery_prompt.to_s
-          end
           before_invocation :include_skills_prompt
         end
 
@@ -82,8 +78,13 @@ module LittleGhost
 
       private
 
+      def skills_prompt
+        tool = tools.fetch("skills") if tools.names.include?("skills")
+        tool&.catalog&.discovery_prompt.to_s
+      end
+
       def include_skills_prompt(payload)
-        prompt = prompt_locals[:skills_prompt].to_s
+        prompt = skills_prompt
         return Support::Callbacks.continue if prompt.empty?
 
         messages = payload.fetch(:messages).dup

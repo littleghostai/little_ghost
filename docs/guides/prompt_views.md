@@ -28,7 +28,7 @@ class CustomerSupportAgent < LittleGhost::Agent
 end
 ```
 
-Then create `app/prompts/customer_support/system.erb`:
+Then create `app/prompts/customer_support/system_prompt.erb`:
 
 ```erb
 You help customers understand their orders and account.
@@ -38,32 +38,57 @@ Never invent company guidance. Check the help center when policy matters.
 Use the order status tool before making a claim about a private order.
 ```
 
-That is enough. `CustomerSupportAgent` becomes `customer_support`, so LittleGhost looks for `customer_support/system.erb` under `app/prompts`.
+That is enough. `CustomerSupportAgent` becomes `customer_support`, so LittleGhost looks for `customer_support/system_prompt.erb` under `app/prompts`.
 
 The prompt is still a system instruction sent to the selected model provider. Keeping it in a view improves organization; it does not keep the content inside your process.
 
-## Give the view application values
+## Prepare application values with Ruby
 
-Use `prompt_local` for a value the application owns:
+Define `system_prompt` as an instance method when the view needs values from
+your application. Assign them to instance variables, as you would in a Rails
+controller action:
 
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
-  prompt_local :company_name, "Northstar"
+  def system_prompt
+    @company_name = "Northstar"
+    @policy_version = SupportPolicy.current_version
+  end
 end
 ```
 
-The local is available by name in the view:
+The instance variables are available in the view:
 
 ```erb
-You are a customer support agent for <%= company_name %>.
+You are a customer support agent for <%= @company_name %>.
+Follow support policy <%= @policy_version %>.
 Answer clearly and concisely.
 ```
 
-A block can resolve a trusted value for each Agent instance. Add it to the Agent class too:
+LittleGhost calls the method once, immediately before rendering each file-backed
+system prompt. Its return value is ignored. Exceptions stop that invocation and
+follow the Run's normal failure handling. Inline prompts take precedence and do
+not call the method.
+
+Each action starts with the application assigns established when the Agent
+finished initialization. LittleGhost copies that baseline and the current
+action's assignments into the separate view context, then immediately restores
+the Agent's real state. Callback and tool state from an earlier invocation is
+not exposed automatically. Read persistent values through `run`, the session,
+or another application object instead of relying on prompt assigns.
+
+Assigned objects cross into the view by reference, as ordinary Ruby objects do.
+Treat mutable assigns as read-only while preparing and rendering a prompt, or
+duplicate them when the view needs an isolated value.
+
+Subclass actions can call `super` before adding their own values:
 
 ```ruby
-class CustomerSupportAgent < LittleGhost::Agent
-  prompt_local(:policy_version) { SupportPolicy.current_version }
+class BillingSupportAgent < CustomerSupportAgent
+  def system_prompt
+    super
+    @billing_region = "US"
+  end
 end
 ```
 
@@ -76,19 +101,22 @@ Every rendered value may be sent to the model provider. Pass only data that belo
 Partials keep repeated instructions in one place. Create `app/prompts/shared/_voice.erb`:
 
 ```erb
-Use a warm, direct voice for <%= company_name %>.
+Use a warm, direct voice for <%= @company_name %>.
 Prefer one clear next step over a long list of possibilities.
 ```
 
 Render it from the Agent's system view:
 
 ```erb
-You are a customer support agent for <%= company_name %>.
+You are a customer support agent for <%= @company_name %>.
 
-<%= partial "shared/voice", locals: {company_name: company_name} %>
+<%= partial "shared/voice" %>
 ```
 
-The underscore marks a partial. Its locals are explicit, so it does not quietly inherit everything available to the parent view.
+The underscore marks a partial. Partials share the Agent's instance variables,
+so `@company_name` remains available. Ordinary locals are still explicit: pass
+them with `locals:` when a partial needs a temporary value that is not an Agent
+assign.
 
 ## Choose a different template path
 
@@ -104,7 +132,7 @@ LittleGhost chooses one prompt source in this order:
 
 1. An inline `system_prompt`
 2. An explicit `system_template`
-3. The Agent's conventional `system.erb` view
+3. The Agent's conventional `system_prompt.erb` view
 
 Applications can add prompt lookup roots through `Configuration#prompt_paths`.
 Earlier roots win, which lets application code override a shared prompt package.

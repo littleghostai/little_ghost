@@ -17,8 +17,10 @@ module LittleGhost
     # Static declarations may be combined with a resolver that returns dynamic
     # Subagents::Definition objects. Managed conversations persist when a session
     # store is configured unless <tt>persist: false</tt> keeps them local to one
-    # invocation. An agent exposed as a tool starts with empty history unless
-    # <tt>preserve_context: true</tt> serializes calls and retains its history.
+    # invocation. A class-declared agent exposed as a tool starts with an empty
+    # history and a fresh run-scoped Agent for every call. Set
+    # <tt>preserve_context: true</tt> to serialize calls through one Agent and
+    # retain its history.
     #
     # Tool overrides must be classes. A delegated agent otherwise receives only
     # its own declared tools; it does not inherit the parent's registry. The
@@ -91,8 +93,9 @@ module LittleGhost
 
         # Exposes +agent_class+ as one ordinary tool.
         #
-        # Pass <tt>preserve_context: true</tt> to retain the delegated agent's
-        # conversational history between calls to that tool instance.
+        # By default, every tool call builds and closes a fresh delegated Agent.
+        # Pass <tt>preserve_context: true</tt> to serialize calls through one
+        # Agent and retain its conversational history between calls.
         def agent_as_tool(agent_class, name: nil, description: nil, model: nil, tools: nil,
           preserve_context: false)
           assembly_as_tool(

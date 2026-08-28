@@ -492,7 +492,7 @@ class AgentInterjectionTest < Minitest::Test
     agent&.close
   end
 
-  def test_interject_rejects_inactive_and_ambiguous_agent_invocations
+  def test_interject_rejects_inactive_agent_and_overlap_never_becomes_ambiguous
     agent = LittleGhost::Agent.new(model: SequencedModel.new(model_response("done")))
 
     assert_raises(LittleGhost::AgentInterjectionError) { agent.interject("status") }
@@ -510,15 +510,15 @@ class AgentInterjectionTest < Minitest::Test
       end
     end.new
     concurrent = LittleGhost::Agent.new(model: blocking_model)
-    runners = 2.times.map { Thread.new { concurrent.call("work") } }
-    2.times { first_started.pop }
+    runner = Thread.new { concurrent.call("work") }
+    first_started.pop
 
-    error = assert_raises(LittleGhost::AgentInterjectionError) { concurrent.interject("status") }
-    assert_includes error.message, "multiple active invocations"
+    error = assert_raises(LittleGhost::AgentBusyError) { concurrent.call("overlap") }
+    assert_includes error.message, "already handling"
   ensure
-    2.times { releases << true } if releases
-    runners&.each { |thread| thread.join(1) }
-    runners&.each(&:kill)
+    releases << true if releases
+    runner&.join(1)
+    runner&.kill
     concurrent&.close
     agent&.close
   end
@@ -598,6 +598,65 @@ class AgentInterjectionTest < Minitest::Test
     error = assert_raises(LittleGhost::InvocationError) { agent.call("work") }
 
     assert_equal "Agent is closed", error.message
+  end
+
+  def test_run_scoped_agent_rejects_overlapping_invocations_and_can_be_reused_after_completion
+    started = Queue.new
+    release = Queue.new
+    work = tool("work") do
+      started << true
+      release.pop
+      "done"
+    end
+    model = SequencedModel.new(
+      model_response([tool_use("work-call", "work")], stop_reason: :tool_use),
+      model_response("first done"),
+      model_response("second done")
+    )
+    agent = LittleGhost::Agent.new(model:, tools: [work])
+    first = Thread.new { agent.call("first") }
+    started.pop
+
+    error = assert_raises(LittleGhost::AgentBusyError) { agent.call("overlap") }
+
+    assert_includes error.message, "fresh Agent"
+    release << true
+    assert_equal "first done", first.value.text
+    assert_equal "second done", agent.call("second").text
+  ensure
+    release << true if first&.alive?
+    first&.kill
+    agent&.close
+  end
+
+  def test_invocation_guard_releases_after_failure
+    model = SequencedModel.new(->(_request) { raise "failed" }, model_response("recovered"))
+    agent = LittleGhost::Agent.new(model:)
+
+    assert_raises(RuntimeError) { agent.call("first") }
+    assert_equal "recovered", agent.call("second").text
+  ensure
+    agent&.close
+  end
+
+  def test_invocation_guard_releases_when_code_mode_cleanup_fails
+    cleanup = Object.new
+    cleanup.define_singleton_method(:instructions) { "" }
+    cleanup.define_singleton_method(:close) do |context: nil|
+      @closes = @closes.to_i + 1
+      raise "cleanup failed" if @closes == 1
+    end
+    model = SequencedModel.new(model_response("first"), model_response("second"))
+    agent = LittleGhost::Agent.new(model:)
+    agent.instance_variable_set(:@code_mode_runtime, cleanup)
+    agent.instance_variable_set(:@code_mode_declaration, {except: []})
+
+    error = assert_raises(RuntimeError) { agent.call("first") }
+
+    assert_equal "cleanup failed", error.message
+    assert_equal "second", agent.call("second").text
+  ensure
+    agent&.close
   end
 
   def self.model_response(content, stop_reason: :end_turn)

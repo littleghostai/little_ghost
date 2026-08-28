@@ -75,7 +75,7 @@ class WorkflowTest < Minitest::Test
     end
 
     def template_locals(run:, agent:)
-      {run:, agent:}
+      {run:, agent:}.merge(agent.prompt_locals)
     end
   end
 
@@ -91,6 +91,10 @@ class WorkflowTest < Minitest::Test
       @note = invoke(:note).output
       invoke :main, input: "#{input.text}\n\nResearch:\n#{note}"
     end
+  end
+
+  class SharedLocalsWorkflow < ExampleWorkflow
+    def prompt_locals = {workflow_policy: "shared"}
   end
 
   class ParallelWorkflow < LittleGhost::Workflow
@@ -184,6 +188,25 @@ class WorkflowTest < Minitest::Test
     assert_raises(LittleGhost::Error) { workflow.stream("again") }
     workflow.close
     workflow.close
+  end
+
+  def test_workflow_prompt_locals_flow_to_child_templates
+    router = FakeAgent.new(result(structured: {"path" => "answer"}))
+    note = FakeAgent.new(result(text: "evidence"))
+    main = FakeAgent.new(result(text: "final"))
+    application = Application.new(router: [router], note: [note], main: [main])
+    run = Run.new(application)
+    workflow = SharedLocalsWorkflow.new(run:)
+
+    workflow.stream(
+      "question",
+      template_locals: application.template_locals(run:, agent: workflow)
+    ).to_a
+
+    assert_equal "shared", router.calls.first.fetch(2).dig(:template_locals, :workflow_policy)
+    assert_equal "shared", main.calls.first.fetch(2).dig(:template_locals, :workflow_policy)
+  ensure
+    workflow&.close
   end
 
   def test_closes_an_intermediate_agent_when_it_fails

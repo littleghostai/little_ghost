@@ -36,6 +36,14 @@ class ConfigurationTest < Minitest::Test
     system_prompt "Answer clearly."
   end
 
+  class ConventionalPromptAgent < LittleGhost::Agent
+    model "main"
+
+    def system_prompt
+      @name = "Conventional"
+    end
+  end
+
   def test_configuration_builds_its_shared_runtime_once_across_threads
     Dir.mktmpdir do |root|
       configuration = LittleGhost::Configuration.new(root:)
@@ -1508,15 +1516,59 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def test_agent_reads_open_invocation_data_and_receives_standard_prompt_locals
+  def test_system_prompt_action_reads_run_data_and_view_receives_standard_locals
     agent = Class.new(LittleGhost::Agent) do
       model "main"
-      system_prompt { |locals| "#{locals.fetch(:invocation)[:channel]}:#{locals.fetch(:run).invocation.message.text}" }
+      system_template "fixture/system_prompt"
+
+      def system_prompt
+        @channel = run.invocation[:channel]
+      end
     end
-    with_runtime(agent:) do |harness, provider|
+    with_runtime(agent:) do |harness, provider, root|
+      File.write(
+        File.join(root, "app/prompts/fixture/system_prompt.erb"),
+        "<%= @channel %>:<%= invocation.message.text %>:<%= run.invocation.message.text %>:<%= agent.class.agent_id %>"
+      )
       harness.agent_instance.call(message: "hello", channel: "slack")
 
-      assert_equal "slack:hello", provider.requests.first.messages.first.text
+      assert_equal "slack:hello:hello:agent", provider.requests.first.messages.first.text
+    end
+  end
+
+  def test_named_agent_uses_the_conventional_system_prompt_template
+    with_runtime(agent: ConventionalPromptAgent) do |harness, provider, root|
+      prompt = File.join(
+        root,
+        "app/prompts",
+        ConventionalPromptAgent.logical_path,
+        "system_prompt.erb"
+      )
+      FileUtils.mkdir_p(File.dirname(prompt))
+      File.write(prompt, "<%= @name %>:<%= invocation.message.text %>")
+
+      harness.agent_instance.call(message: "hello")
+
+      assert_equal "Conventional:hello", provider.requests.first.messages.first.text
+    end
+  end
+
+  def test_named_agent_does_not_fall_back_to_the_old_conventional_template_name
+    with_runtime(agent: ConventionalPromptAgent) do |harness, provider, root|
+      prompt = File.join(
+        root,
+        "app/prompts",
+        ConventionalPromptAgent.logical_path,
+        "system.erb"
+      )
+      FileUtils.mkdir_p(File.dirname(prompt))
+      File.write(prompt, "Old convention")
+
+      run = harness.agent_instance.call(message: "hello")
+
+      assert_predicate run, :failed?
+      assert_instance_of LittleGhost::MissingPromptTemplateError, run.error
+      assert_empty provider.requests
     end
   end
 
@@ -1797,6 +1849,74 @@ class ConfigurationTest < Minitest::Test
     with_runtime(agent: parent) { |harness| harness.agent_instance.call(message: "hello") }
 
     assert_equal 1, closes
+  end
+
+  def test_context_free_declared_agent_tool_builds_a_fresh_agent_for_each_call
+    instances = []
+    closes = []
+    child = Class.new(LittleGhost::Agent) do
+      agent_id "delegate"
+      model "main"
+      description "Child"
+      system_prompt "Child"
+      after_initialize { |agent| instances << agent }
+
+      define_method(:close) do
+        unless defined?(@close_recorded)
+          @close_recorded = true
+          closes << object_id
+        end
+        super()
+      end
+    end
+    parent = Class.new(LittleGhost::Agent) do
+      model "main"
+      system_prompt "Parent"
+      agent_as_tool child
+    end
+
+    with_runtime(agent: parent) do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
+      agent = harness.build_agent(run:)
+      delegate = agent.tool_registry.fetch("delegate")
+
+      assert delegate.execute({"input" => "first"}).success?
+      assert delegate.execute({"input" => "second"}).success?
+      assert_equal 2, instances.map(&:object_id).uniq.length
+      assert_equal instances.map(&:object_id).sort, closes.sort
+    ensure
+      agent&.close
+      run&.close
+    end
+  end
+
+  def test_context_preserving_declared_agent_tool_reuses_one_serialized_agent
+    instances = []
+    child = Class.new(LittleGhost::Agent) do
+      agent_id "delegate"
+      model "main"
+      description "Child"
+      system_prompt "Child"
+      after_initialize { |agent| instances << agent }
+    end
+    parent = Class.new(LittleGhost::Agent) do
+      model "main"
+      system_prompt "Parent"
+      agent_as_tool child, preserve_context: true
+    end
+
+    with_runtime(agent: parent) do |harness|
+      run = harness.agent_instance.build_run(message: "hello")
+      agent = harness.build_agent(run:)
+      delegate = agent.tool_registry.fetch("delegate")
+
+      assert delegate.execute({"input" => "first"}).success?
+      assert delegate.execute({"input" => "second"}).success?
+      assert_equal 1, instances.map(&:object_id).uniq.length
+    ensure
+      agent&.close
+      run&.close
+    end
   end
 
   def test_sessions_restore_history_and_persist_the_result
@@ -2302,9 +2422,9 @@ class ConfigurationTest < Minitest::Test
     Dir.mktmpdir do |root|
       agent ||= Class.new(LittleGhost::Agent) do
         model "main"
-        system_template "fixture/system"
+        system_template "fixture/system_prompt"
       end
-      prompt = File.join(root, "app/prompts/fixture/system.erb")
+      prompt = File.join(root, "app/prompts/fixture/system_prompt.erb")
       config = File.join(root, "config/little_ghost.rb")
       FileUtils.mkdir_p(File.dirname(prompt))
       FileUtils.mkdir_p(File.dirname(config))
