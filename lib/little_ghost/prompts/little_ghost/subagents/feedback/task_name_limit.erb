@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/feedback/task_name_limit
+# Purpose: Subagent task-name length feedback.
+# Used: Returned to the model when LittleGhost produces subagent task-name length feedback.
+# Locals:
+# - maximum: Configured maximum allowed by the relevant limit.
+# Constraints:
+# - Must render non-blank.
+-%>
+task_name must be at most <%= maximum %> characters.

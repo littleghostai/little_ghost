@@ -208,7 +208,7 @@ module LittleGhost
         context&.check!
         raise CancelledError, "The MCP request was cancelled"
       rescue ::MCP::Client::ServerError => error
-        raise ToolError, error.message.to_s.empty? ? "MCP request failed" : error.message
+        raise ToolError, error.message.to_s.empty? ? framework_prompt(binding, "mcp/errors/request_failed") : error.message
       rescue ::MCP::Client::PaginationLimitError => error
         raise ProtocolError, "MCP tools/list exceeded the pagination limit: #{error.message}"
       rescue ::MCP::Client::ValidationError, ::MCP::Client::InputRequiredError => error
@@ -234,12 +234,12 @@ module LittleGhost
           value
         end
         context&.check!
-        tool_result(mapped, result:, content:)
+        tool_result(mapped, result:, content:, binding:)
       rescue ::MCP::CancelledError
         context&.check!
         raise CancelledError, "The MCP request was cancelled"
       rescue ::MCP::Client::ServerError => error
-        raise ToolError, error.message.to_s.empty? ? "MCP request failed" : error.message
+        raise ToolError, error.message.to_s.empty? ? framework_prompt(binding, "mcp/errors/request_failed") : error.message
       rescue ::MCP::Client::ValidationError, ::MCP::Client::InputRequiredError => error
         raise ProtocolError, "MCP client rejected the response: #{error.message}"
       rescue ::MCP::Client::RequestHandlerError => error
@@ -322,7 +322,7 @@ module LittleGhost
         session = @session
         tool_class = Class.new(Tool) do
           tool_name adapter.send(:safe_name, mcp_tool.name)
-          description adapter.send(:description_for, mcp_tool)
+          description adapter.send(:description_for, mcp_tool, binding:)
           input_schema mcp_tool.input_schema || {"type" => "object"}
           self.validate_input_schema_value = false
 
@@ -365,9 +365,14 @@ module LittleGhost
         "#{normalized[0, prefix_length]}_#{digest}"
       end
 
-      def description_for(mcp_tool)
+      def description_for(mcp_tool, binding:)
         description = mcp_tool.description.to_s
-        description.empty? ? "MCP tool from #{@name}" : description
+        return description unless description.empty?
+
+        return binding.agent.render_framework_prompt("mcp/tools/fallback/description", server_name: @name) if binding.agent
+
+        prompts = FrameworkPrompts.for_runtime(binding.runtime)
+        prompts.render("mcp/tools/fallback/description", locals: {server_name: @name})
       end
 
       def validate_tool_names!(tools, context:)
@@ -396,7 +401,7 @@ module LittleGhost
         end
       end
 
-      def tool_result(mapped, result:, content:)
+      def tool_result(mapped, result:, content:, binding:)
         error = result["isError"]
         unless error.nil? || error == true || error == false
           raise ProtocolError, "MCP tool result isError must be boolean"
@@ -408,7 +413,7 @@ module LittleGhost
         else
           [mapped, media]
         end
-        raise ToolError, serialize_value(value) if error
+        raise ToolError, serialize_value(value, binding:) if error
 
         Tool::Result.new(value:, artifacts:)
       end
@@ -469,7 +474,7 @@ module LittleGhost
         (data.bytesize / 4 * 3) - padding
       end
 
-      def serialize_value(value)
+      def serialize_value(value, binding:)
         case value
         when String then value
         when nil then ""
@@ -477,7 +482,13 @@ module LittleGhost
         else value.to_s
         end
       rescue JSON::GeneratorError
-        raise ToolError, "MCP result transformation could not be serialized"
+        raise ToolError, framework_prompt(binding, "mcp/errors/transformation_unserializable")
+      end
+
+      def framework_prompt(binding, key, **locals)
+        return binding.agent.render_framework_prompt(key, **locals) if binding.agent
+
+        FrameworkPrompts.for_runtime(binding.runtime).render(key, locals:)
       end
     end
   end

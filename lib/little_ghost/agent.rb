@@ -50,7 +50,6 @@ module LittleGhost
   # Run[rdoc-ref:LittleGhost::Run] for outcomes, cancellation, and cleanup, and
   # Assembly[rdoc-ref:LittleGhost::Assembly] for the advanced run-scoped form.
   class Agent < Assembly
-    DEFAULT_SYSTEM_PROMPT = "You are a helpful agent." # :nodoc:
     DEFAULT_MAX_TOOL_RESULT_TOKENS = 10_000 # :nodoc:
     MAX_STRUCTURED_RESULT_BYTES = 1_000_000 # :nodoc:
     MAX_STRUCTURED_RESULT_DEPTH = 64 # :nodoc:
@@ -550,6 +549,8 @@ module LittleGhost
       standalone = model.nil? && run.nil?
       super(run:, runtime:, workspace:, sandbox:, standalone:)
       if standalone
+        @framework_prompts = FrameworkPrompts.new(paths: template_paths)
+        @framework_prompt_invocation_paths = [].freeze
         @owns_resources = true
         @closed = false
         @close_mutex = Mutex.new
@@ -560,6 +561,12 @@ module LittleGhost
 
       @model = model
       @runtime = runtime || run&.runtime
+      @framework_prompts = if @runtime
+        FrameworkPrompts.for_runtime(@runtime)
+      else
+        FrameworkPrompts.new(paths: template_paths)
+      end
+      @framework_prompt_invocation_paths = [].freeze
       @run = run
       @workspace = workspace || run&.workspace
       @sandbox = sandbox || run&.sandbox
@@ -636,7 +643,7 @@ module LittleGhost
     def request_assembly_transition(value, context:) # :nodoc:
       @assembly_transitions_mutex.synchronize do
         unless @assembly_tool_batch_sizes[context] == 1
-          raise ToolError, "An assembly transition must be the only tool call in a model response"
+          raise ToolError, render_framework_prompt("assembly/feedback/transition_only")
         end
         if @assembly_transitions.key?(context)
           raise ProtocolError, "Multiple assembly transitions were requested in one agent turn"
@@ -722,13 +729,12 @@ module LittleGhost
     # Streams one invocation as StreamEvent objects.
     #
     # Agents built inside a run accept history, JSON-like context, cancellation,
-    # deadlines, settings, and trusted invocation template paths. An Agent
+    # deadlines, settings, and invocation-specific prompt roots. An Agent
     # instance may be streamed only by its owning Run. Every template path must
-    # be an application-created TrustedPath;
-    # the wrapper records a trust decision and must never contain unchecked
-    # request or model input. A run-scoped Agent accepts one active invocation;
-    # enumerating an overlapping stream raises AgentBusyError. The instance may
-    # be invoked again after the first stream completes or fails.
+    # be an application-created TrustedPath, never a value selected by a request
+    # or model. A run-scoped Agent accepts one active invocation; enumerating an
+    # overlapping stream raises AgentBusyError. The instance may be invoked
+    # again after the first stream completes or fails.
     def stream(
       input = nil,
       history: nil,
@@ -925,6 +931,7 @@ module LittleGhost
       @code_mode_runtime @delegation_activity @exclusive_tools_mutex @executor
       @interjections_mutex @max_tool_calls @max_tool_result_tokens @max_turns
       @model @model_settings @owns_resources @run @runtime @sandbox @standalone
+      @framework_prompts @framework_prompt_invocation_paths
       @structured_output_strategy @task_runner @template_resolver @tool_loop_except
       @tool_loop_fallback @tool_loop_mutex @tool_loop_runs @tool_loop_terminate_at
       @tool_loop_warning_at @tool_registry @workspace
@@ -1007,12 +1014,7 @@ module LittleGhost
       Message.new(
         role: :user,
         content: [
-          Content::Text.new(text: <<~MESSAGE.strip),
-            Agent interjection:
-
-            Respond briefly in ordinary text before any tool calls, then continue the current task unless this
-            interjection asks you to finish.
-          MESSAGE
+          Content::Text.new(text: render_framework_prompt("agent/interjections/instructions")),
           *source.content
         ],
         metadata: source.metadata.merge(interjection.metadata).merge(
@@ -1070,6 +1072,8 @@ module LittleGhost
       interjections:,
       interject_ready:
     )
+      previous_framework_prompt_invocation_paths = @framework_prompt_invocation_paths
+      @framework_prompt_invocation_paths = template_paths.freeze
       started_at = monotonic_time
       operation_id = SecureRandom.uuid
       events = agent_stream_events(
@@ -1418,6 +1422,8 @@ module LittleGhost
       metadata = model.details.to_h.merge(model_role: model.role)
       emit(events, :invocation_error, error:, usage: context.usage, metadata:)
       raise
+    ensure
+      @framework_prompt_invocation_paths = previous_framework_prompt_invocation_paths
     end
 
     def invoke_model(
@@ -1439,7 +1445,14 @@ module LittleGhost
       StructuredOutput.validate_tool_collision!(strategy, ordinary_tools) if strategy
       request = ModelRequest.new(
         messages: messages,
-        tools: model_tools(strategy ? strategy.tools(ordinary_tools) : ordinary_tools, context:, turn:),
+        tools: model_tools(
+          strategy ? strategy.tools(
+            ordinary_tools,
+            description: render_framework_prompt("structured_output/tools/result/description")
+          ) : ordinary_tools,
+          context:,
+          turn:
+        ),
         settings: settings,
         output_schema: strategy&.output_schema,
         tool_choice: strategy&.tool_choice(repair: structured_result_repair_due),
@@ -1669,7 +1682,11 @@ module LittleGhost
           }
         )
         if tool.is_a?(ToolError)
-          result = build_tool_result(tool_use_id: tool_use.id, content: tool.message, status: :error)
+          result = build_tool_result(
+            tool_use_id: tool_use.id,
+            content: render_framework_prompt("tools/feedback/unknown", name: tool_use.name),
+            status: :error
+          )
           finish_instrumentation(
             tool_handle,
             operation_id:,
@@ -1755,6 +1772,7 @@ module LittleGhost
             tool_result,
             tool_use:,
             run: @run,
+            agent: self,
             workspace:,
             context:
           )
@@ -1782,7 +1800,12 @@ module LittleGhost
         )
         ExecutedTool.new(result:, execution_result: tool_result)
       rescue ToolError => error
-        result = build_tool_result(tool_use_id: tool_use.id, content: error.message, status: :error)
+        content = if error.framework_prompt
+          render_framework_prompt(error.framework_prompt.key, **error.framework_prompt.locals)
+        else
+          error.message
+        end
+        result = build_tool_result(tool_use_id: tool_use.id, content:, status: :error)
         finish_instrumentation(
           tool_handle,
           operation_id:,
@@ -1842,7 +1865,7 @@ module LittleGhost
       content = if references.empty?
         result.content
       else
-        "#{result.content}\n\nArtifacts:\n#{references.join("\n")}"
+        [result.content, render_framework_prompt("artifacts/presentation/format/references", references:)].join("\n\n")
       end
 
       Tool::ExecutionResult.new(
@@ -1859,8 +1882,12 @@ module LittleGhost
       artifacts.filter_map do |artifact|
         next unless artifact.reference.is_a?(String) && artifact.bytes
 
-        details = [artifact.media_type, "#{artifact.bytes} bytes"].compact.join(", ")
-        "- #{artifact.reference} (#{details})"
+        render_framework_prompt(
+          "artifacts/presentation/format/reference",
+          reference: artifact.reference,
+          media_type: artifact.media_type,
+          bytes: artifact.bytes
+        )
       end
     end
 
@@ -1948,7 +1975,10 @@ module LittleGhost
       configuration = self.class.result_schema
       schema_name = configuration.fetch(:name)
       validate_structured_result_limits!(value)
-      errors = Tool::SchemaValidator.new(configuration.fetch(:schema)).validate(value)
+      errors = Tool::SchemaValidator.new(
+        configuration.fetch(:schema),
+        prompt_renderer: method(:render_framework_prompt)
+      ).validate(value)
       return "Structured result does not match its schema: #{errors.join("; ")}" unless errors.empty?
 
       context.submit_structured_result(
@@ -1969,7 +1999,7 @@ module LittleGhost
       tool_uses.map do |tool_use|
         build_tool_result(
           tool_use_id: tool_use.id,
-          content: "The structured result was invalid. Submit it again using the required schema.",
+          content: render_framework_prompt("structured_output/repair/feedback/invalid_result"),
           status: :error
         )
       end
@@ -2006,7 +2036,10 @@ module LittleGhost
     def redact_structured_result_message(message)
       Message.new(
         role: message.role,
-        content: "[Structured result #{self.class.result_schema.fetch(:name)} redacted]",
+        content: render_framework_prompt(
+          "structured_output/persistence/format/redaction",
+          schema_name: self.class.result_schema.fetch(:name)
+        ),
         metadata: message.metadata
       )
     end
@@ -2091,14 +2124,15 @@ module LittleGhost
     end
 
     def structured_result_repair_message
-      requirement = if @structured_output_strategy&.tool?
-        "Call #{@structured_output_strategy.schema_name} exactly once as your only tool call."
-      else
-        "Your final response must be JSON matching the configured output schema."
-      end
       Message.new(
         role: :user,
-        content: "#{requirement} You have one repair attempt. The previous structured result was invalid."
+        content: render_framework_prompt(
+          "structured_output/repair/request",
+          tool: @structured_output_strategy&.tool?,
+          schema_name: @structured_output_strategy&.schema_name,
+          repairs_remaining: 1,
+          feedback: render_framework_prompt("structured_output/repair/feedback/invalid_result")
+        )
       )
     end
 
@@ -2206,7 +2240,9 @@ module LittleGhost
       prompt = prompt.call(locals) if prompt.respond_to?(:call)
       return append_code_mode_instructions(prompt) if prompt
       template = self.class.system_template
-      return append_code_mode_instructions(DEFAULT_SYSTEM_PROMPT) if instance_of?(Agent) && run && !template
+      if instance_of?(Agent) && run && !template
+        return append_code_mode_instructions(render_framework_prompt("agent/system/default"))
+      end
 
       template ||= "#{self.class.logical_path}/system_prompt" if run
       return nil unless template
@@ -2242,6 +2278,27 @@ module LittleGhost
     def default_template_resolver(paths)
       LittleGhost::PromptResolver.new(paths:)
     end
+
+    public
+
+    def render_framework_prompt(key, **locals) # :nodoc:
+      @framework_prompts.render(
+        key,
+        locals:,
+        invocation_paths: @framework_prompt_invocation_paths,
+        agent_path: self.class.logical_path
+      )
+    end
+
+    def framework_prompt_scope # :nodoc:
+      {
+        framework_prompts: @framework_prompts,
+        invocation_paths: @framework_prompt_invocation_paths,
+        agent_path: self.class.logical_path
+      }.freeze
+    end
+
+    private
 
     def apply_cancellation_decision!(decision)
       raise CancelledError, decision.reason if decision.cancel?
@@ -2402,7 +2459,13 @@ module LittleGhost
     end
 
     def truncated_tool_result(content)
-      Support::OutputTruncation.truncate_middle_with_token_budget(content, @max_tool_result_tokens).first
+      Support::OutputTruncation.truncate_middle_with_token_budget(
+        content,
+        @max_tool_result_tokens,
+        framework_prompts: @framework_prompts,
+        invocation_paths: @framework_prompt_invocation_paths,
+        agent_path: self.class.logical_path
+      ).first
     end
 
     def monotonic_time

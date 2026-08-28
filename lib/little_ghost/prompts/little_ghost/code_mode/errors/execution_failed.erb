@@ -1,0 +1,11 @@
+<%#
+# Key: code_mode/errors/execution_failed
+# Purpose: Code-mode execution failure feedback.
+# Used: Formats an uncaught code-mode exception before the host returns it through the Tool protocol.
+# Locals:
+# - error_class: Safe exception class name describing the failure.
+# - message: Dynamic message or failure detail.
+# Constraints:
+# - Must render non-blank.
+-%>
+<%= error_class %>: <%= message %>

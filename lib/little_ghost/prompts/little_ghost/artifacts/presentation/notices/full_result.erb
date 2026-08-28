@@ -1,0 +1,14 @@
+<%#
+# Key: artifacts/presentation/notices/full_result
+# Purpose: Stored full-result notice.
+# Used: Included in model-visible content when LittleGhost needs the stored full-result notice.
+# Locals:
+# - artifact: Model-visible reference for the stored artifact.
+# - preview: Bounded preview of the original result.
+# Constraints:
+# - Must render non-blank.
+-%>
+Full result: <%= artifact %>
+
+Preview:
+<%= preview %>

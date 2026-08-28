@@ -108,7 +108,9 @@ module LittleGhost
         while session.alive?
           context&.check!
           remaining = deadline - monotonic_time
-          raise ToolError, "Command timed out after #{timeout} seconds" unless remaining.positive?
+          unless remaining.positive?
+            raise ToolError, FrameworkPrompts.reference("sandbox/process/feedback/command_timed_out", timeout:)
+          end
 
           chunk = session.read(timeout: [remaining, 0.05].min)
           stdout << chunk.stdout

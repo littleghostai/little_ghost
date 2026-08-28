@@ -64,12 +64,12 @@ module LittleGhost
       def call(name, arguments = {}, id: SecureRandom.uuid)
         @call_mutex.synchronize do
           @call_count += 1
-          raise ToolError, "Code-mode tool call budget exceeded" if @max_calls && @call_count > @max_calls
+          raise ToolError, prompt("code_mode/feedback/limit_exceeded", limit: "Tool call") if @max_calls && @call_count > @max_calls
         end
         name = String(name).delete_prefix("tools.")
         available = catalog.any? { |specification| specification.fetch(:name, specification["name"]).to_s == name }
-        raise ToolError, "Tool is not available in code mode: #{name}" unless available
-        raise ToolError, "Tool arguments must be an object" unless arguments.is_a?(Hash)
+        raise ToolError, prompt("code_mode/feedback/unavailable_tool", name:) unless available
+        raise ToolError, prompt("code_mode/feedback/arguments_object") unless arguments.is_a?(Hash)
 
         execution_result = nil
         result = if @dispatch
@@ -120,6 +120,14 @@ module LittleGhost
       end
 
       private
+
+      def prompt(key, **locals)
+        if @agent
+          @agent.render_framework_prompt(key, **locals)
+        else
+          FrameworkPrompts.new.render(key, locals:)
+        end
+      end
 
       def subagent_control?(tool)
         defined?(Subagents::ControlTool) && tool.is_a?(Subagents::ControlTool)

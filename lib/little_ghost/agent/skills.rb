@@ -40,7 +40,8 @@ module LittleGhost
               paths:,
               resource_root: binding.run&.runtime&.skill_resource_root,
               workspace: binding.workspace,
-              sandbox: binding.sandbox
+              sandbox: binding.sandbox,
+              prompt_renderer: binding.agent.method(:render_framework_prompt)
             )
           )
           return [] if catalog.names.empty?

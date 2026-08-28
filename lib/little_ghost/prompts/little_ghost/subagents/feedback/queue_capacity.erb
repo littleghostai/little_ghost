@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/feedback/queue_capacity
+# Purpose: Subagent queue capacity feedback.
+# Used: Returned to the model when LittleGhost produces subagent queue capacity feedback.
+# Locals:
+# - id: Program or subagent identifier referenced by the message.
+# Constraints:
+# - Must render non-blank.
+-%>
+Subagent <%= id.inspect %> has reached its queued turn limit.

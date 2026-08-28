@@ -1,0 +1,10 @@
+<%#
+# Key: artifacts/batch/feedback/batch_too_large
+# Purpose: Artifact batch-size limit feedback.
+# Used: Returned to the model when LittleGhost produces artifact batch-size limit feedback.
+# Locals:
+# - maximum: Configured maximum allowed by the relevant limit.
+# Constraints:
+# - Must render non-blank.
+-%>
+Artifact batch exceeds the <%= maximum %>-byte limit

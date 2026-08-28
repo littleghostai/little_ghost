@@ -130,7 +130,7 @@ module LittleGhost
           context&.check!
           if deadline && monotonic_time >= deadline
             self.terminate if terminate
-            raise ToolError, "Program timed out after #{timeout} seconds"
+            raise ToolError, FrameworkPrompts.reference("sandbox/process/feedback/program_timed_out", timeout:)
           end
           sleep(0.01)
         end
@@ -190,7 +190,9 @@ module LittleGhost
           end
 
           if memory_bytes && memory_bytes > @memory_bytes
-            @resource_error = ToolError.new("Program memory exceeded #{@memory_bytes} bytes")
+            @resource_error = ToolError.new(
+              FrameworkPrompts.reference("sandbox/process/feedback/program_memory_exceeded", bytes: @memory_bytes)
+            )
             signal_group("TERM")
             sleep(MEMORY_SAMPLE_INTERVAL)
             signal_group("KILL") if raw_alive?
@@ -205,7 +207,9 @@ module LittleGhost
 
       def fail_memory_supervision(cause)
         @resource_error ||= begin
-          raise ToolError, "Program memory supervisor failed (#{cause.class.name || "anonymous exception"})", cause: cause
+          raise ToolError,
+            FrameworkPrompts.reference("sandbox/process/errors/program_supervisor_failed", error_class: cause.class.name),
+            cause: cause
         rescue ToolError => error
           error
         end
@@ -296,7 +300,7 @@ module LittleGhost
         @captured_bytes += chunk.bytesize
         if @captured_bytes > @output_bytes
           terminate
-          raise ToolError, "Program output exceeded #{@output_bytes} bytes"
+          raise ToolError, FrameworkPrompts.reference("sandbox/process/feedback/program_output_exceeded", bytes: @output_bytes)
         end
       end
 

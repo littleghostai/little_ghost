@@ -59,7 +59,7 @@ module LittleGhost
         max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
         max_artifacts: DEFAULT_MAX_ARTIFACTS
       )
-        raise ToolError, "Artifact workspace path is unavailable" unless workspace
+        raise ToolError, FrameworkPrompts.reference("artifacts/storage/errors/workspace_unavailable") unless workspace
 
         @workspace = workspace
         @path = path.to_sym
@@ -125,7 +125,7 @@ module LittleGhost
 
         data = String(entry.fetch(:data)).b
         if data.bytesize > @max_artifact_bytes
-          raise ToolError, "Artifact exceeds the #{@max_artifact_bytes}-byte limit"
+          raise ToolError, FrameworkPrompts.reference("artifacts/storage/feedback/too_large", maximum: @max_artifact_bytes)
         end
         media_type = entry[:media_type]
         name = normalized_name(entry[:name], media_type:)
@@ -166,9 +166,11 @@ module LittleGhost
       end
 
       def reserve!(bytes)
-        raise ToolError, "Artifact count exceeds the #{@max_artifacts}-item limit" if @artifacts.length >= @max_artifacts
+        if @artifacts.length >= @max_artifacts
+          raise ToolError, FrameworkPrompts.reference("artifacts/storage/feedback/count_limit", maximum: @max_artifacts)
+        end
         if @total_bytes + bytes > @max_total_bytes
-          raise ToolError, "Artifacts exceed the #{@max_total_bytes}-byte total limit"
+          raise ToolError, FrameworkPrompts.reference("artifacts/storage/feedback/total_limit", maximum: @max_total_bytes)
         end
 
         @total_bytes += bytes
@@ -200,9 +202,9 @@ module LittleGhost
           metadata:
         )
       rescue Errno::EEXIST
-        raise ToolError, "Artifact destination already exists"
+        raise ToolError, FrameworkPrompts.reference("artifacts/storage/feedback/destination_exists")
       rescue Errno::ELOOP
-        raise ToolError, "Artifact destination is unsafe"
+        raise ToolError, FrameworkPrompts.reference("artifacts/storage/errors/destination_unsafe")
       rescue => error
         cleanup_created_file(directory, file_name, error:) if created
         raise
@@ -241,7 +243,7 @@ module LittleGhost
 
       def validate_root!
         unless OPENAT && UNLINKAT
-          raise ToolError, "Secure artifact storage is unavailable on this platform"
+          raise ToolError, FrameworkPrompts.reference("artifacts/storage/errors/secure_unavailable")
         end
 
         @workspace.validate!
@@ -251,20 +253,20 @@ module LittleGhost
         workspace_real = File.realpath(@workspace.root)
         location_safe = !beneath?(root, @workspace.root) || beneath?(real, workspace_real)
         unless stat.directory? && !stat.symlink? && location_safe
-          raise ToolError, "Artifact workspace path is unsafe"
+          raise ToolError, FrameworkPrompts.reference("artifacts/storage/errors/workspace_unsafe")
         end
 
         directory = File.open(root, directory_flags)
         descriptor_stat = directory.stat
         unless descriptor_stat.directory?
-          raise ToolError, "Artifact workspace path is unsafe"
+          raise ToolError, FrameworkPrompts.reference("artifacts/storage/errors/workspace_unsafe")
         end
         @workspace.validate!
         [root.freeze, [descriptor_stat.dev, descriptor_stat.ino].freeze].freeze
       rescue KeyError, Errno::ENOENT, Errno::ENOTDIR
-        raise ToolError, "Artifact workspace path is unavailable"
+        raise ToolError, FrameworkPrompts.reference("artifacts/storage/errors/workspace_unavailable")
       rescue SystemCallError
-        raise ToolError, "Artifact workspace path is unavailable"
+        raise ToolError, FrameworkPrompts.reference("artifacts/storage/errors/workspace_unavailable")
       ensure
         directory&.close
       end
@@ -274,13 +276,13 @@ module LittleGhost
         directory = File.open(@root, directory_flags)
         stat = directory.stat
         unless stat.directory? && [stat.dev, stat.ino] == @root_identity
-          raise ToolError, "Artifact workspace path changed after initialization"
+          raise ToolError, FrameworkPrompts.reference("artifacts/storage/errors/workspace_changed")
         end
         @workspace.validate!
         directory
       rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR
         directory&.close
-        raise ToolError, "Artifact workspace path changed after initialization"
+        raise ToolError, FrameworkPrompts.reference("artifacts/storage/errors/workspace_changed")
       rescue
         directory&.close
         raise
@@ -308,7 +310,7 @@ module LittleGhost
       def validate_regular_file!(file)
         stat = file.stat
         unless stat.file? && stat.nlink == 1 && (stat.mode & 0o777) == 0o600
-          raise ToolError, "Artifact destination is unsafe"
+          raise ToolError, FrameworkPrompts.reference("artifacts/storage/errors/destination_unsafe")
         end
       end
 

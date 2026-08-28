@@ -1,0 +1,14 @@
+<%#
+# Key: structured_output/repair/request
+# Purpose: Structured-result repair request.
+# Used: Sent to the model when LittleGhost needs the structured-result repair request.
+# Locals:
+# - tool: Whether structured output is submitted through a Tool call.
+# - schema_name: Name of the required structured-result schema or Tool.
+# - repairs_remaining: Number of structured-result repair attempts still available.
+# - feedback: Detailed validation feedback for the repair attempt.
+# Constraints:
+# - Must render non-blank.
+# - Keep the wording consistent with LittleGhost's enforced structured-result protocol.
+-%>
+<% if tool %>Call <%= schema_name %> exactly once as your only Tool call.<% else %>Your final response must be JSON matching the configured output schema.<% end %> You have <%= repairs_remaining == 1 ? "one repair attempt" : "#{repairs_remaining} repair attempts" %> remaining. <%= feedback %>

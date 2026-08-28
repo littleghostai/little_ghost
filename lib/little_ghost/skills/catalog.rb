@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "yaml"
-require "erb"
 require_relative "resource_root"
 
 module LittleGhost
@@ -56,7 +55,8 @@ module LittleGhost
         only: nil,
         resource_root: nil,
         workspace: nil,
-        sandbox: nil
+        sandbox: nil,
+        prompt_renderer: nil
       )
         @paths = PathSet.new(paths)
         @max_skills = positive_integer(max_skills, :max_skills)
@@ -64,6 +64,8 @@ module LittleGhost
         @max_resource_files = positive_integer(max_resource_files, :max_resource_files)
         @only = Array(only).map(&:to_s).freeze if only
         @resource_root = ResourceRoot.normalize(resource_root)
+        @prompt_renderer = prompt_renderer
+        @framework_prompts = FrameworkPrompts.new
         validate_workspace_resource_root!(workspace, sandbox)
         @skills = load_skills
         validate_workspace_resource_aliases!(sandbox)
@@ -78,9 +80,7 @@ module LittleGhost
       # names the available skills so the caller can correct the lookup.
       def fetch(name)
         @skills.fetch(name.to_s) do
-          message = "Unknown skill: #{name}"
-          message += ". Available skills: #{names.join(", ")}" unless @skills.empty?
-          raise ConfigurationError, message
+          raise ConfigurationError, framework_prompt("skills/feedback/unknown", name: name.to_s, available: names)
         end
       end
 
@@ -89,22 +89,16 @@ module LittleGhost
         @skills.keys.freeze
       end
 
-      # Produces the escaped, metadata-only prompt used for discovery.
+      # Produces the Markdown, metadata-only prompt used for discovery.
       def discovery_prompt
         return "" if @skills.empty?
 
-        lines = ["<available_skills>"]
-        @skills.each_value do |skill|
-          lines.concat([
-            "<skill>",
-            "<name>#{ERB::Util.html_escape(skill.name)}</name>",
-            "<description>#{ERB::Util.html_escape(skill.description)}</description>",
-            "<location>#{ERB::Util.html_escape(skill.path)}</location>",
-            "</skill>"
-          ])
-        end
-        lines << "</available_skills>"
-        lines.join("\n")
+        framework_prompt(
+          "skills/discovery/instructions",
+          skills: @skills.each_value.map do |skill|
+            {name: skill.name, description: skill.description, location: skill.path}
+          end
+        )
       end
 
       # Exposes full instructions on demand through a +skills+ Tool.
@@ -112,18 +106,13 @@ module LittleGhost
         catalog = self
         Tool.define(
           name: "skills",
-          description: <<~DESCRIPTION.strip,
-            Activate a skill to load its full instructions.
-
-            Use this tool to load the complete instructions for a skill listed in
-            the available_skills section of your system prompt.
-          DESCRIPTION
+          description: framework_prompt("skills/tools/activate/description"),
           input_schema: {
             type: "object",
             properties: {
               skill_name: {
                 type: "string",
-                description: "Exact name of one skill from available_skills. Pass only the bare name here; keep arguments and surrounding instructions in the task request."
+                description: framework_prompt("skills/tools/activate/inputs/name/description")
               }
             },
             required: ["skill_name"],
@@ -139,17 +128,14 @@ module LittleGhost
       # Formats one Skill, including allowed tools, compatibility, and bounded
       # resource paths.
       def format(skill)
-        parts = [skill.instructions]
-        metadata = []
-        metadata << "Allowed tools: #{skill.allowed_tools.join(", ")}" unless skill.allowed_tools.empty?
-        metadata << "Compatibility: #{skill.compatibility}" if skill.compatibility
-        metadata << "Location: #{skill.path}"
-        parts << "\n---\n#{metadata.join("\n")}" unless metadata.empty?
-        resources = skill_resources(skill)
-        unless resources.empty?
-          parts << "\nAvailable resources:\n#{resources.map { |path| "  #{path}" }.join("\n")}"
-        end
-        parts.join("\n")
+        framework_prompt(
+          "skills/tools/activate/content",
+          instructions: skill.instructions,
+          allowed_tools: skill.allowed_tools,
+          compatibility: skill.compatibility,
+          location: skill.path,
+          resources: skill_resources(skill)
+        )
       end
 
       private
@@ -248,7 +234,10 @@ module LittleGhost
         files.map! { |path| resource_path(skill, path) } if @resource_root
         return files if files.length <= @max_resource_files
 
-        [*files.first(@max_resource_files), "... (truncated at #{@max_resource_files} files)"]
+        [
+          *files.first(@max_resource_files),
+          framework_prompt("skills/resources/notices/truncated", max_files: @max_resource_files)
+        ]
       end
 
       def resource_files(directory, prefix:, depth: 0)
@@ -323,6 +312,12 @@ module LittleGhost
         end
       rescue Errno::ENOENT, Errno::EACCES => error
         raise ConfigurationError, "workspace resource_root is not available: #{error.message}"
+      end
+
+      def framework_prompt(key, **locals)
+        return @prompt_renderer.call(key, **locals) if @prompt_renderer
+
+        @framework_prompts.render(key, locals:)
       end
 
       def writable_tool_grants(sandbox)

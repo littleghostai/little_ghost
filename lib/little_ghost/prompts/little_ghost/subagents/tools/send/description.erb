@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/tools/send/description
+# Purpose: Subagent follow-up Tool description.
+# Used: Included in a Tool or Tool-input specification shown to the model as the subagent follow-up Tool description.
+# Locals:
+# - None.
+# Constraints:
+# - Must render non-blank.
+-%>
+Send a follow-up turn to an existing active or persisted subagent identity. Persisted conversations are restored before the follow-up. Messages are processed in order after the current turn and do not interject active work. For status, steering, stopping, or finalization of active work, use interject_subagent. Sync mode waits for the later response; async mode enqueues the turn and returns immediately.

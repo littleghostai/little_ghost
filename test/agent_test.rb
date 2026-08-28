@@ -544,10 +544,11 @@ class AgentTest < Minitest::Test
 
   def test_uses_artifact_hooks_from_the_runs_runtime
     hook = LittleGhost::Runtime::Hooks::Artifacts.configured.new
-    runtime = Struct.new(:task_runner, :runtime_hooks, :code_mode_configuration).new(
+    runtime = Struct.new(:task_runner, :runtime_hooks, :code_mode_configuration, :framework_prompts).new(
       LittleGhost::Support::TaskRunner.new,
       [hook],
-      nil
+      nil,
+      LittleGhost::FrameworkPrompts.new
     )
     run = Struct.new(:runtime, :workspace, :sandbox).new(runtime)
 
@@ -801,10 +802,10 @@ class AgentTest < Minitest::Test
     streamed_result = events.find { |event| event.type == :tool_stop }.data.fetch(:result)
 
     assert_equal "abcdefghij", raw_content
-    assert_equal "ab…2 tokens truncated…ij", model.requests.last.messages.last.content.first.content
-    assert_equal "ab…2 tokens truncated…ij", result.messages.find { |message| message.role == :tool }.content.first.content
-    assert_equal "ab…2 tokens truncated…ij", streamed_result.content
-    assert_equal "ab…2 tokens truncated…ij", JSON.parse(telemetry.assoc(:tool_stop).last.fetch(:diagnostic_output))
+    assert_equal "…3", model.requests.last.messages.last.content.first.content
+    assert_equal "…3", result.messages.find { |message| message.role == :tool }.content.first.content
+    assert_equal "…3", streamed_result.content
+    assert_equal "…3", JSON.parse(telemetry.assoc(:tool_stop).last.fetch(:diagnostic_output))
   ensure
     agent&.close
   end
@@ -819,7 +820,7 @@ class AgentTest < Minitest::Test
 
     result = model.requests.last.messages.last.content.first
     assert_equal :error, result.status
-    assert_equal "ab…2 tokens truncated…ij", result.content
+    assert_equal "…3", result.content
   ensure
     agent&.close
   end
@@ -1228,7 +1229,7 @@ class AgentTest < Minitest::Test
     stop = telemetry.assoc(:tool_stop).last
     exception = JSON.parse(stop.fetch(:diagnostic_exception))
     assert_equal "LittleGhost::ToolError", exception.fetch("type")
-    assert_equal "ab…2 tokens truncated…ij", exception.fetch("message")
+    assert_equal "…3", exception.fetch("message")
   ensure
     agent&.close
   end
@@ -1664,14 +1665,14 @@ class AgentTest < Minitest::Test
         {messages: [LittleGhost::Message.new(role: :system, content: "Base instructions")]}
       )
       prompt = decision.value.fetch(:messages).first.text
-      assert_includes prompt, "<available_skills>"
-      assert_includes prompt, "<name>inspect</name>"
+      assert_includes prompt, "## Available skills"
+      assert_includes prompt, "**Name:** inspect"
 
       agent.call("Inspect this")
       system_message = model.requests.first.messages.first
       assert_equal :system, system_message.role
-      assert_includes system_message.text, "<available_skills>"
-      assert_includes system_message.text, "<name>inspect</name>"
+      assert_includes system_message.text, "## Available skills"
+      assert_includes system_message.text, "**Name:** inspect"
     ensure
       agent&.close
     end

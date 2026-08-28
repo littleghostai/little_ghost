@@ -1,0 +1,11 @@
+<%#
+# Key: tools/validation/schema/maximum
+# Purpose: Schema numeric maximum feedback.
+# Used: Returned to the model when LittleGhost produces schema numeric maximum feedback.
+# Locals:
+# - path: Path or validation location referenced by the prompt.
+# - maximum: Configured maximum allowed by the relevant limit.
+# Constraints:
+# - Must render non-blank.
+-%>
+<%= path %> must be at most <%= maximum %>

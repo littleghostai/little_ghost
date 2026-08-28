@@ -50,40 +50,15 @@ module LittleGhost
 
       # Builds JavaScript usage instructions and TypeScript declarations for
       # +catalog+.
-      def instructions(catalog:)
+      def instructions(catalog:, prompts: nil)
         javascript_catalog = Javascript::Catalog.new(catalog)
-        <<~INSTRUCTIONS.strip
-          Use JavaScript to call the available tools and compose their results.
-
-          Program lifecycle:
-          - Every exec call starts a fresh program in a new V8 context.
-          - Exec and wait observe it for up to one minute. They return sooner when it finishes.
-          - If exec or wait returns `still_working`, call wait to observe the same running program again.
-          - Wait does not pause, resume, or restart the program.
-          - Use stop when the result is no longer needed.
-          - Do not call wait or stop after `completed`, `error`, or `terminated`.
-
-          Tool calls:
-          - Tool functions return Promises. Use await or Promise.all.
-          - JSON results become objects or arrays. Other results remain strings.
-          - Unawaited tool calls finish before the program exits.
-          - `ALL_TOOLS` contains the complete runtime catalog.
-
-          Output and completion:
-          - Use `text(value)` for user-visible output.
-          - Use `exit()` to complete early.
-
-          The V8 context has no Node.js APIs, filesystem, network, console, WebAssembly, or process API.
-
-          Available tool methods:
-
-          #{javascript_catalog.declarations}
-        INSTRUCTIONS
+        renderer = prompts || ->(key, **locals) { FrameworkPrompts.new.render(key, locals:) }
+        renderer.call("code_mode/javascript/instructions", declarations: javascript_catalog.declarations)
       end
 
       # Opens a JavaScript Session with engine defaults merged with +limits+.
       # Unsupported limit keys raise ArgumentError.
-      def open_session(broker:, sandbox_factory:, limits: {})
+      def open_session(broker:, sandbox_factory:, limits: {}, framework_prompt_scope: {})
         configured_limits = normalize_limits(limits, defaults: DEFAULT_LIMITS)
         root = Dir.mktmpdir("little-ghost-javascript-")
         runtime_paths = javascript_runtime_paths
@@ -99,22 +74,26 @@ module LittleGhost
           required_runtime_paths: runtime_paths.keys.to_h { |name| [name, :read_only] }
         )
         sandbox.open
-        client = Javascript::Client.new(session_factory: lambda {
-          sandbox.start_program(
-            host_command,
-            cwd: ".",
-            environment: child_environment,
-            output_bytes: configured_limits.fetch(:output_bytes),
-            memory_bytes: configured_limits[:memory_bytes],
-            cpu_seconds: configured_limits[:cpu_seconds],
-            file_bytes: configured_limits[:file_bytes],
-            allow_subprocesses: allow_subprocesses_for(sandbox)
-          )
-        })
+        client = Javascript::Client.new(
+          session_factory: lambda {
+            sandbox.start_program(
+              host_command,
+              cwd: ".",
+              environment: child_environment,
+              output_bytes: configured_limits.fetch(:output_bytes),
+              memory_bytes: configured_limits[:memory_bytes],
+              cpu_seconds: configured_limits[:cpu_seconds],
+              file_bytes: configured_limits[:file_bytes],
+              allow_subprocesses: allow_subprocesses_for(sandbox)
+            )
+          },
+          framework_prompt_scope:
+        )
         Javascript::Session.new(
           broker:, client:, sandbox:, workspace:,
           max_concurrency: configured_limits.fetch(:max_concurrency),
-          wall_seconds: configured_limits.fetch(:wall_seconds)
+          wall_seconds: configured_limits.fetch(:wall_seconds),
+          framework_prompt_scope:
         )
       rescue
         sandbox&.close

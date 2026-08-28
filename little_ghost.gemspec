@@ -28,6 +28,7 @@ Gem::Specification.new do |spec|
       "exe/little_ghost",
       "lib/**/*.rb",
       "lib/**/*.json",
+      "lib/**/*.erb",
       "lib/little_ghost/generators/templates/**/*",
       "docs/guides/*.md",
       "LICENSE.txt",

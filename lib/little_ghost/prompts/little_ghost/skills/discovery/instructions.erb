@@ -1,0 +1,18 @@
+<%#
+# Key: skills/discovery/instructions
+# Purpose: Available-skill discovery section.
+# Used: Included in model-visible content when LittleGhost needs the available-skill discovery section.
+# Locals:
+# - skills: Available skill metadata rendered into the system prompt.
+# Constraints:
+# - Must render non-blank.
+# - Keep skill names and metadata represented so the model can select a valid skill.
+# - Keep the catalog in Markdown.
+-%>
+## Available skills
+
+<% skills.each do |skill| -%>
+- **Name:** <%= skill.fetch(:name) %>
+  - **Description:** <%= skill.fetch(:description) %>
+  - **Location:** <%= skill.fetch(:location) %>
+<% end -%>

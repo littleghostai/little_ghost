@@ -1,0 +1,10 @@
+<%#
+# Key: artifacts/errors/preparation_failed
+# Purpose: Artifact preparation failure feedback.
+# Used: Returned to the model when LittleGhost produces artifact preparation failure feedback.
+# Locals:
+# - error_class: Safe exception class name describing the failure.
+# Constraints:
+# - Must render non-blank.
+-%>
+Tool artifacts could not be prepared (<%= error_class %>)

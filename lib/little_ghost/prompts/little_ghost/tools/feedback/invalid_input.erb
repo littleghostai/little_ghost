@@ -1,0 +1,10 @@
+<%#
+# Key: tools/feedback/invalid_input
+# Purpose: Invalid Tool input feedback.
+# Used: Returned to the model when LittleGhost produces invalid Tool input feedback.
+# Locals:
+# - errors: Local validation messages to return to the model.
+# Constraints:
+# - Must render non-blank.
+-%>
+Invalid Tool input: <%= errors.join("; ") %>

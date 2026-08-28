@@ -60,7 +60,7 @@ module LittleGhost
           payload.merge(key => prepare_message(run, payload.fetch(key), context:))
         end
 
-        def prepare_tool_result(result, tool_use:, run:, workspace:, context:)
+        def prepare_tool_result(result, tool_use:, run:, workspace:, context:, agent: nil)
           return result unless result.success?
 
           context&.check!
@@ -70,7 +70,7 @@ module LittleGhost
           return result if explicit.empty? && !oversized
 
           resolved, materializable = resolve_artifacts(explicit, run:, context:)
-          enforce_batch_limits!(materializable)
+          enforce_batch_limits!(materializable, run:)
           stored = materialize_batch(materializable, run:, workspace:, context:)
           descriptors = merge_descriptors(resolved, stored)
           automatic_descriptor = store_automatic(
@@ -89,9 +89,11 @@ module LittleGhost
           content = result_content(
             result,
             automatic: automatic_descriptor,
-            oversized:
+            oversized:,
+            run:,
+            agent:
           )
-          content = append_materialized_references(content, all_descriptors)
+          content = append_materialized_references(content, all_descriptors, run:, agent:)
           Tool::ExecutionResult.new(
             value: result.value,
             content:,
@@ -103,7 +105,9 @@ module LittleGhost
         rescue CancelledError, DeadlineExceededError, CleanupError
           raise
         rescue => error
-          raise ToolError, "Tool artifacts could not be prepared (#{error.class})" unless explicit.empty?
+          unless explicit.empty?
+            raise ToolError, FrameworkPrompts.reference("artifacts/errors/preparation_failed", error_class: error.class.name)
+          end
 
           result
         end
@@ -127,7 +131,7 @@ module LittleGhost
           end
           return value if attachments.empty?
 
-          enforce_batch_limits!(attachments)
+          enforce_batch_limits!(attachments, run:)
           descriptors = materialize_batch(
             attachments,
             run:,
@@ -163,7 +167,7 @@ module LittleGhost
             when Artifact
               value
             else
-              raise ToolError, "Artifact resolver must return bytes, an Artifact, or nil"
+              raise ToolError, FrameworkPrompts.reference("artifacts/errors/resolver_invalid")
             end
           end.freeze
           context&.check!
@@ -173,7 +177,7 @@ module LittleGhost
         def store_automatic(artifact, run:, workspace:, context:)
           return unless artifact
 
-          enforce_batch_limits!([artifact])
+          enforce_batch_limits!([artifact], run:)
           materialize_batch([artifact], run:, workspace:, context:).fetch(0)
         rescue CancelledError, DeadlineExceededError, CleanupError
           raise
@@ -230,11 +234,12 @@ module LittleGhost
           end.freeze
         end
 
-        def append_materialized_references(content, artifacts)
+        def append_materialized_references(content, artifacts, run:, agent:)
           references = artifacts.filter_map { |artifact| artifact.reference if artifact.bytes }
           return content if references.empty?
 
-          "#{content}\n\nWorkspace artifacts:\n#{references.map { |reference| "- #{reference}" }.join("\n")}"
+          appendix = framework_prompt(run, "artifacts/presentation/format/workspace_references", agent:, references:)
+          "#{content}\n\n#{appendix}"
         end
 
         def oversized_artifact(result, tool_use:)
@@ -266,23 +271,52 @@ module LittleGhost
             [String(value), "text/plain", "txt"]
           end
         rescue JSON::GeneratorError, TypeError
-          raise ToolError, "Tool value cannot be stored as an artifact"
+          raise ToolError, FrameworkPrompts.reference("artifacts/errors/value_unstorable")
         end
 
-        def result_content(result, automatic:, oversized:)
+        def result_content(result, automatic:, oversized:, run:, agent:)
           return result.content unless oversized
 
           preview = Support::OutputTruncation
-            .truncate_middle_with_token_budget(result.content, RESULT_PREVIEW_TOKENS)
+            .truncate_middle_with_token_budget(
+              result.content,
+              RESULT_PREVIEW_TOKENS,
+              framework_prompts: FrameworkPrompts.for_runtime(run&.runtime),
+              invocation_paths: Array(run&.invocation&.[](:template_paths)),
+              agent_path: agent&.class&.logical_path
+            )
             .first
-          return "Full result: #{artifact_label(automatic)}\n\nPreview:\n#{preview}" if automatic
+          if automatic
+            return framework_prompt(
+              run,
+              "artifacts/presentation/notices/full_result",
+              agent:,
+              artifact: artifact_label(automatic, run:, agent:),
+              preview:
+            )
+          end
 
-          "Full result exceeded artifact storage limits.\n\nPreview:\n#{preview}"
+          framework_prompt(run, "artifacts/presentation/notices/storage_failed", agent:, preview:)
         end
 
-        def artifact_label(artifact)
-          details = [artifact.media_type, artifact.bytes && "#{artifact.bytes} bytes"].compact.join(", ")
-          details.empty? ? artifact.reference : "#{artifact.reference} (#{details})"
+        def framework_prompt(run, key, agent: nil, **locals)
+          FrameworkPrompts.for_runtime(run&.runtime).render(
+            key,
+            locals:,
+            invocation_paths: Array(run&.invocation&.[](:template_paths)),
+            agent_path: agent&.class&.logical_path
+          )
+        end
+
+        def artifact_label(artifact, run:, agent:)
+          framework_prompt(
+            run,
+            "artifacts/presentation/format/reference",
+            agent:,
+            reference: artifact.reference,
+            media_type: artifact.media_type,
+            bytes: artifact.bytes
+          )
         end
 
         def attach_artifact_metadata(message, artifacts)
@@ -318,14 +352,16 @@ module LittleGhost
           InterjectionContext.new(run_context: run.context, cancellation_token: token, deadline:)
         end
 
-        def enforce_batch_limits!(artifacts)
-          raise ToolError, "Artifact batch exceeds the #{MAX_BATCH_ARTIFACTS}-item limit" if artifacts.length > MAX_BATCH_ARTIFACTS
+        def enforce_batch_limits!(artifacts, run:)
+          if artifacts.length > MAX_BATCH_ARTIFACTS
+            raise ToolError, FrameworkPrompts.reference("artifacts/batch/feedback/batch_too_many", maximum: MAX_BATCH_ARTIFACTS)
+          end
           maximum = LittleGhost::Artifacts::WorkspaceStore::DEFAULT_MAX_ARTIFACT_BYTES
           if artifacts.any? { |artifact| artifact.data.bytesize > maximum }
-            raise ToolError, "Artifact exceeds the #{maximum}-byte limit"
+            raise ToolError, FrameworkPrompts.reference("artifacts/batch/feedback/item_too_large", maximum:)
           end
           if artifacts.sum { |artifact| artifact.data.bytesize } > MAX_BATCH_BYTES
-            raise ToolError, "Artifact batch exceeds the #{MAX_BATCH_BYTES}-byte limit"
+            raise ToolError, FrameworkPrompts.reference("artifacts/batch/feedback/batch_too_large", maximum: MAX_BATCH_BYTES)
           end
         end
 

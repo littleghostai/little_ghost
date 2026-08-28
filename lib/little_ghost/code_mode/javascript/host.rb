@@ -16,6 +16,18 @@ module LittleGhost
       JAVASCRIPT_TIMEOUT_MS = 10_000
       MAX_PENDING_TOOL_CALLS = 1_024
       Terminated = Class.new(StandardError)
+      DEFAULT_MESSAGES = {
+        "execution_limit" => "JavaScript execution exceeded its limit.",
+        "memory_limit" => "JavaScript execution exceeded its memory limit.",
+        "cleanup_failed" => "JavaScript context cleanup failed.",
+        "pending_calls_limit" => "The code-mode program exceeded the pending Tool-call limit.",
+        "active_programs_limit" => "The code-mode host has too many active programs.",
+        "invalid_request" => "Invalid code-mode request: __DETAIL__",
+        "unavailable_tool" => "Unavailable code-mode Tool: __TOOL_NAME__",
+        "execution_failed" => "__ERROR_CLASS__: __ERROR_MESSAGE__",
+        "source_size_limit" => "Code-mode source exceeds the size limit.",
+        "tools_array" => "Code-mode tools must be an array."
+      }.freeze
 
       BOOTSTRAP = <<~'JAVASCRIPT'
         const __LITTLE_GHOST_CONTROL_IDENTIFIER__ = (() => {
@@ -26,6 +38,7 @@ module LittleGhost
           const outputs = [];
           const pending = new Map();
           const exitSignal = Object.freeze({exit: true});
+          const unavailableToolMessage = __LITTLE_GHOST_UNAVAILABLE_TOOL_MESSAGE__;
           let nextCallId = 0;
           let done = false;
           let failure = null;
@@ -40,7 +53,7 @@ module LittleGhost
 
           const enqueue = (name, args) => new Promise((resolve, reject) => {
             if (!Object.prototype.hasOwnProperty.call(definitionIndex, name)) {
-              reject(new Error(`Unknown tool: ${name}`));
+              reject(new Error(unavailableToolMessage.split("__TOOL_NAME__").join(name)));
               return;
             }
             const id = String(++nextCallId);
@@ -129,10 +142,11 @@ module LittleGhost
       JAVASCRIPT
 
       class Program
-        def initialize(id:, source:, tools:, writer:, finished:)
+        def initialize(id:, source:, tools:, writer:, finished:, messages: nil)
           @id = id
           @source = source
           @tools = tools
+          @messages = DEFAULT_MESSAGES.merge(messages || {}).freeze
           @writer = writer
           @finished = finished
           @incoming = Queue.new
@@ -175,7 +189,11 @@ module LittleGhost
           context.eval(
             BOOTSTRAP
               .gsub("__LITTLE_GHOST_CONTROL_IDENTIFIER__", @control_identifier)
-              .sub("__LITTLE_GHOST_TOOL_DEFINITIONS__", definitions),
+              .sub("__LITTLE_GHOST_TOOL_DEFINITIONS__", definitions)
+              .sub(
+                "__LITTLE_GHOST_UNAVAILABLE_TOOL_MESSAGE__",
+                JSON.generate(@messages.fetch("unavailable_tool"))
+              ),
             filename: "little-ghost-code-mode-bootstrap.js"
           )
           call_control(context, :run, @source)
@@ -186,15 +204,18 @@ module LittleGhost
           terminal = if @context_mutex.synchronize { @terminating }
             {type: "terminated"}
           else
-            {type: "failed", error: "JavaScript execution exceeded its limit", fatal: true}
+            {type: "failed", error: @messages.fetch("execution_limit"), fatal: true}
           end
         rescue MiniRacer::V8OutOfMemoryError
-          terminal = {type: "failed", error: "JavaScript execution exceeded its memory limit", fatal: true}
+          terminal = {type: "failed", error: @messages.fetch("memory_limit"), fatal: true}
         rescue => error
-          terminal = {type: "failed", error: "#{error.class}: #{error.message}", fatal: true}
+          failure = @messages.fetch("execution_failed")
+            .gsub("__ERROR_CLASS__") { error.class.to_s }
+            .gsub("__ERROR_MESSAGE__") { error.message }
+          terminal = {type: "failed", error: failure, fatal: true}
         ensure
           cleanup_error = dispose_context
-          terminal = {type: "failed", error: "JavaScript context cleanup failed", fatal: true} if cleanup_error
+          terminal = {type: "failed", error: @messages.fetch("cleanup_failed"), fatal: true} if cleanup_error
           begin
             emit(**terminal) if terminal
           ensure
@@ -210,7 +231,7 @@ module LittleGhost
             if calls.length > MAX_PENDING_TOOL_CALLS
               return {
                 type: "failed",
-                error: "Code-mode program exceeded the pending tool-call limit",
+                error: @messages.fetch("pending_calls_limit"),
                 fatal: true
               }
             end
@@ -308,23 +329,26 @@ module LittleGhost
           id = message.fetch("program_id").to_s
           source = message.fetch("source").to_s
           tools = message.fetch("tools")
-          raise Protocol::Error, "Code-mode source exceeds the size limit" if source.bytesize > MAX_SOURCE_BYTES
-          raise Protocol::Error, "Code-mode tools must be an array" unless tools.is_a?(Array)
+          messages = DEFAULT_MESSAGES.merge(message["messages"] || {})
+          raise Protocol::Error, messages.fetch("source_size_limit") if source.bytesize > MAX_SOURCE_BYTES
+          raise Protocol::Error, messages.fetch("tools_array") unless tools.is_a?(Array)
 
           created = @programs_mutex.synchronize do
             next false if @programs.key?(id) || @programs.length >= MAX_ACTIVE_PROGRAMS
 
             @programs[id] = Program.new(
-              id:, source:, tools:, writer: method(:write),
+              id:, source:, tools:, messages:, writer: method(:write),
               finished: ->(program_id) { @programs_mutex.synchronize { @programs.delete(program_id) } }
             )
             true
           end
           unless created
-            write(type: "failed", program_id: id, error: "Code-mode host has too many active programs", fatal: true)
+            write(type: "failed", program_id: id, error: messages.fetch("active_programs_limit"), fatal: true)
           end
         rescue KeyError, TypeError, Protocol::Error => error
-          write(type: "failed", program_id: id.to_s, error: "Invalid code-mode request: #{error.message}", fatal: true)
+          template = messages.fetch("invalid_request")
+          detail = error.message
+          write(type: "failed", program_id: id.to_s, error: template.gsub("__DETAIL__") { detail }, fatal: true)
         end
 
         def program(id)

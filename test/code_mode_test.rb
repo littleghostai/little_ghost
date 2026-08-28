@@ -688,7 +688,7 @@ class CodeModeTest < Minitest::Test
     session = ruby_session(broker:, tool_calls: 1)
     result = session.execute(source: "tools.echo; tools.echo", catalog: broker.catalog)
     assert_equal :error, result.status
-    assert_match(/tool call limit/, result.error)
+    assert_match(/Tool call limit/, result.error)
   ensure
     session&.close
     registry&.close
@@ -1189,7 +1189,7 @@ class CodeModeTest < Minitest::Test
     Timeout.timeout(1) { entered.pop }
 
     close_error = assert_raises(LittleGhost::ToolError) { session.close }
-    assert_includes close_error.message, "control operation is active"
+    assert_includes close_error.message, "control operation is already active"
     release << true
 
     execution_error = execution.value
@@ -1216,7 +1216,7 @@ class CodeModeTest < Minitest::Test
     terminated = session.stop(max_output_tokens: 1)
 
     assert_equal :terminated, terminated.status
-    assert_equal "ab…2 tokens truncated…ij", terminated.output
+    assert_equal "…3", terminated.output
   ensure
     session&.close
     registry&.close
@@ -1430,7 +1430,7 @@ class CodeModeTest < Minitest::Test
     agent = agent_class.new(model:, tools: [nested])
 
     assert_equal "done", agent.call("go").text
-    assert_match(/cannot close code mode/, engine.sessions.first.results.fetch(0).error)
+    assert_match(/cannot be closed/, engine.sessions.first.results.fetch(0).error)
     assert_predicate engine.sessions.first, :closed?
   ensure
     agent&.close
@@ -1721,6 +1721,36 @@ class CodeModeTest < Minitest::Test
     message = LittleGhost::Message.new(role: :assistant, content:)
     LittleGhost::ModelResponse.new(message:, stop_reason:, usage: LittleGhost::Usage.new)
   end
+
+  public
+
+  def test_code_mode_model_facing_prose_uses_bound_framework_prompts
+    renderer = Object.new
+    renderer.define_singleton_method(:render_framework_prompt) do |key, **locals|
+      "custom #{key} #{locals.values.join(" ")}".strip
+    end
+    binding = LittleGhost::Tool::Binding.new(agent: renderer)
+
+    exec = LittleGhost::CodeMode::ExecTool.new(binding:)
+    wait = LittleGhost::CodeMode::WaitTool.new(binding:)
+    instructions = LittleGhost::CodeMode::RubyEngine.new.instructions(
+      catalog: [], prompts: renderer.method(:render_framework_prompt)
+    )
+    registry = LittleGhost::ToolRegistry.new([])
+    renderer.define_singleton_method(:runtime) { nil }
+    renderer.define_singleton_method(:tool_registry) { registry }
+    broker_error = LittleGhost::CodeMode::Broker.new(agent: renderer).call("missing", {}).error
+
+    assert_equal "custom code_mode/tools/exec/description", exec.specification.fetch(:description)
+    assert_equal "custom code_mode/tools/wait/inputs/max_output_tokens/description",
+      wait.specification.dig(:input_schema, "properties", "max_output_tokens", "description")
+    assert_includes instructions, "custom code_mode/ruby/instructions"
+    assert_equal "custom code_mode/feedback/unavailable_tool missing", broker_error
+  ensure
+    registry&.close
+  end
+
+  private
 
   def ruby_session(broker:, **limits)
     observation_seconds = limits.delete(:observation_seconds) || LittleGhost::CodeMode::Ruby::Session::OBSERVATION_SECONDS

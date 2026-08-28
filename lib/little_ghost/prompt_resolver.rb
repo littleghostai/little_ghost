@@ -51,9 +51,9 @@ module LittleGhost
   # Raised when an ERB template references a missing local variable.
   class MissingPromptLocalError < PromptTemplateError; end
 
-  # PromptResolver turns conventional ERB files into an agent's system prompt. It
-  # supports ordered application roots and partials without allowing a template
-  # name to escape those roots.
+  # PromptResolver renders conventional ERB prompt views. It supports ordered
+  # application roots and partials without allowing a template name to escape
+  # those roots.
   #
   #   resolver = LittleGhost::PromptResolver.new(paths: ["app/prompts"])
   #   prompt = resolver.render("support/system_prompt", assigns: {product: "Acme"})
@@ -70,8 +70,8 @@ module LittleGhost
   #
   # Every configured root is trusted Ruby code because ERB executes inside the
   # current process. Keep roots application-controlled and non-user-writable.
-  # See the {Prompts as Views guide}[rdoc-ref:docs/guides/prompt_views.md] for the
-  # conventional Agent workflow.
+  # See the {Prompts as Views guide}[rdoc-ref:docs/guides/prompt_views.md] for
+  # Agent system prompts and framework prompt overrides.
   class PromptResolver
     DEFAULT_MAX_DEPTH = 20 # :nodoc:
 
@@ -82,7 +82,7 @@ module LittleGhost
       @max_depth = Integer(max_depth)
       raise ArgumentError, "max_depth must be positive" unless @max_depth.positive?
 
-      @cache = {}
+      @cache = {}.freeze
       @cache_mutex = Mutex.new
     end
 
@@ -162,13 +162,15 @@ module LittleGhost
     def compiled_template(path)
       stat = File.stat(path)
       fingerprint = [stat.mtime.to_r, stat.size]
+      cached = @cache[path]
+      return cached[:template] if cached && cached[:fingerprint] == fingerprint
 
       @cache_mutex.synchronize do
         cached = @cache[path]
         return cached[:template] if cached && cached[:fingerprint] == fingerprint
 
         template = ERB.new(File.read(path), trim_mode: "-")
-        @cache[path] = {fingerprint: fingerprint, template: template}
+        @cache = @cache.merge(path => {fingerprint: fingerprint, template: template}.freeze).freeze
         template
       end
     end

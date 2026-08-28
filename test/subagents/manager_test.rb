@@ -251,7 +251,7 @@ class SubagentManagerTest < Minitest::Test
     end
 
     assert_equal "failed", @mismatched_factory.fetch(:status)
-    assert_equal "Subagent could not be created.", @mismatched_factory.fetch(:error)
+    assert_equal "The subagent could not be created.", @mismatched_factory.fetch(:error)
     assert_empty manager.list.fetch(:subagents)
   ensure
     manager&.close
@@ -479,7 +479,7 @@ class SubagentManagerTest < Minitest::Test
 
     assert_equal "finished", finished[:status]
     assert_equal "failed", finished.dig(:subagents, 0, :status)
-    assert_equal "Subagent turn failed.", finished.dig(:subagents, 0, :error)
+    assert_equal "The subagent turn failed.", finished.dig(:subagents, 0, :error)
     assert_equal 1, finished.dig(:subagents, 0, :previous_response_turn)
     assert_equal "response for first", finished.dig(:subagents, 0, :previous_response)
     refute finished.dig(:subagents, 0).key?(:response)
@@ -847,7 +847,7 @@ class SubagentManagerTest < Minitest::Test
     end
     spawned = manager.spawn(kind: "explore", task_name: "explore", task: "second", mode: "sync")
 
-    assert_equal "Subagent could not be created.", @failed[:error]
+    assert_equal "The subagent could not be created.", @failed[:error]
     assert_equal "/root/explore", spawned[:subagent_id]
     assert_equal({
       event: "factory_failed",
@@ -1670,7 +1670,7 @@ class SubagentManagerTest < Minitest::Test
     end
 
     assert_equal "failed", @result[:status]
-    assert_equal "Subagent turn failed.", @result[:error]
+    assert_equal "The subagent turn failed.", @result[:error]
     refute @result.key?(:response)
   ensure
     manager&.close
@@ -1847,7 +1847,7 @@ class SubagentManagerTest < Minitest::Test
     result = caller.value
 
     assert_equal "cancelled", result[:status]
-    assert_equal "Subagent turn was cancelled.", result[:error]
+    assert_equal "The subagent turn was cancelled.", result[:error]
   ensure
     gate&.open
   end
@@ -1957,7 +1957,7 @@ class SubagentManagerTest < Minitest::Test
 
     assert_equal "finished", result[:status]
     assert_equal "failed", failed[:status]
-    assert_equal "Subagent turn failed.", failed[:error]
+    assert_equal "The subagent turn failed.", failed[:error]
     assert_nil manager.close
   end
 
@@ -2088,7 +2088,7 @@ class SubagentManagerTest < Minitest::Test
     _out, _err = capture_io { @failed = manager.wait }
     queued = queued_thread.value
 
-    assert_equal "Subagent turn failed.", @failed.dig(:subagents, 0, :error)
+    assert_equal "The subagent turn failed.", @failed.dig(:subagents, 0, :error)
     assert_equal "A previous turn failed; spawn a new identity.", queued[:error]
     refute_includes @failed.inspect, "internal.example"
     queued_operations = events.filter_map do |event|
@@ -2430,6 +2430,31 @@ class SubagentManagerTest < Minitest::Test
       state: {}
     )
   end
+
+  public
+
+  def test_control_tool_prose_uses_the_bound_agent_framework_prompts
+    manager = manager_for(->(_id) { ControlledAgent.new })
+    renderer = Object.new
+    renderer.define_singleton_method(:render_framework_prompt) do |key, **locals|
+      "custom #{key} #{locals.values.join(" ")}".strip
+    end
+    registry = LittleGhost::ToolRegistry.new(
+      manager.tools,
+      binding: LittleGhost::Tool::Binding.new(agent: renderer)
+    )
+
+    spawn = registry.fetch("spawn_subagent").specification
+    error = registry.fetch("wait_for_subagents").execute({"subagent_ids" => ["missing"]})
+    assert_equal "custom subagents/tools/spawn/description", spawn.fetch(:description)
+    assert_includes spawn.dig(:input_schema, "properties", "kind", "description"),
+      "custom subagents/tools/spawn/inputs/kind/description"
+    assert_equal "custom subagents/feedback/unknown_id missing", error.content
+  ensure
+    manager&.close
+  end
+
+  private
 
   def wait_until(timeout: 1)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout

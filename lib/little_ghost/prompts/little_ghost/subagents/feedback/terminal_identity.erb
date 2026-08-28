@@ -1,0 +1,11 @@
+<%#
+# Key: subagents/feedback/terminal_identity
+# Purpose: Terminal subagent identity feedback.
+# Used: Returned to the model when LittleGhost produces terminal subagent identity feedback.
+# Locals:
+# - id: Program or subagent identifier referenced by the message.
+# - status: Current terminal subagent status.
+# Constraints:
+# - Must render non-blank.
+-%>
+Subagent <%= id.inspect %> is <%= status %>; spawn a new identity.

@@ -1,0 +1,13 @@
+<%#
+# Key: artifacts/presentation/notices/storage_failed
+# Purpose: Oversized-result storage failure notice.
+# Used: Returned to the model when LittleGhost produces oversized-result storage failure notice.
+# Locals:
+# - preview: Bounded preview of the original result.
+# Constraints:
+# - Must render non-blank.
+-%>
+Full result exceeded artifact storage limits.
+
+Preview:
+<%= preview %>

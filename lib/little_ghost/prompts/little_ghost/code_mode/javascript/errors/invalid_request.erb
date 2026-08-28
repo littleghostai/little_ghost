@@ -1,0 +1,10 @@
+<%#
+# Key: code_mode/javascript/errors/invalid_request
+# Purpose: Invalid JavaScript host-request diagnostic.
+# Used: Emitted as a sanitized fatal host-protocol diagnostic when the client sends an invalid request.
+# Locals:
+# - detail: Dynamic detail explaining the invalid request.
+# Constraints:
+# - Must render non-blank.
+-%>
+Invalid code-mode request: <%= detail %>

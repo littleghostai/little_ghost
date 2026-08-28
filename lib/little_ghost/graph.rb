@@ -607,6 +607,7 @@ module LittleGhost
       usage = Usage.new
       error_emitted = false
       Enumerator.new do |events|
+        @framework_prompt_invocation_paths = template_paths
         definition = self.class.graph_definition!
         nodes, edges, error_edges, forks, joins, current, finish = definition
         results = {}
@@ -806,6 +807,10 @@ module LittleGhost
     def run_graph_branches(fork:, join:, nodes:, edges:, error_edges:, original_input:,
       original_history:, original_context:, results:, source_step_id:, cancellation_token:,
       deadline:, settings:, template_locals:, template_paths:, parent_operation_id:, events:)
+      starts, omitted = @graph_mutex.synchronize do
+        remaining = [self.class.max_steps - @graph_execution_count, 0].max
+        [fork.to.first(remaining), fork.to.drop(remaining)]
+      end
       token = cancellation_token.child
       queue = SizedQueue.new(1_000)
       worker = task_runner.spawn do
@@ -814,7 +819,7 @@ module LittleGhost
           max_concurrency: fork.max_concurrency,
           runner: task_runner
         ).map(
-          fork.to,
+          starts,
           cancellation_token: token,
           on_result: ->(_index, result) { completed << result }
         ) do |start|
@@ -826,6 +831,9 @@ module LittleGhost
             template_paths:, parent_operation_id:,
             event_consumer: ->(event) { enqueue_assembly_event(queue, [:event, event], token) }
           )
+        end
+        unless omitted.empty?
+          raise AssemblyLimitError, "#{self.class} reached its max_steps limit of #{self.class.max_steps}"
         end
         enqueue_assembly_event(queue, [:done, results], token)
       rescue => error
@@ -962,7 +970,8 @@ module LittleGhost
 
       result = state.previous_result
       if state.error && !result
-        return contextual_input(state, {state.previous => "Failed with #{state.error.class.name}."})
+        failure = framework_prompt("graph/context/format/failed_input", error_class: state.error.class.name)
+        return contextual_input(state, {state.previous => failure})
       end
       contextual_input(state, {state.previous => result.output})
     end
@@ -978,11 +987,12 @@ module LittleGhost
     end
 
     def contextual_input(state, values)
-      content = [Content::Text.new(text: "Original Task:\n")]
+      content = [Content::Text.new(text: "#{framework_prompt("graph/context/headings/original_task")}\n")]
       content.concat(state.input.content)
-      content << Content::Text.new(text: "\n\nInputs from previous nodes:")
+      content << Content::Text.new(text: "\n\n#{framework_prompt("graph/context/headings/previous_inputs")}")
       values.each do |name, value|
-        content << Content::Text.new(text: "\n\nFrom #{name}:\n#{output_text(value)}")
+        rendered = framework_prompt("graph/context/format/previous_input", name:, output: output_text(value))
+        content << Content::Text.new(text: "\n\n#{rendered}")
       end
       Message.new(role: :user, content:, metadata: state.input.metadata)
     end
@@ -991,6 +1001,15 @@ module LittleGhost
       output.is_a?(String) ? output : JSON.generate(output)
     rescue JSON::GeneratorError
       output.to_s
+    end
+
+    def framework_prompt(key, **locals)
+      @framework_prompts ||= FrameworkPrompts.for_runtime(runtime)
+      @framework_prompts.render(
+        key,
+        locals:,
+        invocation_paths: @framework_prompt_invocation_paths || []
+      )
     end
 
     def select_edge(candidates, state)

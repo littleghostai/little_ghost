@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/feedback/not_running
+# Purpose: Inactive subagent interjection feedback.
+# Used: Returned to the model when LittleGhost produces inactive subagent interjection feedback.
+# Locals:
+# - id: Program or subagent identifier referenced by the message.
+# Constraints:
+# - Must render non-blank.
+-%>
+Subagent <%= id.inspect %> is not currently running.

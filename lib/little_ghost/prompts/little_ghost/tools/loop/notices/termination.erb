@@ -1,0 +1,10 @@
+<%#
+# Key: tools/loop/notices/termination
+# Purpose: Repeated Tool-call termination reason.
+# Used: Included in model-visible content when LittleGhost needs the repeated Tool-call termination reason.
+# Locals:
+# - tool_name: Name of the repeatedly invoked Tool.
+# Constraints:
+# - Must render non-blank.
+-%>
+Stopped after detecting a repeated Tool-call loop in <%= tool_name.inspect %>.

@@ -127,12 +127,12 @@ module LittleGhost
         stat = File.stat(realpath)
         expected = @identities.fetch(name)
         unless [realpath, stat.dev, stat.ino] == expected
-          raise ToolError, "workspace path changed after opening: #{name}"
+          raise ToolError, FrameworkPrompts.reference("workspace/feedback/path_changed", name:)
         end
       end
       self
     rescue Errno::ENOENT
-      raise ToolError, "workspace path changed after opening: #{name}"
+      raise ToolError, FrameworkPrompts.reference("workspace/feedback/path_changed", name:)
     end
 
     # Calls the application setup callback once and returns this workspace.

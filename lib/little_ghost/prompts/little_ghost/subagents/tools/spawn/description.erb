@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/tools/spawn/description
+# Purpose: Spawn-subagent Tool description.
+# Used: Included in a Tool or Tool-input specification shown to the model as the spawn-subagent Tool description.
+# Locals:
+# - None.
+# Constraints:
+# - Must render non-blank.
+-%>
+Create a subagent identity for an independent task. Sync mode waits for the response; async mode returns immediately so the work can be observed with wait_for_subagents. Concurrent sync spawns can run in parallel. Give the task a concise lowercase name that is unique among the current agent's children. The returned identity is its canonical path beneath the current agent.

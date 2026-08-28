@@ -1,0 +1,10 @@
+<%#
+# Key: subagents/feedback/list_limit
+# Purpose: Subagent list limit feedback.
+# Used: Returned to the model when LittleGhost produces subagent list limit feedback.
+# Locals:
+# - maximum: Configured maximum allowed by the relevant limit.
+# Constraints:
+# - Must render non-blank.
+-%>
+limit must be between 1 and <%= maximum %>.

@@ -38,11 +38,12 @@ module LittleGhost
       class Program
         attr_reader :id, :owner, :dispatcher, :generation
 
-        def initialize(id:, owner:, dispatcher:, generation: nil)
+        def initialize(id:, owner:, dispatcher:, generation: nil, framework_prompt_scope: {})
           @id = id
           @owner = owner
           @dispatcher = dispatcher
           @generation = generation
+          @framework_prompt_scope = framework_prompt_scope
           @outputs = []
           @output_bytes = 0
           @returned_output = false
@@ -59,7 +60,7 @@ module LittleGhost
             return if @terminal || @termination_error
 
             if @output_bytes + text.bytesize > MAX_BUFFERED_OUTPUT_BYTES
-              @termination_error = "Code-mode output exceeded the buffer limit"
+              @termination_error = prompt("code_mode/feedback/limit_exceeded", limit: "output buffer")
               overflow = true
             else
               @outputs << text
@@ -125,7 +126,7 @@ module LittleGhost
             end
             output = drain_output
             output = LittleGhost::Support::OutputTruncation
-              .truncate_middle_with_token_budget(output, max_tokens).first
+              .truncate_middle_with_token_budget(output, max_tokens, **@framework_prompt_scope).first
             (@terminal || {status: "still_working"}).merge(program_id: id, output:)
           end
         end
@@ -151,6 +152,16 @@ module LittleGhost
 
         private
 
+        def prompt(key, **locals)
+          framework_prompts = @framework_prompt_scope[:framework_prompts] || FrameworkPrompts.new
+          framework_prompts.render(
+            key,
+            locals:,
+            invocation_paths: @framework_prompt_scope.fetch(:invocation_paths, []),
+            agent_path: @framework_prompt_scope[:agent_path]
+          )
+        end
+
         def drain_output
           had_output = !@outputs.empty?
           output = @outputs.join("\n")
@@ -171,11 +182,12 @@ module LittleGhost
         end
       end
 
-      def initialize(session_factory:)
+      def initialize(session_factory:, framework_prompt_scope: {})
         unless session_factory.respond_to?(:call)
           raise ArgumentError, "Code-mode process-session factory must be callable"
         end
         @session_factory = session_factory
+        @framework_prompt_scope = framework_prompt_scope.freeze
 
         @programs = {}
         @programs_mutex = Mutex.new
@@ -187,10 +199,16 @@ module LittleGhost
 
       def start_program(owner:, dispatcher:, source:, tools:, program_id: SecureRandom.uuid)
         program = nil
-        send_message({type: "execute", program_id:, source:, tools:}) do |generation|
-          program = Program.new(id: program_id, owner:, dispatcher:, generation:)
+        send_message({type: "execute", program_id:, source:, tools:, messages: framework_messages}) do |generation|
+          program = Program.new(
+            id: program_id,
+            owner:,
+            dispatcher:,
+            generation:,
+            framework_prompt_scope: @framework_prompt_scope
+          )
           @programs_mutex.synchronize do
-            raise LittleGhost::ToolError, "Code-mode client is closed" if @closed
+            raise LittleGhost::ToolError, prompt("code_mode/feedback/closed", resource: "client") if @closed
 
             @programs[program.id] = program
           end
@@ -258,17 +276,46 @@ module LittleGhost
             current
           end
         end
-        fail_all_programs("Code-mode client closed")
+        fail_all_programs(prompt("code_mode/feedback/closed", resource: "client"))
         stop_process(process)
       end
 
       private
 
+      def framework_messages
+        {
+          "execution_limit" => prompt("code_mode/javascript/errors/execution_limit"),
+          "memory_limit" => prompt("code_mode/javascript/errors/memory_limit"),
+          "cleanup_failed" => prompt("code_mode/javascript/errors/cleanup_failed"),
+          "pending_calls_limit" => prompt("code_mode/javascript/errors/pending_calls_limit"),
+          "active_programs_limit" => prompt("code_mode/javascript/errors/active_programs_limit"),
+          "invalid_request" => prompt("code_mode/javascript/errors/invalid_request", detail: "__DETAIL__"),
+          "unavailable_tool" => prompt("code_mode/feedback/unavailable_tool", name: "__TOOL_NAME__"),
+          "execution_failed" => prompt(
+            "code_mode/errors/execution_failed",
+            error_class: "__ERROR_CLASS__",
+            message: "__ERROR_MESSAGE__"
+          ),
+          "source_size_limit" => prompt("code_mode/javascript/errors/source_size_limit"),
+          "tools_array" => prompt("code_mode/javascript/errors/tools_array")
+        }
+      end
+
+      def prompt(key, **locals)
+        framework_prompts = @framework_prompt_scope[:framework_prompts] || FrameworkPrompts.new
+        framework_prompts.render(
+          key,
+          locals:,
+          invocation_paths: @framework_prompt_scope.fetch(:invocation_paths, []),
+          agent_path: @framework_prompt_scope[:agent_path]
+        )
+      end
+
       def owned_program(owner, program_id)
         @programs_mutex.synchronize do
           program = @programs[program_id.to_s]
           unless program && program.owner.equal?(owner)
-            raise LittleGhost::ToolError, "Unknown code-mode program: #{program_id}"
+            raise LittleGhost::ToolError, prompt("code_mode/feedback/unknown_program", id: program_id)
           end
 
           program
@@ -304,7 +351,7 @@ module LittleGhost
 
       def ensure_started
         process, generation = @process_mutex.synchronize do
-          raise LittleGhost::ToolError, "Code-mode client is closed" if @closed
+          raise LittleGhost::ToolError, prompt("code_mode/feedback/closed", resource: "client") if @closed
           raise @failure if @failure
           return if @wait_thread&.alive? && @reader_thread&.alive?
 
@@ -329,7 +376,7 @@ module LittleGhost
         end
 
         @process_mutex.synchronize do
-          raise LittleGhost::ToolError, "Code-mode client is closed" if @closed
+          raise LittleGhost::ToolError, prompt("code_mode/feedback/closed", resource: "client") if @closed
           raise @failure if @failure
           clear_process_state
 

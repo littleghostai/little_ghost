@@ -169,15 +169,160 @@ Applications can add prompt lookup roots through `Configuration#prompt_paths`.
 Earlier roots win, so an application can override a view from a shared prompt
 package.
 
+## Customize LittleGhost's framework prompts
+
+You can change LittleGhost's own model-facing language without replacing its
+Ruby behavior. Tool descriptions, structured-result repair requests, context
+summaries, code-mode instructions, and other framework messages all come from
+bundled prompt views under the `little_ghost/` namespace.
+
+### Decide when to customize
+
+Models can respond differently to the same instruction, even when the Tool,
+schema, and task stay the same. Wording that works well with one model may lead
+another model to miss a Tool constraint, mishandle a repair request, or recover
+less reliably from a failed call. Adjusting the relevant framework prompt gives
+you a direct way to improve that interaction without forking LittleGhost.
+
+An override can also align framework language with your application's
+terminology and voice. Start with the narrowest template that covers the
+behavior you want to change, and evaluate it with the models your application
+uses. Keep protocol checks, authorization, and execution limits in Ruby;
+prompt wording guides the model but does not enforce those boundaries.
+
+### Find the prompt you want to change
+
+Browse the catalog from your application:
+
+```sh
+$ little_ghost prompts list
+$ little_ghost prompts list structured_output
+$ little_ghost prompts list structured_output/repair
+$ little_ghost prompts show structured_output/repair/request
+```
+
+The bare `list` command shows top-level features with template counts. Pass a
+feature or component path to browse its immediate children, or use `list --all`
+to print every template key. Keys follow `feature/component/purpose`. For
+example, built-in Tool descriptions live under `tools/built_in`, while JSON
+Schema feedback lives under `tools/validation/schema`. Directories named
+`feedback` contain conditions the model can correct. Directories named `errors`
+contain operational failures.
+
+`show` prints the bundled ERB source. Every bundled template starts with a
+structured ERB comment that explains where LittleGhost renders it, its locals,
+and any formatting constraints. These headers use `<%# ... -%>`, so neither the
+comment nor its trailing newline enters the rendered prompt. Each interior line
+also starts with `#` so Ruby-aware editors recognize the whole header as a
+comment. A `#` line outside `<%# ... -%>` and an HTML comment are output text and
+would be sent to the model.
+
+Bundled prompts use plain text and Markdown. When a prompt needs headings or
+structured sections, the default template uses Markdown headings and lists
+rather than XML-like wrapper tags.
+
+### Copy an override into your application
+
+Copy one template into the default application prompt root before editing it:
+
+```sh
+$ little_ghost prompts copy structured_output/repair/request
+```
+
+That creates
+`app/prompts/little_ghost/structured_output/repair/request.erb`. Use `--root` when the
+application configures a different prompt root:
+
+```sh
+$ little_ghost prompts copy structured_output/repair/request --root config/prompts
+```
+
+Use `--agent` when one Agent needs different wording from the rest of the
+application. Pass the Agent's logical path, which is its underscored class name
+without the `Agent` suffix:
+
+```sh
+$ little_ghost prompts copy structured_output/repair/request --agent customer_support
+```
+
+That creates
+`app/prompts/customer_support/little_ghost/structured_output/repair/request.erb`.
+Namespaced classes use a namespaced logical path, such as
+`Admin::CustomerSupportAgent` becoming `admin/customer_support`.
+
+Copy the complete catalog when an application deliberately wants to own every
+piece of framework wording:
+
+```sh
+$ little_ghost prompts copy --all
+```
+
+Copy commands refuse to overwrite any existing destination. With `--all`, the
+command checks every destination before it starts writing. Copied templates
+retain their invisible documentation headers so the override remains
+self-explanatory in the application.
+
+### Choose the override scope
+
+For every framework prompt that applies to an Agent invocation, LittleGhost
+uses the first matching template in this order:
+
+1. An invocation-specific `TrustedPath` root
+2. The Agent-scoped directory inside a configured prompt root
+3. The runtime-wide directory inside a configured prompt root
+4. The template bundled with LittleGhost
+
+Each root keeps the same `little_ghost/<key>.erb` namespace. Agent scope inserts
+the logical path before that namespace.
+
+Runtime-wide overrides normally live in the default `app/prompts` root. Add or
+replace configured roots when the application uses another location:
+
+```ruby
+LittleGhost.configure do |config|
+  config.prompt_paths = ["config/prompts", "app/prompts"]
+end
+```
+
+The uncommon invocation-specific layer is explicit because it can change model
+instructions for only one call. From `config/little_ghost.rb`:
+
+```ruby
+campaign_prompts = LittleGhost::TrustedPath.new(
+  path: File.expand_path("campaign_prompts", __dir__)
+)
+
+CustomerSupportAgent.ask(
+  "Where is my order?",
+  template_paths: [campaign_prompts]
+)
+```
+
+The invocation root contains
+`little_ghost/structured_output/repair/request.erb`, as a runtime root does.
+Direct `LittleGhost.generate` calls accept the same `template_paths:` option.
+
+### Know what an override can change
+
+Framework templates control model-facing language, not protocol roles, Tool
+names, schemas, validation behavior, security checks, or execution limits. A
+required template cannot render as blank.
+
+LittleGhost is pre-1.0. Template keys and their documented locals are maintained
+on a best-effort basis until 1.0, so review release notes and copied overrides
+when upgrading.
+
 ## Treat views as application code
 
 Prompt views run as ERB inside the Ruby process and can call Ruby. Keep prompt
 directories with the rest of your application code rather than letting a
 request choose one.
 
-`TrustedPath` is available for the uncommon case where application code selects
-a request-specific root. It marks that choice explicitly; it does not inspect
-or restrict the directory.
+Use `TrustedPath` only when application code needs to select a request-specific
+root. Do not derive its path from a request parameter, model output, or Tool
+argument. The wrapper confirms that the directory exists and resolves symbolic
+links. It does not inspect who can edit the directory or restrict what its ERB
+can execute.
 
 ## Build request-specific input in a Workflow
 

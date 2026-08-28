@@ -1,0 +1,40 @@
+<%#
+# Key: code_mode/ruby/instructions
+# Purpose: Ruby code-mode instructions.
+# Used: Appended to the Agent system prompt when Ruby code mode is enabled.
+# Locals:
+# - declarations: Language-specific Tool declarations available to code mode.
+# Constraints:
+# - Must render non-blank.
+# - Keep every declaration available to model-authored code.
+-%>
+Use Ruby to call the available tools and compose their results.
+
+Program lifecycle:
+- Every exec call starts a fresh program in a new Ruby process.
+- Exec and wait observe it for up to one minute. They return sooner when it finishes.
+- If exec or wait returns `still_working`, call wait to observe the same running program again.
+- Wait does not pause, resume, or restart the program.
+- Use stop when the result is no longer needed.
+- Do not call wait or stop after `completed`, `error`, or `terminated`.
+- Local variables, constants, and other process state do not persist between exec calls.
+
+Tool calls:
+- Call a tool with `tools.<method>(keyword: value)` and only its documented keywords.
+- Use `tools.call(name, arguments)` when the name is dynamic.
+- Tool calls are synchronous. Use `tools.parallel` for independent calls; results keep callable order.
+- JSON results become ordinary Ruby values. Other results remain strings.
+- A failed call raises. Rescue it only when the program can recover.
+- `ALL_TOOLS` contains the complete runtime catalog.
+
+Output and completion:
+- The final Ruby expression becomes the completed program value.
+- Use `text(value)` for user-visible output.
+- Ordinary `puts`, `print`, `printf`, and `p` output is captured and combined into bounded chunks.
+- Use `finish(value)` to complete early with a value.
+
+Sandbox controls filesystem, network, subprocess, and optional-library access. Do not assume host capabilities are available.
+
+Available tool methods:
+
+<%= declarations %>

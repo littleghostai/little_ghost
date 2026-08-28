@@ -34,50 +34,20 @@ module LittleGhost
       def language = :ruby
 
       # Builds Ruby usage instructions and method declarations for +catalog+.
-      def instructions(catalog:)
-        <<~INSTRUCTIONS.strip
-          Use Ruby to call the available tools and compose their results.
-
-          Program lifecycle:
-          - Every exec call starts a fresh program in a new Ruby process.
-          - Exec and wait observe it for up to one minute. They return sooner when it finishes.
-          - If exec or wait returns `still_working`, call wait to observe the same running program again.
-          - Wait does not pause, resume, or restart the program.
-          - Use stop when the result is no longer needed.
-          - Do not call wait or stop after `completed`, `error`, or `terminated`.
-          - Local variables, constants, and other process state do not persist between exec calls.
-
-          Tool calls:
-          - Call a tool with `tools.<method>(keyword: value)` and only its documented keywords.
-          - Use `tools.call(name, arguments)` when the name is dynamic.
-          - Tool calls are synchronous. Use `tools.parallel` for independent calls; results keep callable order.
-          - JSON results become ordinary Ruby values. Other results remain strings.
-          - A failed call raises. Rescue it only when the program can recover.
-          - `ALL_TOOLS` contains the complete runtime catalog.
-
-          Output and completion:
-          - The final Ruby expression becomes the completed program value.
-          - Use `text(value)` for user-visible output.
-          - Ordinary `puts`, `print`, `printf`, and `p` output is captured and combined into bounded chunks.
-          - Use `finish(value)` to complete early with a value.
-
-          The Sandbox controls filesystem, network, subprocess, and optional-library access. Do not assume host
-          capabilities are available.
-
-          Available tool methods:
-
-          #{Ruby::Catalog.new(catalog).declarations}
-        INSTRUCTIONS
+      def instructions(catalog:, prompts: nil)
+        renderer = prompts || ->(key, **locals) { FrameworkPrompts.new.render(key, locals:) }
+        renderer.call("code_mode/ruby/instructions", declarations: Ruby::Catalog.new(catalog).declarations)
       end
 
       # Opens a Ruby Session with engine defaults merged with +limits+.
       # Unsupported limit keys raise ArgumentError.
-      def open_session(broker:, sandbox_factory:, limits: {})
+      def open_session(broker:, sandbox_factory:, limits: {}, framework_prompt_scope: {})
         Ruby::Session.new(
           broker:,
           sandbox_factory:,
           subprocess_policy: method(:allow_subprocesses_for),
-          limits: normalize_limits(limits, defaults: DEFAULT_LIMITS)
+          limits: normalize_limits(limits, defaults: DEFAULT_LIMITS),
+          framework_prompt_scope:
         )
       end
     end

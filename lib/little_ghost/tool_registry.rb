@@ -55,7 +55,7 @@ module LittleGhost
 
         name = instance.class.tool_name
         validate_name!(name)
-        validate_description!(instance.class.description)
+        validate_description!(instance.description)
         raise ConfigurationError, "Tool name collision: #{name}" if @tools.key?(name) && !replace
         raise ConfigurationError, "Tool name collision: #{name}" if seen.include?(name)
 
@@ -96,7 +96,7 @@ module LittleGhost
 
     # Collects the frozen model-facing tool specifications.
     def specifications
-      map { |tool| tool.class.specification }.freeze
+      map(&:specification).freeze
     end
 
     # Lists the frozen model-visible tool names.

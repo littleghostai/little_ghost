@@ -14,7 +14,7 @@ module LittleGhost
       def schema_name = configuration.fetch(:name)
       def provider? = false
       def tool? = false
-      def tools(ordinary_tools) = ordinary_tools
+      def tools(ordinary_tools, description: nil) = ordinary_tools
       def output_schema = nil
       def tool_choice(repair:) = nil
       def required_capabilities = [].freeze
@@ -29,8 +29,8 @@ module LittleGhost
     class ToolStrategy < Strategy
       def tool? = true
 
-      def tools(ordinary_tools)
-        [*ordinary_tools, result_tool].freeze
+      def tools(ordinary_tools, description: nil)
+        [*ordinary_tools, result_tool(description:)].freeze
       end
 
       def tool_choice(repair:)
@@ -39,11 +39,11 @@ module LittleGhost
 
       def required_capabilities = %i[tools tool_choice].freeze
 
-      def result_tool
+      def result_tool(description: nil)
         {
           name: schema_name,
-          description: configuration[:description] ||
-            "Submit the final structured result. Call this tool only as the final action.",
+          description: configuration[:description] || description ||
+            raise(ConfigurationError, "Structured result Tool description is required"),
           input_schema: configuration.fetch(:schema),
           strict: true
         }.freeze

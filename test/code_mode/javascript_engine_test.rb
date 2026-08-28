@@ -357,7 +357,7 @@ class CodeModeEngineTest < Minitest::Test
 
     result = client.terminate(owner:, program_id: program.id, max_tokens: 1)
 
-    assert_equal "ab…2 tokens truncated…ij", result.fetch(:output)
+    assert_equal "…3", result.fetch(:output)
   ensure
     client&.close
   end
@@ -461,7 +461,7 @@ class CodeModeEngineTest < Minitest::Test
 
     error = assert_raises(LittleGhost::ToolError) { session.wait }
 
-    assert_includes error.message, "no active JavaScript program"
+    assert_includes error.message, "no active code-mode program"
   end
 
   def test_completion_drains_unawaited_tool_calls

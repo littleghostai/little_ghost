@@ -1,0 +1,10 @@
+<%#
+# Key: sandbox/process/feedback/command_timed_out
+# Purpose: Sandbox command timeout feedback.
+# Used: Returned to the model when LittleGhost produces sandbox command timeout feedback.
+# Locals:
+# - timeout: Configured timeout in seconds.
+# Constraints:
+# - Must render non-blank.
+-%>
+Command timed out<% if timeout %> after <%= timeout %> seconds<% end %>

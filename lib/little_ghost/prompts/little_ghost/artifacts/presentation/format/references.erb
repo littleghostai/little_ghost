@@ -1,0 +1,12 @@
+<%#
+# Key: artifacts/presentation/format/references
+# Purpose: Artifact reference appendix.
+# Used: Inserted into larger model-visible content as the artifact reference appendix.
+# Locals:
+# - references: Collection of model-visible artifact references.
+# Constraints:
+# - Must render non-blank.
+# - This output is embedded inside a larger model-visible message.
+-%>
+Artifacts:
+<%= references.map { |reference| "- #{reference}" }.join("\n") %>
