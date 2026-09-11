@@ -210,8 +210,8 @@ module LittleGhost
 
     # Creates a Run that owns any workspace and sandbox built for the request.
     #
-    # +include_agent_events_by_default+ is trusted stream policy for the Run
-    # returned by this build. It applies only when the Invocation omits
+    # +include_agent_events_by_default+ defaults to +true+, exposing source-tagged
+    # progress from every Agent in this Run. It applies only when the Invocation omits
     # +include_agent_events+ and must not be forwarded to auxiliary Runs built
     # while preparing the request.
     def build_run(
@@ -223,7 +223,7 @@ module LittleGhost
       cancellation_token: Support::CancellationToken.new,
       workspace: nil,
       sandbox: nil,
-      include_agent_events_by_default: false
+      include_agent_events_by_default: true
     )
       entrypoint_class ||= assembly_class || agent_class
       raise ArgumentError, "entrypoint_class is required" unless entrypoint_class

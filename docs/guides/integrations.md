@@ -27,10 +27,22 @@ events = LittleGhost::AGUI::Adapter.new.stream(
 events.each { |event| websocket.write(JSON.generate(event)) }
 ```
 
-The adapter translates the full Run, including model output, Tool activity,
-retries, subagent activity, and the final outcome. It does not keep state between
-calls. Your application owns the connection, backpressure, disconnect behavior,
-and any request state its callbacks need.
+The adapter translates Run lifecycle and final outcomes, plus selected Agent
+progress such as model output, Tool activity, and retries. By default, it selects
+only the root Agent: `agent_path == "/root"` with an empty `assembly_path`.
+Nested Agent progress is not forwarded. The adapter reads Agent progress from
+`:agent_stream` and reports aggregate usage separately.
+
+Pass `source_filter:` to `LittleGhost::AGUI::Adapter.new` to select other
+participants. This application-owned callable receives an `AgentStreamSource`
+and returns a truthy value only for sources the client may see. Match the
+enclosing assembly path as well as the Agent identity when selecting a nested
+participant. Computed assembly answers arrive in `RUN_FINISHED`'s result, not
+as synthetic text deltas.
+
+The adapter does not keep state between calls. Your application owns the
+connection, backpressure, disconnect behavior, and any request state its
+callbacks need.
 
 LittleGhost may emit event types beyond the core AG-UI set. Decide whether the
 client preserves or ignores types it does not recognize. See the [AG-UI event
@@ -38,8 +50,10 @@ documentation](https://docs.ag-ui.com/concepts/events) when implementing the
 client.
 
 > **Safety note:** A Run stream can include model output, Tool arguments and
-> results, errors, and participant activity. Check that the connected user may
-> see the complete Run, then filter fields before sending or storing events.
+> results, errors, and participant activity. Source selection controls which
+> Agent progress is forwarded; it does not redact that progress or filter the
+> final Run result. Check that the connected user may see those values, and
+> filter sensitive fields before sending or storing events.
 
 Calling `each` drives the source stream on the caller's fiber or thread. When a
 client disconnects, stop enumerating and decide whether the application should

@@ -2327,7 +2327,7 @@ module LittleGhost
         agent_path:,
         operation_id:,
         parent_operation_id:,
-        assembly_path: agent_stream_path
+        assembly_path: AgentStreamScope.path(run:, path: agent_stream_path)
       )
       AgentStreamSink.new(destination: events, run:, source:, input:)
     end

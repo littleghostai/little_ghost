@@ -32,8 +32,6 @@ module LittleGhostCoder
         @output.puts "\n== #{stage} =="
       when :agent_stream
         render_agent_event(event.data.fetch(:source), event.data.fetch(:event))
-      when :text_delta
-        @output.print event.data.fetch(:text)
       end
     end
 
@@ -42,10 +40,8 @@ module LittleGhostCoder
     def render_agent_event(source, event)
       case event.type
       when :text_delta
-        unless source.agent_id == "coding_reporter"
-          @output.print event.data.fetch(:text)
-          @agent_text_open = true
-        end
+        @output.print event.data.fetch(:text)
+        @agent_text_open = true
       when :invocation_stop
         finish_agent_text
       when :tool_start

@@ -29,7 +29,9 @@ module LittleGhost
       # The optional block receives each StreamEvent from the fiber or thread
       # running the Execution. It must not depend on a particular thread and
       # should not pause the scheduler or retain sensitive event content longer
-      # than the application requires.
+      # than the application requires. As with Run#each, Agent progress is
+      # source-tagged and includes nested participants. Filter sources and fields
+      # before forwarding events to a destination that may see only part of the Run.
       def start(run, &event_consumer)
         new(run, event_consumer:).send(:start)
       end

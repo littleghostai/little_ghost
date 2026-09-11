@@ -29,7 +29,9 @@ module LittleGhost
   #
   # Call a named Graph with ask[rdoc-ref:LittleGhost::Assembly.ask] for its final
   # Run, or the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask]
-  # for routing and final-response events.
+  # for live source-tagged Agent progress, routing events, and the final result.
+  # Progress from every node reaches the Run without raw-event buffering or
+  # final-answer replay. Applications select the sources they show; see Run.
   #
   # Multiple unconditional edges from one source run in parallel and converge
   # at their first unambiguous common successor. Array endpoints declare an

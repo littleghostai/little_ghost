@@ -15,7 +15,12 @@ run = entrypoint.ask(question)
 
 ## Use a Workflow for explicit application logic
 
-A Workflow's `perform` method is ordinary Ruby. Inside it, `invoke` prepares a child call. Read `.output` when you need an intermediate answer. Return the final `invoke` call untouched so its response can stream to the caller, or return a value that Ruby computes from the intermediate answers.
+A Workflow's `perform` method is ordinary Ruby. Inside it, `invoke` prepares a
+child call. Read `.output` for its text or structured answer, or `.result` for
+the complete `RunResult`. Return an invocation to select its answer as the
+Workflow result. You can inspect that answer first, or return a value that Ruby
+computes from intermediate answers. Every participating Agent publishes live
+progress regardless of how you access or select results.
 
 ```ruby
 class ResponseWorkflow < LittleGhost::Workflow
@@ -41,13 +46,45 @@ Every participant passed to `invoke` can be an Agent or another Assembly. By def
 
 Each child Agent keeps its own [prompt view](prompt_views.md). The Workflow supplies request-specific input; it does not replace that Agent's reusable system instructions.
 
-The last child is special when its events should become the Workflow's public stream. Return that `invoke` without consuming it:
+When one child should supply the final answer, return its invocation:
 
 ```ruby
 def perform
   invoke CustomerSupportAgent
 end
 ```
+
+To inspect an answer before selecting it, keep the invocation, read its output,
+and return the same invocation after your checks. For example, given a
+`ReviewAgent` whose structured result includes an `approved` boolean:
+
+```ruby
+class ReviewedResponseWorkflow < LittleGhost::Workflow
+  private
+
+  def perform
+    candidate = invoke(CustomerSupportAgent)
+    review = invoke(ReviewAgent, input: candidate.output, history: [], context: {}).output
+
+    review.fetch("approved") ? candidate : invoke(EscalationAgent)
+  end
+end
+```
+
+Returning the candidate does not repeat the work or replay its text. The final
+result preserves its conversation, state, and structured value. Usage and steps
+include both the candidate and the review. Repeated `.result` or `.output` reads
+reuse the completed result. An invocation must belong to the workflow returning
+it and must complete successfully.
+
+You can watch each Agent while the Workflow runs, including while an answer is
+being reviewed. Reviewing an answer does not hide its progress. Choose which
+participants your audience may see, as described in
+[Watch every agent](#watch-every-agent-in-an-assembly).
+
+Cancellation and deadlines apply before each child runs and before the Workflow
+returns its answer. They also apply if a checkpoint callback cancels the run or
+finishes after the deadline.
 
 When Ruby should compute the caller-visible result, consume every child and return the computed value:
 
@@ -67,11 +104,11 @@ class EvidenceWorkflow < LittleGhost::Workflow
 end
 ```
 
-A returned String becomes the Workflow's textual response. Arrays, mappings, numbers, and booleans become a structured result available through `RunResult#output`, including when the Workflow is exposed with `assembly_as_tool`. Direct structured results must be JSON-compatible and stay within LittleGhost's structured-result size, depth, and complexity limits. Return an explicit value: `nil` remains a `ProtocolError`, which catches forgotten returns.
+A returned String becomes the Workflow's textual response. Arrays, mappings, numbers, and booleans become a structured result available through `RunResult#output`, including when the Workflow is exposed with `assembly_as_tool`. Computed values appear in the final result, not as synthetic text-delta events. Direct structured results must be JSON-compatible and stay within LittleGhost's structured-result size, depth, and complexity limits. Return an explicit value: `nil` remains a `ProtocolError`, which catches forgotten returns.
 
 ### Choose a branch in Ruby
 
-Each branch should end with its final unconsumed invocation or a directly computed value:
+Each branch should end with its final invocation or a directly computed value:
 
 ```ruby
 class RoutedResponseWorkflow < LittleGhost::Workflow
@@ -305,7 +342,9 @@ Retries start at zero. When `retries` is greater than zero, `retry_on` must list
 
 ## Watch every agent in an assembly
 
-Follow each participant while a composite assembly runs by handling its contextual `:agent_stream` events. These events arrive alongside the coherent public answer and assembly lifecycle events:
+Follow each participant by handling source-tagged `:agent_stream` events. Every
+Run uses this same progress channel, from one root Agent to nested assemblies
+and subagents. Lifecycle events and the final result remain separate:
 
 ```ruby
 stream = SupportFlowGraph.stream_ask("Why was I charged twice?")
@@ -333,19 +372,31 @@ run.completed? # => true
 
 `source.agent_id` identifies the Agent class, `source.agent_path` distinguishes managed subagents, and `source.operation_id` groups one invocation. `source.assembly_path` lists the enclosing Workflow, Swarm, or Graph steps from the outside inward.
 
+An Agent or Assembly invoked as a Tool within the Run adds a `:tool` step to that path. The
+step identifies the invoking Agent and Tool name, and its descendants retain
+the boundary. Tool-invoked Agents therefore remain distinct from the root
+Agent even when their managed-subagent path is `/root`.
+
 The routed input and inner event are copied and frozen before they reach the
 observer, so changing an event can't affect the running assembly. Parallel
 participants can interleave. Events from each Agent retain their order, and
 LittleGhost never calls the stream block concurrently.
 
-The contextual wrapper arrives before the corresponding ordinary event. An assembly's final Agent therefore appears through both projections. Filter for `:agent_stream` when building an all-agent view, or handle ordinary events when rendering only the final answer. Pass `include_agent_events: false` when a composite assembly caller only wants the ordinary public stream. Standalone Agent streams keep their ordinary events by default and accept `include_agent_events: true` when source metadata is useful.
+Agent progress appears only through `:agent_stream`, without duplicate raw
+events. Returning an invocation selects its result; it does not replay that
+Agent's progress. Handle the terminal Run event or read `run.result` for the
+complete answer and aggregate usage. Pass `include_agent_events: false` to omit
+all Agent progress without changing execution, lifecycle events, or results.
 
-The AG-UI adapter ignores contextual wrappers. Translate them explicitly if an AG-UI client should receive participant activity.
+The [AG-UI adapter](integrations.md) displays root Agent progress by default.
+Supply its `source_filter:` callable when a client should see selected assembly
+participants.
 
-> **Safety note:** A composite stream can include inputs, reasoning, Tool
-> arguments and results, errors, and output from every participant. Check that
-> the destination may see the complete Run, or filter the events before sending
-> or storing them.
+> **Safety note:** Every Run stream can include inputs, reasoning, Tool arguments
+> and results, errors, and private output from nested participants. The example
+> above observes the complete Run. Before sending or storing events for a
+> narrower audience, select allowed sources and filter their fields. Result
+> selection does not authorize disclosure of a participant's progress.
 
 ## Inspect what the assembly did
 
@@ -362,7 +413,8 @@ policy = trajectory.find { |step| step.participant == "policy" }
 trajectory.concurrent?(ledger.id, policy.id)
 ```
 
-Step outputs and buffered events have size limits. Use your application's
+The trajectory retains step outputs, not a transcript of streaming events.
+Step outputs and final results have size limits. Use your application's
 instrumentation when you need deeper diagnostics.
 
 ## Compose assemblies inside assemblies

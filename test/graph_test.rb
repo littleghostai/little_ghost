@@ -60,7 +60,7 @@ class GraphTest < Minitest::Test
 
   Run = Struct.new(:runtime, :workspace, :sandbox)
 
-  def test_runs_one_path_and_only_streams_the_finish_node
+  def test_runs_one_path_and_selects_the_finish_node_result
     graph_class = Class.new(LittleGhost::Graph) do
       node :classify, :classifier
       node :refund, :refund_agent
@@ -82,7 +82,7 @@ class GraphTest < Minitest::Test
     assert_equal %i[
       assembly_step_start assembly_step_stop assembly_transition
       assembly_step_start assembly_step_stop assembly_transition
-      assembly_step_start assembly_step_stop text_delta invocation_stop
+      assembly_step_start assembly_step_stop invocation_stop
     ], events.map(&:type)
     assert_equal 10, events.find { |event| event.type == :invocation_stop }.data.fetch(:result).usage.input_tokens
     assert_equal "request", classifier.calls.first.first.text
@@ -616,7 +616,7 @@ class GraphTest < Minitest::Test
 
     refute_includes events.map(&:type), :assembly_fork
     assert_equal %i[assembly_step_start assembly_step_stop assembly_transition assembly_step_start assembly_step_stop
-      text_delta invocation_stop], events.map(&:type)
+      invocation_stop], events.map(&:type)
     assert_includes answer.calls.first.first.text, "From plan:\ndirect"
   end
 

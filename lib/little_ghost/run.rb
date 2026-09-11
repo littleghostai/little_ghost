@@ -18,7 +18,13 @@ module LittleGhost
   #
   #   stream = CustomerSupportAgent.stream_ask("Where is transfer 481?")
   #   run = stream.each do |event|
-  #     publish(event) if event.type == :text_delta
+  #     next unless event.type == :agent_stream
+  #
+  #     source = event.data.fetch(:source)
+  #     next unless source.agent_path == "/root" && source.assembly_path.empty?
+  #
+  #     progress = event.data.fetch(:event)
+  #     publish(progress) if progress.type == :text_delta
   #   end
   #
   #   run.completed? # => true
@@ -44,18 +50,25 @@ module LittleGhost
   # resources to that cleanup sequence. Interjection is available only while one
   # Agent entrypoint is active.
   #
-  # == Nested Agent events
+  # == Source-tagged progress
   #
-  # A composite Assembly stream observes every Agent that shares the Run. Each
+  # Every Run observes all participating Agents, including a root Agent's
+  # subagents and Agents nested in Workflow, Swarm, or Graph steps. Each
   # +:agent_stream+ event carries an AgentStreamSource in +data[:source]+ and a
   # copied, frozen Agent StreamEvent in +data[:event]+. An inner
   # +:invocation_start+ also includes the copied, frozen Message sent to that
   # Agent in +data[:input]+. Event consumers cannot change the running work.
   #
+  # Agent progress appears only through these wrappers, not as duplicate raw
+  # events. Lifecycle events and terminal RunResults are separate. Selecting a
+  # child result or computing an assembly answer does not replay text deltas.
+  #
   # Parallel Agents may interleave, but the Run invokes the stream consumer
-  # serially. Contextual events expose data from every participating Agent, so
-  # applications should enable +include_agent_events+ only for destinations
-  # that may see every participant's data.
+  # serially. Wrappers can contain inputs, reasoning, Tool arguments and results,
+  # and private participant output. Applications must filter sources and fields
+  # before sending them to destinations that may see less than the complete Run.
+  # Set <tt>include_agent_events: false</tt> to omit all Agent progress; execution,
+  # lifecycle events, and final results remain unchanged.
   class Run
     include Enumerable
 
@@ -92,7 +105,7 @@ module LittleGhost
     def initialize(invocation:, runtime:, agent_class: nil, assembly_class: nil, entrypoint_class: nil,
       execution_class: nil,
       cancellation_token: Support::CancellationToken.new, workspace: nil, sandbox: nil,
-      include_agent_events_by_default: false)
+      include_agent_events_by_default: true)
       entrypoint_class ||= assembly_class || agent_class
       raise ArgumentError, "entrypoint_class is required" unless entrypoint_class
       execution_class ||= assembly_class || entrypoint_class
@@ -428,7 +441,9 @@ module LittleGhost
           elsif event.type == :invocation_error
             @usage = event.data.fetch(:usage, usage)
           end
-          yield event
+          if !agent.is_a?(Agent) || %i[invocation_stop invocation_error subagent].include?(event.type) || event.type.to_s.start_with?("assembly_")
+            yield event
+          end
         end
         session&.checkpoint_result(result) if result
       end

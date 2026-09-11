@@ -948,7 +948,8 @@ class ConfigurationTest < Minitest::Test
 
       assert_equal :run_start, events.first.type
       assert_equal :run_stop, events.last.type
-      assert_includes events.map(&:type), :text_delta
+      refute_includes events.map(&:type), :text_delta
+      assert events.any? { |event| event.type == :agent_stream && event.data.fetch(:event).type == :text_delta }
       assert events.all? { |event| event.is_a?(LittleGhost::StreamEvent) }
     end
   end

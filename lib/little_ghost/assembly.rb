@@ -58,11 +58,12 @@ module LittleGhost
       #
       # Enumeration yields StreamEvent objects and returns the terminal Run.
       # The same Invocation fields accepted by .ask may be supplied as +options+.
-      # Composite assemblies also emit an +:agent_stream+ event for every
-      # normalized event from every Agent in the run, including intermediate
-      # and nested participants. Set <tt>include_agent_events: false</tt> to
-      # keep only the ordinary public stream. A standalone Agent retains its
-      # ordinary stream by default and accepts +true+ to opt in.
+      # Agent progress arrives once through +:agent_stream+, with source metadata
+      # identifying every Agent in the Run, including nested participants.
+      # Lifecycle and terminal results remain separate events. Filter sources
+      # before forwarding progress to a destination that may see only some
+      # participants. Set <tt>include_agent_events: false</tt> to omit all Agent
+      # progress without changing execution or final results. See Run.
       def stream_ask(message, **options)
         snapshot = definition
         stream = nil
@@ -177,7 +178,7 @@ module LittleGhost
     end
 
     # Builds the top-level Run used by a standalone assembly.
-    def build_run(payload = nil, include_agent_events_by_default: false, **payload_options) # :nodoc:
+    def build_run(payload = nil, **payload_options) # :nodoc:
       payload = entrypoint_payload(payload, payload_options) unless payload_options.empty?
       payload = payload.dup if payload.is_a?(Hash)
       cancellation_token = if payload.is_a?(Hash)
@@ -191,14 +192,14 @@ module LittleGhost
       options[:cancellation_token] = cancellation_token if cancellation_token
       options[:workspace] = workspace if workspace
       options[:sandbox] = sandbox if sandbox
-      options[:include_agent_events_by_default] = true if include_agent_events_by_default
       runtime.build_run(payload, **options)
     end
 
     # Starts +payload+ in the background and returns an Execution.
-    # Composite assemblies include contextual +:agent_stream+ events in the
-    # consumer by default. Set +include_agent_events+ to +false+ in +payload+
-    # to keep only the ordinary public stream.
+    # The consumer receives source-tagged +:agent_stream+ progress from every
+    # Agent in the Run, including nested participants. Filter sources for the
+    # intended destination. Set +include_agent_events+ to +false+ in +payload+
+    # to omit Agent progress while keeping lifecycle and terminal results.
     def start_execution(payload, &event_consumer)
       ensure_standalone!
       Execution.start(build_stream_run(payload), &event_consumer)
@@ -230,10 +231,10 @@ module LittleGhost
     #
     # A standalone stream returns its terminal Run after enumeration. A
     # run-scoped stream finishes with an +invocation_stop+ event containing its
-    # RunResult. A standalone composite Assembly receives contextual
-    # +:agent_stream+ events from every Agent in the Run by default and may set
-    # <tt>include_agent_events: false</tt> to omit them. A standalone Agent may
-    # set the option to +true+ to include its contextual wrapper.
+    # RunResult. Standalone streams include source-tagged +:agent_stream+ events
+    # from every Agent in the Run by default. Applications filter sources before
+    # forwarding progress, or set <tt>include_agent_events: false</tt> to omit
+    # all Agent progress. This option does not change execution or final results.
     def stream_ask(message, **options)
       if standalone?
         options[:deadline_at] = options.delete(:deadline) if options.key?(:deadline)
@@ -259,6 +260,9 @@ module LittleGhost
     # A directly bound Agent remains the target for every call, so overlapping
     # calls raise AgentBusyError. Class-level Agent#agent_as_tool declarations
     # build a fresh Agent per context-free call.
+    # Within the same Run, progress from the target and its descendants carries a
+    # +:tool+ boundary in AgentStreamSource#assembly_path. It cannot be mistaken
+    # for root Agent progress, including when this instance is reused across calls.
     def as_tool(name: self.class.assembly_id, description: self.class.description, preserve_context: false)
       build_tool(name:, description:, preserve_context:, factory: nil)
     end
@@ -321,7 +325,9 @@ module LittleGhost
             options[:interjection_metadata] = context&.interjection_metadata
             options[:interjection_ids] = context&.interjection_ids || []
           end
-          result = target.call(input.fetch("input"), **options)
+          result = AgentStreamScope.with_tool(target:, name:) do
+            target.call(input.fetch("input"), **options)
+          end
           if result.is_a?(Run)
             raise result.error if result.error
 
@@ -406,9 +412,7 @@ module LittleGhost
     private
 
     def build_stream_run(payload) # :nodoc:
-      return build_run(payload) if is_a?(Agent)
-
-      build_run(payload, include_agent_events_by_default: true)
+      build_run(payload)
     end
 
     def run_entrypoint_class # :nodoc:

@@ -8,8 +8,8 @@ module LittleGhost
   #
   # A workflow is an Assembly whose +perform+ method controls ordering,
   # branching, parallel work, and local variables. Each participant may be an
-  # Agent or another coordinated Assembly. The workflow can stream one final
-  # participant response or return a value computed from intermediate answers.
+  # Agent or another coordinated Assembly. The workflow selects one participant
+  # result or returns a value computed from intermediate answers.
   #
   # A support workflow can guarantee that research happens before the responder
   # writes the caller-visible answer:
@@ -37,11 +37,16 @@ module LittleGhost
   # the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask] for live
   # events.
   #
-  # +invoke+ returns a lazy Workflow::Invocation. Reading +output+ consumes an
-  # intermediate invocation and returns RunResult#output. Return a final
-  # invocation without consuming it when its events should reach the caller.
-  # Return a String or JSON-compatible value when Ruby computes the final
-  # answer. Intermediate usage is added to either result.
+  # +invoke+ returns a lazy Workflow::Invocation. Reading +result+ runs the child
+  # and returns its RunResult; +output+ returns RunResult#output. Repeated reads
+  # reuse the completed result. Return an invocation to select its conversation,
+  # state, and structured result as the workflow answer, or return a String or
+  # JSON-compatible value computed in Ruby. Every step contributes usage.
+  #
+  # All participating Agents publish live +:agent_stream+ progress to the owning
+  # Run, regardless of how results are accessed. Selecting a result does not
+  # replay its progress. Applications choose which sources to show the caller;
+  # see Run for how to identify participants and choose which data to share.
   #
   # A child receives the Workflow input unless +invoke+ supplies another one.
   # It also inherits history, settings, cancellation, deadline, template paths,
@@ -50,7 +55,7 @@ module LittleGhost
   # Non-JSON-like workflow context raises ArgumentError.
   #
   # A Workflow instance streams once. Returning +nil+, an unsupported value, an
-  # already consumed invocation, or consuming one twice raises ProtocolError.
+  # invocation owned by another workflow, or a failed invocation raises ProtocolError.
   # A composition error fails the owning top-level Run. Each child Assembly
   # closes after its attempt, and a cleanup failure raises from that attempt.
   class Workflow < Assembly
@@ -58,12 +63,12 @@ module LittleGhost
     MAX_DIRECT_RESULT_DEPTH = 64 # :nodoc:
     MAX_DIRECT_RESULT_NODES = 100_000 # :nodoc:
 
-    # Hold one lazy Assembly call inside a workflow composition.
-    # Workflow implementations normally use only its output method or return the
-    # object as the final invocation.
+    # Holds one lazy Assembly call inside a workflow composition.
+    # Read #result for the child's RunResult or #output for its text or structured
+    # value. Either accessor runs the child once and reuses the result on later
+    # reads. Return this object from +perform+ to select its result as the answer.
+    # Agent progress streams live independently of result access or selection.
     class Invocation
-      attr_reader :result # :nodoc:
-
       def initialize(reference:, participant:, input:, history:, context:, policies:, owner:) # :nodoc:
         @reference = reference
         @participant = participant
@@ -105,20 +110,25 @@ module LittleGhost
         @result
       end
 
-      # Consumes this invocation when necessary and returns RunResult#output.
+      # Runs this invocation when necessary and returns its completed RunResult.
       #
-      # A structured agent returns its validated value; an ordinary agent returns
-      # response text. Intermediate usage is recorded for the workflow total.
-      def output
-        @intermediate = true
+      # Repeated reads reuse the same result without repeating work. Agent
+      # progress streams live regardless of how the result is accessed.
+      def result
         unless consumed?
           each do |event|
             @owner.send(:emit_workflow_event, event) if event.type.to_s.start_with?("assembly_")
           end
-          @owner.send(:record_workflow_steps, @steps)
         end
-        result&.output
+        raise ProtocolError, "workflow invocation has no completed result" unless @result
+
+        @owner.send(:record_workflow_steps, @steps)
+        @result
       end
+
+      # Returns the completed child's text or structured value through RunResult#output.
+      # Runs the child when necessary, with the same progress behavior as #result.
+      def output = result.output
 
       def consumed? # :nodoc:
         @mutex.synchronize { @consumed }
@@ -152,10 +162,13 @@ module LittleGhost
 
     # Streams the workflow once as StreamEvent objects.
     #
-    # +perform+ may return a final, unconsumed Workflow::Invocation, a String, or
-    # a JSON-compatible value. The returned Enumerator is lazy, but calling
-    # +stream+ reserves the single-use workflow instance even when enumeration
-    # has not started yet.
+    # +perform+ may return an invocation owned by this workflow, a String, or a
+    # JSON-compatible value. The final +:invocation_stop+ contains the selected
+    # or computed result; it does not replay text events. A selected invocation
+    # runs only if it has not started, and checkpoints its conversation and state.
+    # Usage includes every workflow step. Cancellation and deadlines are checked before
+    # child execution and final publication. The returned Enumerator is lazy, but
+    # calling +stream+ reserves the single-use instance before enumeration starts.
     def stream(
       input = nil,
       history: nil,
@@ -202,43 +215,22 @@ module LittleGhost
       end
 
       Enumerator.new do |events|
-        error_emitted = false
-        observed_usage = nil
         @workflow_events = events
         ensure_open!
+        check_execution!
         final_value = perform
+        check_execution!
         if final_value.is_a?(Invocation)
-          if final_value.consumed?
-            raise ProtocolError, "#{self.class} returned an already consumed invocation from perform"
+          unless owned_invocation?(final_value)
+            raise ProtocolError, "#{self.class} returned an invocation owned by another workflow"
           end
-
-          final_value.each(checkpoint: @checkpoint) do |event|
-            error_emitted = true if event.type == :invocation_error
-            event = aggregate_usage(event)
-            observed_usage = case event.type
-            when :invocation_stop
-              event.data.fetch(:result).usage
-            when :invocation_error
-              event.data[:usage] || observed_usage
-            when :assembly_step_error
-              event.data[:usage] || observed_usage
-            else
-              observed_usage
-            end
-            events << event
-          end
+          result = final_value.result
+          emit_completed_result(result.with(usage: workflow_usage, steps: workflow_steps), events)
         else
           emit_direct_result(final_value, events)
         end
       rescue => error
-        unless error_emitted
-          events << StreamEvent.build(
-            :invocation_error,
-            error:,
-            usage: observed_usage || workflow_usage,
-            metadata: {}
-          )
-        end
+        events << StreamEvent.build(:invocation_error, error:, usage: workflow_usage, metadata: {})
         raise
       ensure
         @workflow_events = nil
@@ -273,7 +265,7 @@ module LittleGhost
     attr_reader :input, :history, :context
 
     # :doc:
-    # Implements the composition and returns its final unconsumed invocation or
+    # Implements the composition and returns its final invocation or
     # a directly computed String or JSON-compatible value.
     # Subclasses must override this hook.
     def perform
@@ -283,10 +275,11 @@ module LittleGhost
     # :doc:
     # Creates a lazy invocation for +assembly+.
     #
-    # Intermediate calls may use +output+; the final call must be returned from
-    # +perform+ without being consumed. +as+ supplies the participant name used
-    # in steps and telemetry. Retries default to zero; a positive +retries+
-    # value requires explicit exception classes in +retry_on+.
+    # Read +result+ or +output+ to execute the child and inspect its answer.
+    # Return the invocation from +perform+ to select that result without repeating
+    # work or replaying progress. +as+ names the participant in steps and
+    # telemetry. Retries default to zero;
+    # a positive +retries+ value requires explicit exception classes in +retry_on+.
     def invoke(
       assembly,
       as: nil,
@@ -324,8 +317,8 @@ module LittleGhost
     # siblings cooperatively before the error is raised.
     def parallel(*invocations, max_concurrency: 8)
       raise ArgumentError, "parallel requires at least one invocation" if invocations.empty?
-      unless invocations.all? { |invocation| invocation.is_a?(Invocation) && !invocation.consumed? }
-        raise ArgumentError, "parallel accepts unconsumed workflow invocations"
+      unless invocations.all? { |invocation| owned_invocation?(invocation) && !invocation.consumed? }
+        raise ArgumentError, "parallel accepts unconsumed invocations owned by this workflow"
       end
 
       token = @cancellation_token.child
@@ -336,12 +329,12 @@ module LittleGhost
           cancellation_token: token,
           on_result: ->(_index, execution) { record_workflow_steps(execution.fetch(:steps)) }
         ) do |invocation|
-          invocation.each do |event|
+          result = invocation.each do |event|
             if event.type.to_s.start_with?("assembly_")
               enqueue_assembly_event(queue, [:event, event], token)
             end
           end
-          {output: invocation.result&.output, steps: invocation.instance_variable_get(:@steps)}
+          {output: result.output, steps: result.steps}
         end
         enqueue_assembly_event(queue, [:done, results], token)
       rescue => error
@@ -361,6 +354,7 @@ module LittleGhost
     end
 
     def execute_workflow_invocation(reference:, participant:, input:, history:, context:, policies:, checkpoint:)
+      check_execution!
       step_id = SecureRandom.uuid
       predecessor_id = @mutex.synchronize do
         @workflow_steps.reverse.find { |step| step.parent_id.nil? }&.id
@@ -402,6 +396,8 @@ module LittleGhost
 
     def record_workflow_steps(steps)
       @mutex.synchronize do
+        return if @workflow_steps.any? { |step| step.id == steps.first.id }
+
         @workflow_steps.concat(steps)
         @intermediate_usage += steps.first.usage
       end
@@ -428,35 +424,6 @@ module LittleGhost
       end
     end
 
-    def aggregate_usage(event)
-      case event.type
-      when :invocation_stop
-        result = event.data.fetch(:result)
-        combined = RunResult.new(
-          message: result.message,
-          stop_reason: result.stop_reason,
-          usage: workflow_usage + result.usage,
-          messages: result.messages,
-          state: result.state,
-          structured_result: result.structured_result,
-          steps: workflow_steps + result.steps
-        )
-        StreamEvent.build(event.type, **event.data.merge(result: combined))
-      when :invocation_error
-        usage = event.data[:usage]
-        return event unless usage
-
-        StreamEvent.build(event.type, **event.data.merge(usage: workflow_usage + usage))
-      when :assembly_step_error
-        usage = event.data[:usage]
-        return event unless usage
-
-        StreamEvent.build(event.type, **event.data.merge(usage: workflow_usage + usage))
-      else
-        event
-      end
-    end
-
     def emit_direct_result(value, events)
       raise ProtocolError, "#{self.class} returned nil from perform" if value.nil?
 
@@ -470,10 +437,6 @@ module LittleGhost
 
         message = Message.new(role: :assistant, content: value.dup)
         result = direct_run_result(message:, usage:, state:, steps:)
-        response = ModelResponse.new(message:, stop_reason: :end_turn, usage:)
-        events << StreamEvent.build(:message_start, id: nil, model: nil)
-        events << StreamEvent.build(:text_delta, text: message.text)
-        events << StreamEvent.build(:message_stop, response:)
       else
         schema_name = "#{self.class.assembly_id}_result"
         structured_result = StructuredResult.new(
@@ -497,7 +460,13 @@ module LittleGhost
           structured_result:
         )
       end
-      checkpoint_direct_result(result)
+      emit_completed_result(result, events)
+    end
+
+    def emit_completed_result(result, events)
+      check_execution!
+      checkpoint_result(result)
+      check_execution!
       events << StreamEvent.build(:invocation_stop, result:, metadata: {})
     end
 
@@ -520,7 +489,7 @@ module LittleGhost
       )
     end
 
-    def checkpoint_direct_result(result)
+    def checkpoint_result(result)
       return unless @checkpoint
 
       @checkpoint.call(
@@ -646,6 +615,15 @@ module LittleGhost
 
     def ensure_open!
       @mutex.synchronize { raise Error, "workflow is already closed" if @closed }
+    end
+
+    def check_execution!
+      @cancellation_token.raise_if_cancelled!
+      raise DeadlineExceededError, "The run deadline was reached" if @deadline && Time.now >= @deadline
+    end
+
+    def owned_invocation?(value)
+      @mutex.synchronize { @invocations.include?(value) }
     end
 
     def normalize_history(value)

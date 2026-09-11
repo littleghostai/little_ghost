@@ -17,7 +17,8 @@ $ export OPENROUTER_API_KEY="..."
 
 Use your application's secret manager outside a local shell, and never commit provider credentials.
 
-This guide uses OpenRouter to keep setup to one key. Prefer another hosted
+This guide uses OpenRouter, a service that sends requests to your chosen AI
+model. Set `OPENROUTER_API_KEY` to a key from your OpenRouter account. Prefer another hosted
 provider or a local model server? Start with [Provider Support](providers.md).
 
 ## See your first answer
@@ -41,10 +42,11 @@ else
 end
 ```
 
-Run the file and you have a working AI feature:
+`model` selects the service and model to call. `system_prompt` supplies the
+instructions the model follows on each request. Run the file with your bundle:
 
 ```sh
-$ ruby customer_support_agent.rb
+$ bundle exec ruby customer_support_agent.rb
 ```
 
 `CustomerSupportAgent.ask` creates a `LittleGhost::Run` for this request. When the work finishes, the Run holds the outcome and response.
@@ -55,7 +57,9 @@ The selected external provider may receive system instructions, caller input, co
 
 ## Connect the agent to your application
 
-The first agent can answer general questions. A **tool** gives it a focused operation backed by your Ruby code:
+The first agent can answer general questions. A **tool** gives it a focused
+operation backed by your Ruby code. Add this class after the `require` line,
+before `CustomerSupportAgent`:
 
 ```ruby
 class HelpCenterLookupTool < LittleGhost::Tool
@@ -80,7 +84,9 @@ class HelpCenterLookupTool < LittleGhost::Tool
 end
 ```
 
-Make the tool available to the agent and tell the model when to use it:
+`input_schema` describes the arguments the model may supply. Here, `topic` must
+be one of the help center's keys. Replace the Agent definition and the call at
+the end of the file with these:
 
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
@@ -106,84 +112,48 @@ LittleGhost checks the model's arguments before it calls
 `HelpCenterLookupTool#call`. The Tool's result then becomes context for the
 model.
 
-### Use application context for private data
-
-The schema checks shape, not permission. When a Tool reads private data or
-changes something, use identity and account information established by your
-application rather than asking the model to supply it.
-
-While an Agent is working, LittleGhost binds each Tool instance to the current
-Run. The Tool can read request values through its `run` accessor:
-
-```ruby
-class OrderStatusTool < LittleGhost::Tool
-  ORDER_STATUSES = {
-    ["user-7", "account-2", "481"] => "out for delivery"
-  }.freeze
-
-  description "Look up an order that belongs to the current customer."
-  input_schema(
-    type: "object",
-    properties: {order_number: {type: "string"}},
-    required: ["order_number"],
-    additionalProperties: false
-  )
-
-  def call(input)
-    lookup = [
-      run.invocation.actor_id,
-      run.invocation.context.fetch("account_id"),
-      input.fetch("order_number")
-    ]
-
-    ORDER_STATUSES.fetch(lookup) do
-      raise LittleGhost::ToolError, "Order not found"
-    end
-  end
-end
-
-class CustomerSupportAgent < LittleGhost::Agent
-  tools HelpCenterLookupTool, OrderStatusTool
-end
-
-run = CustomerSupportAgent.ask(
-  "Where is order 481?",
-  actor_id: "user-7",
-  context: {account_id: "account-2"}
-)
-```
-
-Here, `order_number` came from the model. The application supplied `actor_id`
-and `account_id` after authenticating the caller. LittleGhost places those
-request values on `run.invocation`; context keys become strings.
-
-> **Safety note:** Treat model-selected Tool arguments like any other external
-> input. Check permission using the current user and account before returning
-> private data or performing a write.
-
-That is enough to authorize the first Tool safely. [Core Concepts](core_concepts.md) names the request and working-state objects behind `run`, and [Running in Production](production.md) explains what changes when you add saved conversations.
+> **Safety note:** The schema checks arguments, not permission. This example
+> reads a public help center. Before a Tool returns private data or changes
+> anything, check permission using the user and account identified by your
+> application—not values supplied by the model. [Tools](tools.md) shows how to
+> pass that information to a Tool.
 
 ## Stream the same agent
 
-Use `.stream_ask` when a console, HTTP response, or user interface should receive progress as it happens:
+Use `.stream_ask` when a console, HTTP response, or user interface should receive
+the answer as it is written. Replace the `.ask` call with the following code.
+
+Each `:agent_stream` event contains the Agent's progress and a `source` that
+identifies which Agent produced it. The source check below selects the Agent
+you called directly: `/root` with no enclosing assembly steps. `:text_delta`
+contains the next piece of its answer.
 
 ```ruby
 stream = CustomerSupportAgent.stream_ask("Can I get a refund?")
 
 run = stream.each do |event|
   case event.type
-  when :text_delta
-    print event.data.fetch(:text)
+  when :agent_stream
+    source = event.data.fetch(:source)
+    next unless source.agent_path == "/root" && source.assembly_path.empty?
+
+    progress = event.data.fetch(:event)
+    print progress.data.fetch(:text) if progress.type == :text_delta
   when :run_error
     warn event.data.fetch(:message)
   end
 end
 
-puts "\n#{run.response}" if run.completed?
+run.response # The completed answer, separate from live progress.
 warn run.error.class.name if run.failed?
 ```
 
-The stream yields `LittleGhost::StreamEvent` values. Text, tool activity, usage, and completion all look the same across providers. When enumeration finishes, `.each` returns the same `LittleGhost::Run` that now holds the final outcome and response.
+When enumeration finishes, `.each` returns the Run with the final outcome and
+complete response. You can display progress and still read the finished answer.
+
+If you later add other Agents, their progress arrives in the same stream. Keep
+the source check when your audience should see only this Agent's text. See
+[Compose Agents](assemblies.md) to display several participants.
 
 ## Give the code a home
 
@@ -223,8 +193,8 @@ The source repository also contains a complete
 [single-file Agent](https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent)
 and a
 [coding harness](https://github.com/littleghostai/little_ghost/tree/main/examples/coding_harness)
-that demonstrates Agents, prompt views, Tools, a Graph, a Workspace, and a
-native Sandbox.
+that shows a larger application with several agents and tools for working
+with files.
 
 You now have the smallest useful LittleGhost application: one Agent, one Tool, and one familiar Ruby call.
 

@@ -249,7 +249,11 @@ module LittleGhostDocs
       code = section.scan(/data-plain=(?:"([^"]*)"|'([^']*)')/m).map do |double, single|
         CGI.unescapeHTML(double || single)
       end.join("\n")
-      "\n## #{title}\n\n```ruby\n#{code}\n```\n"
+      introduction = section.scan(/<p>(.*?)<\/p>/m).flatten.map do |paragraph|
+        CGI.unescapeHTML(paragraph.gsub(/<code>(.*?)<\/code>/m, '`\1`').gsub(/<[^>]+>/, "")).split.join(" ")
+      end.join("\n\n")
+      introduction = "#{introduction}\n\n" unless introduction.empty?
+      "\n## #{title}\n\n#{introduction}```ruby\n#{code}\n```\n"
     end
 
     def write_discovery_files

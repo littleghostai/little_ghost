@@ -1,11 +1,16 @@
 # Build AI features that feel at home in Ruby
 
+LittleGhost is a Ruby library for adding AI features to an existing application
+or building a dedicated AI service. An **agent** combines a model with
+instructions and Ruby operations it can call. Agents can work together in an
+**assembly**, which your application calls like a single agent.
+
 > **Using a coding agent?** Start with
 > [`llms.txt`](https://littleghostai.org/llms.txt) for a concise map
 > of the guides and API. [`llms-full.txt`](https://littleghostai.org/llms-full.txt)
 > contains the complete documentation in one file.
 
-LittleGhost is a Ruby library for building AI features with agents and composable assemblies. With `OPENROUTER_API_KEY` set, start with one class, give it a prompt, and call it like the rest of your application code:
+With the gem installed and `OPENROUTER_API_KEY` set, start with one class:
 
 ```ruby
 require "little_ghost"
@@ -100,14 +105,13 @@ end
 The schema checks the shape of the input. Your Ruby code still decides whether
 the operation is allowed. The result goes back to the model as context.
 
-An ordinary Tool runs in your Ruby process. When a Tool needs files or child
-processes, it can delegate that work through a Sandbox. Code mode goes one step
-further: a sandboxed interpreter can compose several Tools, while every Tool
-call still returns to your Ruby Tool for validation and permission checks.
+An ordinary Tool runs in your Ruby process. For operations that need files or
+child processes, see [Workspaces and Sandboxes](docs/guides/sandboxing.md).
 
 ## Grow without changing the caller
 
-An **agent** owns one model loop. An **assembly** is one or more agents working as a unit. You call either one the same way:
+When a task needs several agents, choose how they work together. These example
+classes use different coordination styles, but their callers all use `.ask`:
 
 ```ruby
 CustomerSupportAgent.ask(question)
@@ -118,12 +122,12 @@ SupportFlowGraph.ask(question)
 
 Choose the coordination style that matches who should control the next step:
 
-- A **subagent** lets a model delegate an addressable task.
+- A **subagent** is a specialist an agent can ask for help.
 - A **workflow** uses ordinary Ruby for ordering and branching.
 - A **swarm** lets configured agents choose permitted handoffs.
 - A **graph** makes allowed routes explicit as nodes and edges.
 
-A Workflow or Graph can contain agents, other assemblies, or both. Named classes are the clearest place to begin. Builders are there when your application discovers the participants or routes at runtime.
+A Workflow or Graph can contain agents, other assemblies, or both.
 
 ```text
 request ──> CustomerSupportAgent
@@ -137,7 +141,9 @@ request ──> SupportFlowGraph ──> TriageAgent ──edge──> ResponseA
 
 The result stays familiar too. Every call returns a `Run` with the response,
 outcome, usage, and any final error. A coordinated assembly also records which
-participants ran. Use `.stream_ask` to watch the work as it happens.
+participants ran. Use `.stream_ask` to watch the work as it happens and choose
+which participants to display. [Getting Started](docs/guides/getting_started.md)
+shows how to stream an Agent's answer and read the completed result.
 
 LittleGhost is pre-1.0. Pin the gem version and review release notes before
 upgrading, because interfaces may change between releases.

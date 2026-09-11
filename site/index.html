@@ -65,7 +65,7 @@
       <section class="home-intro" aria-labelledby="hero-title">
         <div class="intro-copy">
           <h1 id="hero-title">Agents and agent <span>coordination in Ruby.</span></h1>
-          <p>LittleGhost is a Ruby library for defining and coordinating AI agents. Call one from your application, or compose graphs and swarms when the work needs a team.</p>
+          <p>LittleGhost is a Ruby library for building AI features. Its agents answer questions and call your application code. Start with one agent, then bring several together when the task needs a team.</p>
           <div class="intro-actions">
             <div class="install-command" aria-label="Install LittleGhost with Bundler"><code><span>$</span> bundle add little_ghost</code><small>Ruby 3.3+</small></div>
             <a class="intro-docs-link" href="./docs/">Docs →</a>
@@ -88,6 +88,7 @@
 
       <section class="demo-section" id="first-agent" data-demo="agent" data-command="$ ruby customer_support_agent.rb&#10;" data-run-label="Run customer_support_agent.rb →" data-response="Hi! Tell me what happened, and I'll help you find the next step." aria-labelledby="first-agent-title">
         <div class="demo-heading"><h2 id="first-agent-title">Your first agent</h2><button class="replay-button" type="button">Replay demo ↻</button></div>
+        <p>After installing the gem, set <code>OPENROUTER_API_KEY</code> to a key from your OpenRouter account. This example sends your question to an AI model through that service. <a href="./docs/getting_started.html">Getting Started</a> walks through the setup.</p>
         <div class="recording">
           <div class="file-bar"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>customer_support_agent.rb</span><span class="recording-light"><i></i> ghost recording</span></div>
           <div class="editor" aria-label="CustomerSupportAgent code being typed">
@@ -125,6 +126,7 @@
 
       <section class="demo-section" id="agent-graph" data-demo="graph" data-command="$ bundle exec ruby app.rb&#10;" data-run-label="Run the application →" data-response="Meet at the library next Thursday. Start with Why's Poignant Guide to Ruby, and invite neighbors through one shared signup page." aria-labelledby="agent-graph-title">
         <div class="demo-heading"><h2 id="agent-graph-title">Grow your agent team</h2><button class="replay-button" type="button">Replay demo ↻</button></div>
+        <p>A Graph lays out a task as named steps (<code>node</code>) and routes between them (<code>edge</code>). Here, research and logistics run in parallel after planning; the writer combines both results. The Agent definitions are omitted so you can focus on how they work together.</p>
         <div class="recording">
           <div class="file-bar"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>book_club_launch_graph.rb</span><span class="recording-light"><i></i> ghost recording</span></div>
           <div class="editor" aria-label="BookClubLaunchGraph code being typed">
@@ -188,7 +190,7 @@
 
           <article class="battery-item battery-sandbox">
             <svg class="battery-icon" viewBox="0 0 72 58" aria-hidden="true"><g class="battery-flair battery-sandbox-shield"><path d="M36 3 61 12v16c0 14-10 23-25 28C21 51 11 42 11 28V12Z"></path><path d="M17 17h8M47 17h8M17 42h8M47 42h8"></path></g><g class="battery-ghost-piece"><use href="#flow-ghost" x="23" y="14" width="26" height="31"></use></g></svg>
-            <div><h3>Configurable sandboxes</h3><p>Use the native backend for deny-by-default Seatbelt on macOS or Bubblewrap on Linux, then declare the files, processes, environment, and network access each child needs.</p></div>
+            <div><h3>Configurable sandboxes</h3><p>Choose where child processes run and which files and network connections they can access. The native backend enforces those restrictions with Seatbelt on macOS or Bubblewrap on Linux.</p></div>
           </article>
 
           <article class="battery-item battery-providers">
@@ -198,12 +200,12 @@
 
           <article class="battery-item battery-streaming">
             <svg class="battery-icon" viewBox="0 0 72 58" aria-hidden="true"><g class="battery-ghost-piece"><use href="#flow-ghost" x="9" y="8" width="32" height="38"></use></g><g class="battery-flair battery-stream-lines"><path d="M47 18h18M47 27h22M47 36h15"></path></g></svg>
-            <div><h3>Streaming &amp; outputs</h3><p>Stream text, tool activity, usage, and completion through one event shape—or return schema-backed structured results.</p></div>
+            <div><h3>Streaming &amp; outputs</h3><p>Display answers as they are written and follow tool activity. Read the completed answer as text or data checked against a shape you define.</p></div>
           </article>
 
           <article class="battery-item battery-runtime">
             <svg class="battery-icon" viewBox="0 0 72 58" aria-hidden="true"><g class="battery-flair battery-runtime-rings"><circle cx="36" cy="29" r="24"></circle><circle cx="36" cy="29" r="19"></circle></g><g class="battery-ghost-piece"><use href="#flow-ghost" x="20" y="10" width="32" height="38"></use></g></svg>
-            <div><h3>Sessions &amp; supervision</h3><p>Preserve conversations, set deadlines, cancel work, instrument execution, and inspect detailed run results.</p></div>
+            <div><h3>Sessions &amp; supervision</h3><p>Save conversations between requests, set deadlines, cancel work, and inspect what happened during each request.</p></div>
           </article>
         </div>
 
