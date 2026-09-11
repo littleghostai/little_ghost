@@ -15,7 +15,7 @@ run = entrypoint.ask(question)
 
 ## Use a Workflow for explicit application logic
 
-A Workflow's `perform` method is ordinary Ruby. Inside it, `invoke` prepares a child call. Read `.output` when you need an intermediate answer. Return the final `invoke` call untouched so its response can stream to the caller, or return a value that Ruby computes from the intermediate answers.
+A Workflow's `perform` method is ordinary Ruby. Inside it, `invoke` prepares a child call. Read `.output` when you need an intermediate answer. Return the final `invoke` call untouched so its response can stream to the caller. You can also return a completed invocation after reviewing its answer, or return a value that Ruby computes from intermediate answers.
 
 ```ruby
 class ResponseWorkflow < LittleGhost::Workflow
@@ -49,6 +49,36 @@ def perform
 end
 ```
 
+To inspect an answer before publishing it, keep the invocation, read its output,
+and return the same invocation after your checks. For example, given a
+`ReviewAgent` whose structured result includes an `approved` boolean:
+
+```ruby
+class ReviewedResponseWorkflow < LittleGhost::Workflow
+  private
+
+  def perform
+    candidate = invoke(CustomerSupportAgent)
+    review = invoke(ReviewAgent, input: candidate.output, history: [], context: {}).output
+
+    review.fetch("approved") ? candidate : invoke(EscalationAgent)
+  end
+end
+```
+
+Returning the consumed candidate does not run it again. Its completed answer
+appears once in the public stream, with its own conversation, state, and
+structured result preserved. Usage and steps include both the candidate and the
+review. `candidate.result` exposes the completed `RunResult` when your Ruby
+checks need more than its output. An invocation must belong to the workflow
+returning it and must have completed successfully.
+
+Reading `.output` and running `parallel` do not buffer raw child deltas;
+contextual `:agent_stream` events still provide live progress. Terminal results
+remain size-bounded. Cancellation and deadlines are checked before each child
+execution and before publishing a completed or computed result, including after
+its checkpoint callback.
+
 When Ruby should compute the caller-visible result, consume every child and return the computed value:
 
 ```ruby
@@ -71,7 +101,7 @@ A returned String becomes the Workflow's textual response. Arrays, mappings, num
 
 ### Choose a branch in Ruby
 
-Each branch should end with its final unconsumed invocation or a directly computed value:
+Each branch should end with its final invocation or a directly computed value:
 
 ```ruby
 class RoutedResponseWorkflow < LittleGhost::Workflow
@@ -362,8 +392,9 @@ policy = trajectory.find { |step| step.participant == "policy" }
 trajectory.concurrent?(ledger.id, policy.id)
 ```
 
-Step outputs and buffered events have size limits. Use your application's
-instrumentation when you need deeper diagnostics.
+Step outputs, terminal results, and buffered final-child events have size
+limits. Result-only Workflow calls do not retain raw child deltas. Use your
+application's instrumentation when you need deeper diagnostics.
 
 ## Compose assemblies inside assemblies
 

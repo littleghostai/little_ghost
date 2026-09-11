@@ -10,11 +10,12 @@ class WorkflowTest < Minitest::Test
     def self.assembly_id = "fake_agent"
     def self.assembly_kind = :agent
 
-    def initialize(result, mutation: nil, failure_usage: LittleGhost::Usage.new, close_error: nil)
+    def initialize(result, mutation: nil, failure_usage: LittleGhost::Usage.new, close_error: nil, delta_count: 0)
       @result = result
       @mutation = mutation
       @failure_usage = failure_usage
       @close_error = close_error
+      @delta_count = delta_count
       @calls = []
     end
 
@@ -34,6 +35,7 @@ class WorkflowTest < Minitest::Test
       @mutation&.call(options.fetch(:context))
 
       Enumerator.new do |events|
+        @delta_count.times { events << LittleGhost::StreamEvent.build(:text_delta, text: "x" * 2_048) }
         if @result.is_a?(Exception)
           events << LittleGhost::StreamEvent.build(
             :invocation_error,
@@ -349,8 +351,47 @@ class WorkflowTest < Minitest::Test
     assert_match(/maximum serialized size/, error.message)
   end
 
-  def test_rejects_an_already_consumed_final_invocation
-    main = FakeAgent.new(result(text: "final"))
+  def test_returns_a_reviewed_consumed_invocation_without_repeating_its_work
+    history = [LittleGhost::Message.new(role: :user, content: "question"), LittleGhost::Message.new(role: :assistant, content: "final")]
+    main_result = result(text: "final", messages: history, state: {"checked" => true}, usage: LittleGhost::Usage.new(input_tokens: 5))
+    main = FakeAgent.new(main_result)
+    reviewer = FakeAgent.new(result(text: "approved", usage: LittleGhost::Usage.new(input_tokens: 3)))
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform
+        final = invoke(:main)
+        final.output
+        final.output
+        invoke(:reviewer).output
+        final
+      end
+    end
+    workflow = workflow_class.new(run: Run.new(Application.new(main: [main], reviewer: [reviewer])))
+    checkpoints = []
+
+    events = workflow.stream("question", checkpoint: ->(**values) { checkpoints << values }, parent_operation_id: "run-1").to_a
+    final = events.last.data.fetch(:result)
+
+    assert_equal "final", final.text
+    assert_equal main_result.messages, final.messages
+    assert_equal main_result.state, final.state
+    assert_equal main_result.stop_reason, final.stop_reason
+    assert_equal 8, final.usage.input_tokens
+    assert_equal %w[main reviewer], final.steps.map(&:participant)
+    assert_equal ["final"], events.select { |event| event.type == :text_delta }.map { |event| event.data.fetch(:text) }
+    assert_equal 1, events.count { |event| event.type == :invocation_stop }
+    assert_equal 1, main.calls.length
+    assert main.closed?
+    assert reviewer.closed?
+    assert_equal 1, checkpoints.length
+    assert_equal final.messages, checkpoints.first.fetch(:messages)
+    assert_equal final.state, checkpoints.first.fetch(:state)
+    assert_equal "run-1", checkpoints.first.fetch(:parent_operation_id)
+  end
+
+  def test_returns_a_consumed_structured_result_with_its_original_schema
+    candidate = result(structured: {"answer" => "verified"}, state: {"verified" => true}, usage: LittleGhost::Usage.new(input_tokens: 2))
     workflow_class = Class.new(LittleGhost::Workflow) do
       private
 
@@ -360,11 +401,249 @@ class WorkflowTest < Minitest::Test
         final
       end
     end
+    workflow = workflow_class.new(run: Run.new(Application.new(main: [FakeAgent.new(candidate)])))
+
+    events = workflow.stream("question").to_a
+    final = events.last.data.fetch(:result)
+
+    assert_same candidate.structured_result, final.structured_result
+    assert_equal :structured_result, final.stop_reason
+    assert_equal candidate.state, final.state
+    assert_equal 2, final.usage.input_tokens
+    refute events.any? { |event| %i[text_delta message_start message_stop].include?(event.type) }
+  end
+
+  def test_result_only_invocations_do_not_buffer_raw_child_deltas
+    main = FakeAgent.new(result(text: "final"), delta_count: 10_001)
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform
+        candidate = invoke(:main)
+        candidate.output
+        candidate
+      end
+    end
     workflow = workflow_class.new(run: Run.new(Application.new(main: [main])))
 
-    error = assert_raises(LittleGhost::ProtocolError) { workflow.stream("question").to_a }
+    events = workflow.stream("question").to_a
 
-    assert_includes error.message, "already consumed"
+    assert_equal "final", events.last.data.fetch(:result).text
+    assert_equal ["final"], events.select { |event| event.type == :text_delta }.map { |event| event.data.fetch(:text) }
+    assert main.closed?
+  end
+
+  def test_parallel_result_only_invocations_can_select_a_completed_child
+    first = FakeAgent.new(result(text: "one", usage: LittleGhost::Usage.new(input_tokens: 2)), delta_count: 10_001)
+    second = FakeAgent.new(result(text: "two", usage: LittleGhost::Usage.new(input_tokens: 3)), delta_count: 10_001)
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform
+        first = invoke(:first)
+        second = invoke(:second)
+        parallel(first, second)
+        first
+      end
+    end
+    workflow = workflow_class.new(run: Run.new(Application.new(first: [first], second: [second])))
+
+    final = workflow.stream("question").to_a.last.data.fetch(:result)
+
+    assert_equal "one", final.text
+    assert_equal 5, final.usage.input_tokens
+    assert_equal %w[first second], final.steps.map(&:participant)
+    assert_equal 1, first.calls.length
+    assert_equal 1, second.calls.length
+  end
+
+  def test_result_only_invocations_still_reject_oversized_terminal_state
+    candidate = result(text: "final", state: {"large" => "x" * LittleGhost::Assembly::MAX_STEP_EVENT_BYTES})
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform = invoke(:main).output
+    end
+    main = FakeAgent.new(candidate)
+    workflow = workflow_class.new(run: Run.new(Application.new(main: [main])))
+
+    assert_raises(LittleGhost::AssemblyLimitError) { workflow.stream("question").to_a }
+    assert main.closed?
+  end
+
+  def test_rejects_an_invocation_owned_by_another_workflow
+    [false, true].each do |consumed|
+      foreign = nil
+      owner_class = Class.new(LittleGhost::Workflow) do
+        define_method(:perform) do
+          foreign = invoke(:main)
+          foreign.output if consumed
+          "owner answer"
+        end
+        private :perform
+      end
+      main = FakeAgent.new(result(text: "foreign answer"))
+      owner = owner_class.new(run: Run.new(Application.new(main: [main])))
+      owner.stream("foreign question").to_a
+      workflow_class = Class.new(LittleGhost::Workflow) do
+        define_method(:perform) { foreign }
+        private :perform
+      end
+      workflow = workflow_class.new(run: Run.new(Application.new({})))
+
+      error = assert_raises(LittleGhost::ProtocolError) { workflow.stream("question").to_a }
+
+      assert_includes error.message, "owned by another workflow"
+      assert_equal consumed ? 1 : 0, main.calls.length
+    end
+  end
+
+  def test_cannot_return_an_invocation_that_failed_without_a_result
+    main = FakeAgent.new(RuntimeError.new("failed"), failure_usage: LittleGhost::Usage.new(input_tokens: 4))
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform
+        candidate = invoke(:main)
+        begin
+          candidate.output
+        rescue RuntimeError
+          candidate
+        end
+      end
+    end
+    workflow = workflow_class.new(run: Run.new(Application.new(main: [main])))
+    events = []
+
+    error = assert_raises(LittleGhost::ProtocolError) { workflow.stream("question").each { |event| events << event } }
+
+    assert_includes error.message, "without a completed result"
+    refute events.any? { |event| event.type == :invocation_stop }
+    assert_equal 4, events.last.data.fetch(:usage).input_tokens
+    assert_equal 1, main.calls.length
+  end
+
+  def test_result_only_failure_and_cleanup_preserve_usage_after_many_deltas
+    [RuntimeError.new("provider failed"), :cleanup].each do |failure|
+      main = if failure == :cleanup
+        FakeAgent.new(result(text: "candidate", usage: LittleGhost::Usage.new(input_tokens: 6)), close_error: RuntimeError.new("cleanup failed"), delta_count: 10_001)
+      else
+        FakeAgent.new(failure, failure_usage: LittleGhost::Usage.new(input_tokens: 6), delta_count: 10_001)
+      end
+      workflow_class = Class.new(LittleGhost::Workflow) do
+        private
+
+        def perform = invoke(:main).output
+      end
+      workflow = workflow_class.new(run: Run.new(Application.new(main: [main])))
+      events = []
+
+      assert_raises(RuntimeError) { workflow.stream("question").each { |event| events << event } }
+
+      assert_equal 6, events.last.data.fetch(:usage).input_tokens
+      assert main.closed?
+      refute events.any? { |event| event.type == :invocation_stop }
+    end
+  end
+
+  def test_cancelled_and_expired_workflows_do_not_start_application_work
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform = raise("must not run")
+    end
+    cancellation = LittleGhost::Support::CancellationToken.new
+    cancellation.cancel
+    [{cancellation_token: cancellation}, {deadline: Time.now - 1}].each do |options|
+      workflow = workflow_class.new(run: Run.new(Application.new({})))
+
+      assert_raises(LittleGhost::CancelledError, LittleGhost::DeadlineExceededError) { workflow.stream("question", **options).to_a }
+    end
+  end
+
+  def test_cancellation_after_review_prevents_publication_and_next_child_execution
+    [:publish, :invoke].each do |action|
+      cancellation = LittleGhost::Support::CancellationToken.new
+      main = FakeAgent.new(result(text: "candidate", usage: LittleGhost::Usage.new(input_tokens: 5)))
+      workflow_class = Class.new(LittleGhost::Workflow) do
+        define_method(:perform) do
+          candidate = invoke(:main)
+          candidate.output
+          cancellation.cancel
+          invoke(:unexpected).output if action == :invoke
+          candidate
+        end
+        private :perform
+      end
+      application = Application.new(main: [main])
+      workflow = workflow_class.new(run: Run.new(application))
+      checkpoints = []
+      events = []
+
+      assert_raises(LittleGhost::CancelledError) do
+        workflow.stream("question", cancellation_token: cancellation, checkpoint: ->(**values) { checkpoints << values }).each { |event| events << event }
+      end
+
+      assert_equal 5, events.last.data.fetch(:usage).input_tokens
+      refute events.any? { |event| event.type == :invocation_stop }
+      assert_empty checkpoints
+      assert_equal 1, application.built.length
+    end
+  end
+
+  def test_deadline_after_review_prevents_publication
+    deadline = Time.now + 60
+    main = FakeAgent.new(result(text: "candidate", usage: LittleGhost::Usage.new(input_tokens: 5)))
+    workflow_class = Class.new(LittleGhost::Workflow) do
+      private
+
+      def perform
+        candidate = invoke(:main)
+        candidate.output
+        candidate
+      end
+    end
+    workflow = workflow_class.new(run: Run.new(Application.new(main: [main])))
+    events = []
+
+    Time.stub(:now, -> { main.closed? ? deadline + 1 : deadline - 1 }) do
+      assert_raises(LittleGhost::DeadlineExceededError) do
+        workflow.stream("question", deadline:).each { |event| events << event }
+      end
+    end
+
+    refute events.any? { |event| event.type == :invocation_stop }
+    assert_equal 5, events.last.data.fetch(:usage).input_tokens
+  end
+
+  def test_checkpoint_cancellation_or_failure_prevents_terminal_publication
+    [:cancel, :failure].each do |action|
+      cancellation = LittleGhost::Support::CancellationToken.new
+      main = FakeAgent.new(result(text: "candidate", usage: LittleGhost::Usage.new(input_tokens: 5)))
+      workflow_class = Class.new(LittleGhost::Workflow) do
+        private
+
+        def perform
+          candidate = invoke(:main)
+          candidate.output
+          candidate
+        end
+      end
+      workflow = workflow_class.new(run: Run.new(Application.new(main: [main])))
+      checkpoint = lambda do |**|
+        raise "store failed" if action == :failure
+
+        cancellation.cancel
+      end
+      events = []
+
+      assert_raises(LittleGhost::CancelledError, RuntimeError) do
+        workflow.stream("question", cancellation_token: cancellation, checkpoint:).each { |event| events << event }
+      end
+
+      refute events.any? { |event| event.type == :invocation_stop }
+      assert_equal 5, events.last.data.fetch(:usage).input_tokens
+    end
   end
 
   def test_preserves_final_usage_when_final_agent_cleanup_fails
@@ -607,13 +886,13 @@ class WorkflowTest < Minitest::Test
 
   private
 
-  def result(text: nil, structured: nil, usage: LittleGhost::Usage.new, steps: [])
+  def result(text: nil, structured: nil, usage: LittleGhost::Usage.new, steps: [], messages: [], state: {})
     LittleGhost::RunResult.new(
       message: LittleGhost::Message.new(role: :assistant, content: text || "structured"),
       stop_reason: structured ? :structured_result : :end_turn,
       usage:,
-      messages: [],
-      state: {},
+      messages:,
+      state:,
       structured_result: structured && LittleGhost::StructuredResult.new(
         schema_name: "test",
         value: structured

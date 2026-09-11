@@ -8,9 +8,10 @@ class AgentStreamTest < Minitest::Test
 
     attr_reader :requests
 
-    def initialize(*responses)
+    def initialize(*responses, delta_count: 0)
       @responses = responses
       @requests = []
+      @delta_count = delta_count
     end
 
     def stream(request)
@@ -18,11 +19,12 @@ class AgentStreamTest < Minitest::Test
       response = @responses.shift
       raise response if response.is_a?(Exception)
 
-      [
-        LittleGhost::StreamEvent.build(:message_start),
-        LittleGhost::StreamEvent.build(:text_delta, text: response.message.text),
-        LittleGhost::StreamEvent.build(:message_stop, response:)
-      ].each
+      Enumerator.new do |events|
+        events << LittleGhost::StreamEvent.build(:message_start)
+        @delta_count.times { events << LittleGhost::StreamEvent.build(:text_delta, text: "") }
+        events << LittleGhost::StreamEvent.build(:text_delta, text: response.message.text)
+        events << LittleGhost::StreamEvent.build(:message_stop, response:)
+      end
     end
   end
 
@@ -247,6 +249,43 @@ class AgentStreamTest < Minitest::Test
       event.type == :agent_stream && event.data.fetch(:source).agent_id == "writer"
     end
     assert_equal 1, writer_events.map { |event| event.data.fetch(:source).operation_id }.uniq.length
+  end
+
+  def test_reviewed_workflow_results_keep_contextual_progress_live_without_replaying_the_child
+    support = agent_class("support")
+    reviewer = agent_class("reviewer")
+    support_model = ScriptedModel.new(response("candidate answer"), delta_count: 10_001)
+    review_model = ScriptedModel.new(response("approved"), delta_count: 10_001)
+    workflow = Class.new(LittleGhost::Workflow) do
+      define_method(:perform) do
+        candidate = invoke(support, as: "support")
+        invoke(reviewer, as: "reviewer", input: candidate.output).output
+        candidate
+      end
+      private :perform
+    end
+    run = run_for(workflow, include_agent_events: true, models: {support => support_model, reviewer => review_model})
+    progress_was_live = false
+    events = []
+
+    run.each do |event|
+      events << event
+      next unless event.type == :agent_stream
+      next unless event.data.fetch(:event).type == :text_delta
+      next unless event.data.fetch(:event).data.fetch(:text) == "candidate answer"
+
+      progress_was_live = review_model.requests.empty?
+    end
+
+    assert run.completed?
+    assert progress_was_live
+    assert_operator agent_events(events, :text_delta).length, :>, 20_000
+    assert_equal ["candidate answer"], events.select { |event| event.type == :text_delta }.map { |event| event.data.fetch(:text) }
+    assert_equal 1, events.count { |event| event.type == :invocation_stop }
+    assert_equal 1, support_model.requests.length
+    assert_equal 1, review_model.requests.length
+    assert_equal "candidate answer", run.result.text
+    refute_includes run.result.messages.map(&:text), "approved"
   end
 
   def test_nested_assemblies_append_to_the_agent_path
