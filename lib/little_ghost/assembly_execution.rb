@@ -187,7 +187,6 @@ module LittleGhost
       predecessor_ids: [],
       branch_id: nil,
       checkpoint: nil,
-      result_only: false,
       build_options: {},
       step_id: SecureRandom.uuid
     )
@@ -233,7 +232,7 @@ module LittleGhost
             ).each do |event|
               result = event.data[:result] if event.type == :invocation_stop
               attempt_usage = event.data[:usage] || attempt_usage if event.type == :invocation_error
-              if !result_only || %i[invocation_stop invocation_error].include?(event.type)
+              if %i[invocation_stop invocation_error].include?(event.type)
                 attempt_event_bytes = buffer_assembly_event!(attempt_events, event, bytes: attempt_event_bytes)
               end
             end

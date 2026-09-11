@@ -29,7 +29,8 @@ module LittleGhost
 
     ##
     # :attr_reader: assembly_kind
-    # The +:workflow+, +:swarm+, +:graph+, or custom assembly kind.
+    # The +:workflow+, +:swarm+, +:graph+, +:tool+, or custom assembly kind.
+    # A +:tool+ step marks an assembly invoked through a Tool.
 
     ##
     # :attr_reader: participant
@@ -67,7 +68,11 @@ module LittleGhost
   # A +:agent_stream+ StreamEvent carries this value in +data[:source]+ and the
   # Agent's event as a separate frozen StreamEvent in +data[:event]+.
   # +assembly_path+ is empty for a top-level Agent and contains one
-  # AgentStreamStep for each enclosing composite assembly participant.
+  # AgentStreamStep for each enclosing composite assembly participant or
+  # assembly-as-tool boundary. When an Agent invokes the Tool, the boundary's
+  # +assembly_id+ identifies that Agent and +participant+ names the Tool. Tool
+  # boundaries do not change the delegated Agent's authorization or
+  # managed-subagent path.
   class AgentStreamSource < Data # :doc:
     ##
     # :attr_reader: agent_id
@@ -238,7 +243,41 @@ module LittleGhost
     end
   end
 
+  module AgentStreamScope # :nodoc: all
+    module_function
+
+    def with_tool(target:, name:)
+      return yield unless target.run
+
+      execution = ExecutionState[:tool_execution]
+      source = execution.events.source if execution&.events.is_a?(AgentStreamSink)
+      prefix = target.agent_stream_path
+      parent_path = source&.assembly_path || path(run: target.run, path: prefix)
+      boundary = AgentStreamStep.build(
+        assembly_id: source&.agent_id || target.class.assembly_id,
+        assembly_kind: :tool,
+        participant: name,
+        step_id: execution&.operation_id || SecureRandom.uuid
+      )
+      # Prebuilt descendant factories inherit this scope without mutating a
+      # reusable Agent's bound path or its authorization identity.
+      scope = {run: target.run, prefix:, path: (parent_path + [boundary]).freeze}.freeze
+      ExecutionState.with(agent_stream_tool_scope: scope) { yield }
+    end
+
+    def path(run:, path:)
+      scope = ExecutionState[:agent_stream_tool_scope]
+      return path unless run && scope && scope.fetch(:run).equal?(run)
+
+      prefix = scope.fetch(:prefix)
+      suffix = (path.take(prefix.length) == prefix) ? path.drop(prefix.length) : path
+      scope.fetch(:path) + suffix
+    end
+  end
+
   class AgentStreamSink # :nodoc: all
+    attr_reader :source
+
     def initialize(destination:, run:, source:, input:)
       @destination = destination
       @run = run

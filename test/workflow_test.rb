@@ -129,7 +129,7 @@ class WorkflowTest < Minitest::Test
     def perform = invoke(:main, timeout: 0.01)
   end
 
-  def test_composes_structured_and_text_agents_then_streams_the_responder
+  def test_composes_structured_and_text_agents_then_selects_the_responder_result
     router = FakeAgent.new(
       result(structured: {"path" => "investigate"}, usage: LittleGhost::Usage.new(input_tokens: 2)),
       mutation: ->(state) { state["poisoned"] = true }
@@ -183,7 +183,7 @@ class WorkflowTest < Minitest::Test
     assert_equal %w[prior], final_options.fetch(:history).map(&:text)
     refute final_options.fetch(:context).key?("poisoned")
     assert_equal({temperature: 0.1}, final_options.fetch(:settings))
-    assert_same checkpoint, final_options.fetch(:checkpoint)
+    assert_nil final_options.fetch(:checkpoint)
     assert_same main, final_options.dig(:template_locals, :agent)
     assert_equal "value", final_options.dig(:template_locals, :shared)
 
@@ -249,12 +249,11 @@ class WorkflowTest < Minitest::Test
     ).to_a
     result = events.last.data.fetch(:result)
 
-    assert_equal %i[message_start text_delta message_stop invocation_stop], events.map(&:type)
+    assert_equal [:invocation_stop], events.map(&:type)
     assert_equal "computed response", result.text
     assert_equal :end_turn, result.stop_reason
     assert_equal %w[prior question computed\ response], result.messages.map(&:text)
     assert_equal "request-1", result.state.fetch("request_id")
-    assert_equal "computed response", events.fetch(1).data.fetch(:text)
     assert_equal 1, checkpoints.length
     assert_equal "run-1", checkpoints.first.fetch(:parent_operation_id)
     assert_equal result.messages, checkpoints.first.fetch(:messages)
@@ -379,7 +378,7 @@ class WorkflowTest < Minitest::Test
     assert_equal main_result.stop_reason, final.stop_reason
     assert_equal 8, final.usage.input_tokens
     assert_equal %w[main reviewer], final.steps.map(&:participant)
-    assert_equal ["final"], events.select { |event| event.type == :text_delta }.map { |event| event.data.fetch(:text) }
+    refute events.any? { |event| event.type == :text_delta }
     assert_equal 1, events.count { |event| event.type == :invocation_stop }
     assert_equal 1, main.calls.length
     assert main.closed?
@@ -413,7 +412,7 @@ class WorkflowTest < Minitest::Test
     refute events.any? { |event| %i[text_delta message_start message_stop].include?(event.type) }
   end
 
-  def test_result_only_invocations_do_not_buffer_raw_child_deltas
+  def test_invocations_do_not_buffer_raw_child_deltas
     main = FakeAgent.new(result(text: "final"), delta_count: 10_001)
     workflow_class = Class.new(LittleGhost::Workflow) do
       private
@@ -429,11 +428,11 @@ class WorkflowTest < Minitest::Test
     events = workflow.stream("question").to_a
 
     assert_equal "final", events.last.data.fetch(:result).text
-    assert_equal ["final"], events.select { |event| event.type == :text_delta }.map { |event| event.data.fetch(:text) }
+    refute events.any? { |event| event.type == :text_delta }
     assert main.closed?
   end
 
-  def test_parallel_result_only_invocations_can_select_a_completed_child
+  def test_parallel_invocations_can_select_a_completed_child
     first = FakeAgent.new(result(text: "one", usage: LittleGhost::Usage.new(input_tokens: 2)), delta_count: 10_001)
     second = FakeAgent.new(result(text: "two", usage: LittleGhost::Usage.new(input_tokens: 3)), delta_count: 10_001)
     workflow_class = Class.new(LittleGhost::Workflow) do
@@ -457,7 +456,7 @@ class WorkflowTest < Minitest::Test
     assert_equal 1, second.calls.length
   end
 
-  def test_result_only_invocations_still_reject_oversized_terminal_state
+  def test_invocations_still_reject_oversized_terminal_state
     candidate = result(text: "final", state: {"large" => "x" * LittleGhost::Assembly::MAX_STEP_EVENT_BYTES})
     workflow_class = Class.new(LittleGhost::Workflow) do
       private
@@ -517,13 +516,13 @@ class WorkflowTest < Minitest::Test
 
     error = assert_raises(LittleGhost::ProtocolError) { workflow.stream("question").each { |event| events << event } }
 
-    assert_includes error.message, "without a completed result"
+    assert_includes error.message, "no completed result"
     refute events.any? { |event| event.type == :invocation_stop }
     assert_equal 4, events.last.data.fetch(:usage).input_tokens
     assert_equal 1, main.calls.length
   end
 
-  def test_result_only_failure_and_cleanup_preserve_usage_after_many_deltas
+  def test_failure_and_cleanup_preserve_usage_after_many_deltas
     [RuntimeError.new("provider failed"), :cleanup].each do |failure|
       main = if failure == :cleanup
         FakeAgent.new(result(text: "candidate", usage: LittleGhost::Usage.new(input_tokens: 6)), close_error: RuntimeError.new("cleanup failed"), delta_count: 10_001)
@@ -697,8 +696,7 @@ class WorkflowTest < Minitest::Test
 
     events = workflow.stream("question").to_a
 
-    assert_equal %i[assembly_step_start assembly_step_stop tool_stop invocation_stop], events.map(&:type)
-    assert_same tool_result, events.find { |event| event.type == :tool_stop }.data.fetch(:result)
+    assert_equal %i[assembly_step_start assembly_step_stop invocation_stop], events.map(&:type)
     assert_equal 5, events.last.data.fetch(:result).usage.input_tokens
   end
 

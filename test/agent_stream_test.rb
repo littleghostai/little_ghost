@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "little_ghost/ag_ui"
 
 class AgentStreamTest < Minitest::Test
   class ScriptedModel
@@ -90,7 +91,8 @@ class AgentStreamTest < Minitest::Test
     def model_for(agent_class, _run) = models.fetch(agent_class).shift
 
     def build_run(payload, **options)
-      include_agent_events_by_default = options.delete(:include_agent_events_by_default) == true
+      include_agent_events_by_default = options.fetch(:include_agent_events_by_default, true)
+      options.delete(:include_agent_events_by_default)
       auxiliary_options = {
         invocation: LittleGhost::Invocation.new(message: "policy check"),
         runtime: self,
@@ -134,7 +136,7 @@ class AgentStreamTest < Minitest::Test
     def code_mode_configuration = nil
   end
 
-  def test_standalone_agent_contextual_events_are_opt_in
+  def test_standalone_agent_progress_is_source_tagged_by_default_without_a_raw_duplicate
     support_agent = agent_class("support")
 
     direct = run_for(support_agent, models: {
@@ -144,11 +146,9 @@ class AgentStreamTest < Minitest::Test
       support_agent => ScriptedModel.new(response("hello"))
     }).to_a
 
-    expected = %i[
-      run_start invocation_start model_start message_start text_delta message_stop
-      model_stop invocation_stop run_stop
-    ]
-    assert_equal expected, direct.map(&:type)
+    expected = %i[run_start invocation_stop run_stop]
+    assert_equal expected, direct.reject { |event| event.type == :agent_stream }.map(&:type)
+    assert_equal direct.map(&:type), contextual.map(&:type)
     assert_equal expected, contextual.reject { |event| event.type == :agent_stream }.map(&:type)
     wrappers = contextual.select { |event| event.type == :agent_stream }
     assert_equal %i[
@@ -205,16 +205,15 @@ class AgentStreamTest < Minitest::Test
 
     assert_includes contextual.map(&:type), :agent_stream
     assert_equal true, contextual_runtime.prepared_agent_events
-    assert_equal [false, false, false, false], contextual_runtime.nested_agent_events
+    assert_equal [true, true, false, true], contextual_runtime.nested_agent_events
     expected_public_types = %i[
-      run_start assembly_step_start assembly_step_stop invocation_start model_start
-      message_start text_delta message_stop model_stop invocation_stop run_stop
+      run_start assembly_step_start assembly_step_stop invocation_stop run_stop
     ]
     assert_equal expected_public_types, public_events.map(&:type)
     assert_equal expected_public_types, string_keyed.map(&:type)
     assert_equal expected_public_types,
       contextual.reject { |event| event.type == :agent_stream }.map(&:type)
-    assert_equal false, non_streaming.include_agent_events?
+    assert_equal true, non_streaming.include_agent_events?
     assert_includes execution_events.map(&:type), :agent_stream
     assert_same trusted_invocation, trusted_run.invocation
     assert_same trusted_invocation.trusted_marker, trusted_run.invocation.trusted_marker
@@ -232,9 +231,9 @@ class AgentStreamTest < Minitest::Test
       edge :plan, :write
       finish :write
     end
-    events = run_for(graph, include_agent_events: true, models: {
-      planner => ScriptedModel.new(response("collect evidence")),
-      writer => ScriptedModel.new(response("final answer"))
+    events = run_for(graph, models: {
+      planner => ScriptedModel.new(response("collect evidence"), delta_count: 10_001),
+      writer => ScriptedModel.new(response("final answer"), delta_count: 10_001)
     }).to_a
     starts = agent_events(events, :invocation_start)
 
@@ -249,6 +248,9 @@ class AgentStreamTest < Minitest::Test
       event.type == :agent_stream && event.data.fetch(:source).agent_id == "writer"
     end
     assert_equal 1, writer_events.map { |event| event.data.fetch(:source).operation_id }.uniq.length
+    assert_equal 20_004, agent_events(events, :text_delta).length
+    assert_equal :run_stop, events.last.type
+    refute events.any? { |event| event.type == :text_delta }
   end
 
   def test_reviewed_workflow_results_keep_contextual_progress_live_without_replaying_the_child
@@ -264,7 +266,7 @@ class AgentStreamTest < Minitest::Test
       end
       private :perform
     end
-    run = run_for(workflow, include_agent_events: true, models: {support => support_model, reviewer => review_model})
+    run = run_for(workflow, models: {support => support_model, reviewer => review_model})
     progress_was_live = false
     events = []
 
@@ -280,12 +282,40 @@ class AgentStreamTest < Minitest::Test
     assert run.completed?
     assert progress_was_live
     assert_operator agent_events(events, :text_delta).length, :>, 20_000
-    assert_equal ["candidate answer"], events.select { |event| event.type == :text_delta }.map { |event| event.data.fetch(:text) }
+    refute events.any? { |event| event.type == :text_delta }
     assert_equal 1, events.count { |event| event.type == :invocation_stop }
     assert_equal 1, support_model.requests.length
     assert_equal 1, review_model.requests.length
     assert_equal "candidate answer", run.result.text
     refute_includes run.result.messages.map(&:text), "approved"
+  end
+
+  def test_workflow_result_access_does_not_change_live_progress_or_repeat_the_child
+    %i[untouched output result].each do |accessor|
+      responder = agent_class("responder")
+      model = ScriptedModel.new(response("answer"))
+      workflow = Class.new(LittleGhost::Workflow) do
+        define_method(:perform) do
+          attempt = invoke(responder, as: :answer)
+          2.times { attempt.public_send(accessor) } unless accessor == :untouched
+          attempt
+        end
+        private :perform
+      end
+      run = run_for(workflow, models: {responder => model})
+      events = []
+      run.each do |event|
+        events << event
+        refute run.completed? if event.type == :agent_stream
+      end
+
+      assert run.completed?, accessor
+      assert_equal "answer", run.response
+      assert_equal 1, model.requests.length
+      assert_equal ["answer"], agent_events(events, :text_delta).map { |event| event.data.fetch(:event).data.fetch(:text) }
+      assert_equal 1, events.count { |event| event.type == :invocation_stop }
+      refute events.any? { |event| event.type == :text_delta }
+    end
   end
 
   def test_nested_assemblies_append_to_the_agent_path
@@ -302,7 +332,7 @@ class AgentStreamTest < Minitest::Test
       start :investigate
       finish :investigate
     end
-    events = run_for(outer, include_agent_events: true, models: {
+    events = run_for(outer, models: {
       researcher => ScriptedModel.new(response("evidence"))
     }).to_a
     source = agent_events(events, :invocation_start).fetch(0).data.fetch(:source)
@@ -346,9 +376,9 @@ class AgentStreamTest < Minitest::Test
       member responder
       start triage
     end
-    events = run_for(swarm, include_agent_events: true, models: {
-      triage => ScriptedModel.new(response([handoff], stop_reason: :tool_use)),
-      responder => ScriptedModel.new(response("answer"))
+    events = run_for(swarm, models: {
+      triage => ScriptedModel.new(response([handoff], stop_reason: :tool_use), delta_count: 10_001),
+      responder => ScriptedModel.new(response("answer"), delta_count: 10_001)
     }).to_a
     starts = agent_events(events, :invocation_start)
 
@@ -359,6 +389,9 @@ class AgentStreamTest < Minitest::Test
     assert_equal(%w[triage responder], starts.map do |event|
       event.data.fetch(:source).assembly_path.fetch(0).participant
     end)
+    assert_equal 20_004, agent_events(events, :text_delta).length
+    assert_equal :run_stop, events.last.type
+    refute events.any? { |event| event.type == :text_delta }
   end
 
   def test_agent_tools_stream_the_child_with_the_invoking_agent_as_parent
@@ -374,7 +407,7 @@ class AgentStreamTest < Minitest::Test
       system_prompt ""
       agent_as_tool researcher
     end
-    events = run_for(coordinator, include_agent_events: true, models: {
+    events = run_for(coordinator, models: {
       coordinator => ScriptedModel.new(response([tool_use], stop_reason: :tool_use), response("done")),
       researcher => ScriptedModel.new(response("evidence"))
     }).to_a
@@ -386,7 +419,8 @@ class AgentStreamTest < Minitest::Test
 
     assert_equal "find evidence", child_event.data.fetch(:input).text
     assert_equal parent.operation_id, child.parent_operation_id
-    assert_empty child.assembly_path
+    assert_equal "/root", child.agent_path
+    assert_equal [[:tool, "coordinator", "researcher"]], child.assembly_path.map { |step| [step.assembly_kind, step.assembly_id, step.participant] }
   end
 
   def test_agent_failures_are_published_before_the_run_error
@@ -399,6 +433,140 @@ class AgentStreamTest < Minitest::Test
     assert_instance_of RuntimeError, failure.data.fetch(:event).data.fetch(:error)
     assert_equal :run_error, events.last.type
     assert_operator events.index(failure), :<, events.length - 1
+  end
+
+  def test_reused_direct_tool_agents_and_prebuilt_descendants_keep_tool_boundaries
+    evidence = agent_class("evidence")
+    evidence.description "Collects evidence."
+    analyst = Class.new(LittleGhost::Agent) do
+      agent_id "analyst"
+      description "Analyzes evidence."
+      system_prompt ""
+      subagent evidence, persist: false
+    end
+    researcher = Class.new(LittleGhost::Agent) do
+      agent_id "researcher"
+      description "Researches a request."
+      system_prompt ""
+      agent_as_tool analyst, preserve_context: true
+    end
+    coordinator = agent_class("coordinator")
+    runtime_class = Class.new(Runtime) do
+      define_method(:build_agent) do |reference, run:, tools: [], **options|
+        if reference == coordinator
+          target = super(researcher, run:, **options)
+          tools = [*tools, target.as_tool(name: "review", preserve_context: true)]
+        end
+        super(reference, run:, tools:, **options)
+      end
+    end
+    research_calls = 2.times.map do |index|
+      response([LittleGhost::Content::ToolUse.new(id: "review-#{index}", name: "review", input: {"input" => "review #{index}"})], stop_reason: :tool_use)
+    end
+    analyst_calls = 2.times.flat_map do |index|
+      [response([LittleGhost::Content::ToolUse.new(id: "analyst-#{index}", name: "analyst", input: {"input" => "analyze #{index}"})], stop_reason: :tool_use), response("Research #{index}")]
+    end
+    evidence_calls = 2.times.flat_map do |index|
+      [response([LittleGhost::Content::ToolUse.new(id: "spawn-#{index}", name: "spawn_subagent", input: {
+        "kind" => "evidence", "task_name" => "lookup_#{index}", "task" => "find evidence", "mode" => "sync"
+      })], stop_reason: :tool_use), response("Analysis #{index}")]
+    end
+    runtime = runtime_class.new(
+      coordinator => ScriptedModel.new(*research_calls, response("Public answer")),
+      researcher => ScriptedModel.new(*analyst_calls),
+      analyst => ScriptedModel.new(*evidence_calls),
+      evidence => [ScriptedModel.new(response("Private evidence 0")), ScriptedModel.new(response("Private evidence 1"))]
+    )
+    run = LittleGhost::Run.new(invocation: LittleGhost::Invocation.new(message: "request"), runtime:, entrypoint_class: coordinator)
+    events = run.to_a
+    sources = agent_events(events, :invocation_start).map { |event| event.data.fetch(:source) }
+
+    assert run.completed?
+    assert_equal "Public answer", run.response
+    assert_equal 7, sources.length
+    assert_empty sources.first.assembly_path
+    research_sources = sources.select { |source| source.agent_id == "researcher" }
+    assert_equal 2, research_sources.length
+    assert research_sources.all? { |source| source.agent_path == "/root" }
+    assert_equal 2, research_sources.map { |source| source.assembly_path.first.step_id }.uniq.length
+    research_sources.each do |source|
+      assert_equal [[:tool, "coordinator", "review"]], source.assembly_path.map { |step| [step.assembly_kind, step.assembly_id, step.participant] }
+    end
+    sources.select { |source| %w[analyst evidence].include?(source.agent_id) }.each do |source|
+      assert_equal [[:tool, "coordinator", "review"], [:tool, "researcher", "analyst"]], source.assembly_path.map { |step| [step.assembly_kind, step.assembly_id, step.participant] }
+    end
+    assert_equal %w[/root/lookup_0 /root/lookup_1], sources.select { |source| source.agent_id == "evidence" }.map(&:agent_path)
+    translated = LittleGhost::AGUI::Adapter.new.stream(events, thread_id: "thread", run_id: "run").to_a
+    assert_equal ["", "", "Public answer"], translated.select { |event| event[:type] == "TEXT_MESSAGE_CONTENT" }.map { |event| event.fetch(:delta) }
+    assert_nil LittleGhost::ExecutionState[:agent_stream_tool_scope]
+  end
+
+  def test_assembly_tools_keep_the_boundary_before_nested_workflow_steps
+    researcher = agent_class("researcher")
+    nested = Class.new(LittleGhost::Workflow) do
+      assembly_id "research_workflow"
+      description "Researches a request."
+      define_method(:perform) { invoke(researcher, as: :research) }
+      private :perform
+    end
+    coordinator = Class.new(LittleGhost::Agent) do
+      agent_id "coordinator"
+      system_prompt ""
+      assembly_as_tool nested
+    end
+    lookup = LittleGhost::Content::ToolUse.new(id: "research-1", name: "research_workflow", input: {"input" => "find evidence"})
+    events = run_for(coordinator, models: {
+      coordinator => ScriptedModel.new(response([lookup], stop_reason: :tool_use), response("done")),
+      researcher => ScriptedModel.new(response("private research"))
+    }).to_a
+    source = agent_events(events, :invocation_start).find { |event| event.data.fetch(:source).agent_id == "researcher" }.data.fetch(:source)
+
+    assert_equal [[:tool, "coordinator", "research_workflow"], [:workflow, "research_workflow", "research"]], source.assembly_path.map { |step| [step.assembly_kind, step.assembly_id, step.participant] }
+    assert_equal :run_stop, events.last.type
+  end
+
+  def test_nested_progress_cannot_replace_the_root_partial_response
+    researcher = agent_class("researcher")
+    researcher.description "Researches a request."
+    lookup = LittleGhost::Content::ToolUse.new(id: "research-1", name: "researcher", input: {"input" => "find evidence"})
+    coordinator = Class.new(LittleGhost::Agent) do
+      agent_id "coordinator"
+      system_prompt ""
+      agent_as_tool researcher
+    end
+    run = run_for(coordinator, models: {
+      coordinator => ScriptedModel.new(
+        response([LittleGhost::Content::Text.new(text: "Public progress"), lookup], stop_reason: :tool_use),
+        LittleGhost::DeadlineExceededError.new("deadline reached")
+      ),
+      researcher => ScriptedModel.new(response("Private research"))
+    })
+    events = run.to_a
+
+    assert run.partial?
+    assert_equal "Public progress", run.response
+    assert_equal :run_partial, events.last.type
+    assert_equal "Public progress", events.last.data.fetch(:response)
+    assert_includes agent_events(events, :text_delta).map { |event| event.data.fetch(:event).data.fetch(:text) }, "Private research"
+    assert_nil LittleGhost::ExecutionState[:agent_stream_tool_scope]
+  end
+
+  def test_unselected_workflow_progress_is_not_a_partial_final_response
+    reviewer = agent_class("reviewer")
+    workflow = Class.new(LittleGhost::Workflow) do
+      define_method(:perform) do
+        invoke(reviewer).result
+        raise LittleGhost::DeadlineExceededError, "deadline reached"
+      end
+      private :perform
+    end
+    run = run_for(workflow, models: {reviewer => ScriptedModel.new(response("Private review"))})
+    events = run.to_a
+
+    assert run.partial?
+    assert_empty run.response
+    assert_includes agent_events(events, :text_delta).map { |event| event.data.fetch(:event).data.fetch(:text) }, "Private review"
+    assert_empty events.last.data.fetch(:response)
   end
 
   def test_managed_subagents_stream_with_their_stable_agent_path
@@ -419,9 +587,9 @@ class AgentStreamTest < Minitest::Test
       system_prompt ""
       subagent researcher, persist: false
     end
-    events = run_for(coordinator, include_agent_events: true, models: {
+    events = run_for(coordinator, models: {
       coordinator => ScriptedModel.new(response([spawn], stop_reason: :tool_use), response("done")),
-      researcher => ScriptedModel.new(response("evidence"))
+      researcher => ScriptedModel.new(response("evidence"), delta_count: 10_001)
     }).to_a
     starts = agent_events(events, :invocation_start)
     parent = starts.find { |event| event.data.fetch(:source).agent_id == "coordinator" }.data.fetch(:source)
@@ -437,6 +605,10 @@ class AgentStreamTest < Minitest::Test
     assert_equal "/root/investigate", child.agent_path
     refute_equal parent.operation_id, child.parent_operation_id
     assert_equal turn.fetch(:operation_id), child.parent_operation_id
+    child_deltas = agent_events(events, :text_delta).select { |event| event.data.fetch(:source).agent_path == "/root/investigate" }
+    assert_equal 10_002, child_deltas.length
+    assert_operator events.index(child_deltas.last), :<, events.index(agent_events(events, :invocation_stop).find { |event| event.data.fetch(:source).agent_path == "/root/investigate" })
+    refute events.any? { |event| event.type == :text_delta }
   end
 
   def test_dynamic_subagents_inherit_the_enclosing_assembly_path

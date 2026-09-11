@@ -174,7 +174,12 @@ messaging, and checking on subagents remain decisions for the parent model.
 
 A **Workflow** coordinates work with ordinary Ruby. Its `perform` method can call an Agent or another Assembly, read a result, choose a branch, or run independent steps together.
 
-`invoke` prepares a lazy child call. Reading `.output` runs an intermediate child. Return the final `invoke` itself, without reading its output, so that answer can stream to the caller.
+`invoke` prepares a lazy child call. Reading `.result` runs the child and returns
+its `RunResult`; `.output` returns its text or structured value. Repeated reads
+reuse that result. Return an invocation to select its answer as the Workflow's
+result, whether or not you inspected it first. Every Agent publishes live
+source-tagged progress independently of result access or selection, and your
+application chooses which participants to display.
 
 ```ruby
 class ResponseWorkflow < LittleGhost::Workflow

@@ -26,16 +26,16 @@ module LittleGhost
   # Call a named Swarm with
   # ask[rdoc-ref:LittleGhost::Assembly.ask] for its final Run, or
   # the streaming entrypoint[rdoc-ref:LittleGhost::Assembly.stream_ask] for
-  # coordination and final-response events.
+  # live source-tagged Agent progress, coordination events, and the final result.
   #
   # Swarm members are Agent definitions rather than arbitrary assemblies so a
   # handoff remains a direct model-to-model transition. Original conversation
   # history and application context stay isolated unless a member opts in with
-  # <tt>history: true</tt> or <tt>context: true</tt>. Streams expose coordination
-  # events and the final member response, but not intermediate model text.
+  # <tt>history: true</tt> or <tt>context: true</tt>. Every member publishes live
+  # progress to the Run, including members that hand off. The final result selects
+  # the answering member without replaying its text. Applications filter sources
+  # for the destination before forwarding progress; see Run.
   class Swarm < Assembly
-    MAX_BUFFERED_EVENTS = 10_000 # :nodoc:
-    MAX_BUFFERED_EVENT_BYTES = 10 * 1024 * 1024 # :nodoc:
     Member = Data.define(:id, :agent, :policies, :inherit_history, :inherit_context) # :nodoc:
     Handoff = Data.define(:from, :to) # :nodoc:
 
@@ -173,7 +173,8 @@ module LittleGhost
       @swarm_started = false
     end
 
-    # Streams lifecycle events and only the final member's answer events.
+    # Streams lifecycle events and the final member's RunResult.
+    # Every member also publishes live source-tagged progress to the owning Run.
     def stream(input = nil, history: nil, context: nil,
       cancellation_token: Support::CancellationToken.new, deadline: nil,
       settings: nil, template_locals: nil, template_paths: nil,
@@ -281,7 +282,7 @@ module LittleGhost
           usage += execution.step.usage
           steps.concat(result.steps)
           final = copy_run_result(result, usage:, steps: steps.freeze)
-          release_final_events(execution.events, final).each { |event| events << event }
+          final_events(execution.events, final).each { |event| events << event }
           break
         end
       rescue => error
@@ -398,49 +399,14 @@ module LittleGhost
       )
     end
 
-    def release_final_events(events, final)
-      buffer = []
-      bytes = 0
-      events.each do |event|
+    def final_events(events, final)
+      events.map do |event|
         event = StreamEvent.build(event.type, **event.data.merge(result: final)) if event.type == :invocation_stop
-        bytes = buffer_event!(buffer, event, bytes:)
+        if buffered_assembly_size(event) > MAX_STEP_EVENT_BYTES
+          raise AssemblyLimitError, "swarm result contains too much event data"
+        end
+        event
       end
-      buffer
-    end
-
-    def buffer_event!(buffer, event, bytes:)
-      raise AssemblyLimitError, "swarm member emitted too many buffered events" if buffer.length >= MAX_BUFFERED_EVENTS
-
-      bytes += buffered_size(event)
-      raise AssemblyLimitError, "swarm member emitted too much buffered event data" if bytes > MAX_BUFFERED_EVENT_BYTES
-
-      buffer << event
-      bytes
-    end
-
-    def buffered_size(value, ancestors = {}, depth = 0)
-      return MAX_BUFFERED_EVENT_BYTES + 1 if depth > 32
-
-      identity = value.object_id
-      return 0 if ancestors.key?(identity)
-
-      case value
-      when String
-        value.bytesize
-      when Hash
-        ancestors[identity] = true
-        value.sum { |key, item| buffered_size(key, ancestors, depth + 1) + buffered_size(item, ancestors, depth + 1) }
-      when Array
-        ancestors[identity] = true
-        value.sum { |item| buffered_size(item, ancestors, depth + 1) }
-      when Data
-        ancestors[identity] = true
-        value.members.sum { |member| buffered_size(value.public_send(member), ancestors, depth + 1) }
-      else
-        64
-      end
-    ensure
-      ancestors.delete(identity) if identity
     end
 
     def normalize_history(value)

@@ -18,8 +18,11 @@ module LittleGhost
   # terminal event carries a {ModelResponse}[rdoc-ref:LittleGhost::ModelResponse]
   # in +data[:response]+. An +:agent_stream+ event wraps a copied, frozen Agent
   # event with an
-  # AgentStreamSource[rdoc-ref:LittleGhost::AgentStreamSource] when a Run exposes
-  # nested work.
+  # AgentStreamSource[rdoc-ref:LittleGhost::AgentStreamSource]. Every Run emits
+  # Agent progress through these wrappers, including root and nested Agents;
+  # it does not also emit raw copies of that progress. Run lifecycle events and
+  # the selected final result remain separate. Applications filter sources and
+  # fields before forwarding participant data to a narrower audience.
   #
   #   event = LittleGhost::StreamEvent.build(:text_delta, text: "Hello")
   #   event.type        # => :text_delta

@@ -18,7 +18,26 @@ module LittleGhost
     # The adapter has no state between #stream calls, so one instance can
     # translate independent runs.
     #
+    # Progress comes from the Run's native +:agent_stream+ events. By default,
+    # only the top-level Agent's progress reaches the interface: its
+    # AgentStreamSource[rdoc-ref:LittleGhost::AgentStreamSource] has +agent_path+
+    # <tt>/root</tt> and an empty +assembly_path+. A composite run's final
+    # response arrives in +RUN_FINISHED+ independently of participant progress.
+    # Unwrapped progress and wrapped invocation usage or terminal events are
+    # ignored; run lifecycle and aggregate usage remain separate.
+    #
     # === Choose what the interface receives
+    #
+    # Pass a +source_filter+ callable to select a participant whose progress is
+    # intended for the destination. The callable receives an AgentStreamSource
+    # and replaces the default root selection. Choose it in trusted application
+    # code, not from request or model values.
+    #
+    #   adapter = LittleGhost::AGUI::Adapter.new(source_filter: lambda { |source|
+    #     step = source.assembly_path.first
+    #     source.agent_path == "/root" && source.assembly_path.length == 1 &&
+    #       step.assembly_id == "response_workflow" && step.participant == "response"
+    #   })
     #
     # Provider plaintext reasoning becomes AG-UI reasoning events. Tool
     # arguments and results, invocation metadata, subagent events, trace context,
@@ -28,8 +47,32 @@ module LittleGhost
     # continuity artifacts are never exposed here.
     class Adapter
       TERMINAL_EVENTS = %i[run_partial run_cancel run_stop run_error].freeze # :nodoc:
+      PROGRESS_EVENTS = %i[
+        message_start reasoning_delta text_delta message_stop
+        tool_call_start tool_call_delta tool_call_stop tool_stop
+        model_retry agent_interjection_delivered
+      ].freeze # :nodoc:
 
-      # Lazily translates +events+ for one AG-UI run.
+      # Selects which Agent's progress reaches the interface.
+      #
+      # +source_filter+ is a callable receiving an AgentStreamSource and returning
+      # a truthy value to include its progress. Omit it to include only a root
+      # Agent outside any composite assembly. A shared adapter may call the filter
+      # concurrently for independent streams, so keep its captured state safe for
+      # concurrent use. Filter exceptions propagate to the caller of #stream.
+      # Raises ArgumentError when +source_filter+ is not callable.
+      def initialize(source_filter: nil)
+        if !source_filter.nil? && !source_filter.respond_to?(:call)
+          raise ArgumentError, "source_filter must be callable"
+        end
+
+        @source_filter = source_filter
+      end
+
+      # Lazily translates a Run's +events+ into AG-UI hashes for one interface run.
+      #
+      # Returns an Enumerator. Selected Agent progress arrives as it is produced;
+      # +RUN_FINISHED+ carries the run's final response in <tt>result[:response]</tt>.
       def stream(events, thread_id:, run_id:)
         Enumerator.new do |output|
           message_id = nil
@@ -39,6 +82,9 @@ module LittleGhost
           tool_call_ids = {}
 
           events.each do |source|
+            source = selected_event(source)
+            next unless source
+
             superseded_message_id = message_id if source.type == :model_retry && message_started
             if reasoning_id && source.type != :reasoning_delta
               output << event("REASONING_MESSAGE_END", messageId: reasoning_message_id)
@@ -181,6 +227,23 @@ module LittleGhost
       end
 
       private
+
+      def selected_event(event)
+        return unless event.is_a?(StreamEvent)
+        return PROGRESS_EVENTS.include?(event.type) ? nil : event unless event.type == :agent_stream
+
+        source = event.data[:source]
+        progress = event.data[:event]
+        return unless source.is_a?(AgentStreamSource) && progress.is_a?(StreamEvent)
+        return unless PROGRESS_EVENTS.include?(progress.type)
+
+        selected = if @source_filter
+          @source_filter.call(source)
+        else
+          source.agent_path == "/root" && source.assembly_path.empty?
+        end
+        progress if selected
+      end
 
       def event(type, **attributes)
         {type:, **attributes.compact}

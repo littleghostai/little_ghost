@@ -14,9 +14,9 @@ class AGUITest < Minitest::Test
     )
     events = [
       LittleGhost::StreamEvent.build(:run_start),
-      LittleGhost::StreamEvent.build(:message_start),
-      LittleGhost::StreamEvent.build(:text_delta, text: "hello"),
-      LittleGhost::StreamEvent.build(:message_stop),
+      agent_event(:message_start),
+      agent_event(:text_delta, text: "hello"),
+      agent_event(:message_stop),
       LittleGhost::StreamEvent.build(:invocation_stop, result:),
       LittleGhost::StreamEvent.build(:run_stop, response: "hello")
     ]
@@ -35,7 +35,7 @@ class AGUITest < Minitest::Test
     result = LittleGhost::Tool::ExecutionResult.new(content: "failed", status: :error)
     events = [
       LittleGhost::StreamEvent.build(:run_start),
-      LittleGhost::StreamEvent.build(:tool_stop, tool_use:, result:),
+      agent_event(:tool_stop, tool_use:, result:),
       LittleGhost::StreamEvent.build(:run_error, message: "Agent failed")
     ]
 
@@ -48,8 +48,8 @@ class AGUITest < Minitest::Test
 
   def test_tool_only_messages_do_not_reference_an_unannounced_text_message
     events = [
-      LittleGhost::StreamEvent.build(:message_start),
-      LittleGhost::StreamEvent.build(:tool_call_start, index: 0, id: "tool-1", name: "lookup")
+      agent_event(:message_start),
+      agent_event(:tool_call_start, index: 0, id: "tool-1", name: "lookup")
     ]
 
     translated = LittleGhost::AGUI::Adapter.new.stream(events, thread_id: "thread", run_id: "run").to_a
@@ -94,9 +94,9 @@ class AGUITest < Minitest::Test
 
   def test_closes_partial_text_before_a_model_retry
     source = [
-      LittleGhost::StreamEvent.build(:text_delta, text: "Partial"),
-      LittleGhost::StreamEvent.build(:model_retry, attempt: 1, partial_text: true),
-      LittleGhost::StreamEvent.build(:text_delta, text: "Complete"),
+      agent_event(:text_delta, text: "Partial"),
+      agent_event(:model_retry, attempt: 1, partial_text: true),
+      agent_event(:text_delta, text: "Complete"),
       LittleGhost::StreamEvent.build(:run_stop, response: "Complete")
     ]
 
@@ -117,8 +117,8 @@ class AGUITest < Minitest::Test
 
   def test_retry_without_partial_text_has_no_superseded_message
     source = [
-      LittleGhost::StreamEvent.build(:model_retry, attempt: 1, partial_text: false),
-      LittleGhost::StreamEvent.build(:text_delta, text: "Complete"),
+      agent_event(:model_retry, attempt: 1, partial_text: false),
+      agent_event(:text_delta, text: "Complete"),
       LittleGhost::StreamEvent.build(:run_stop, response: "Complete")
     ]
 
@@ -132,12 +132,12 @@ class AGUITest < Minitest::Test
 
   def test_translates_interject_delivery_boundary
     source = [
-      LittleGhost::StreamEvent.build(
+      agent_event(
         :agent_interjection_delivered,
         interjection_ids: ["interject-1", "interject-2"],
         batch_key: "conversation"
       ),
-      LittleGhost::StreamEvent.build(:text_delta, text: "Steered response")
+      agent_event(:text_delta, text: "Steered response")
     ]
 
     events = LittleGhost::AGUI::Adapter.new.stream(source, thread_id: "thread", run_id: "run").to_a
@@ -158,10 +158,10 @@ class AGUITest < Minitest::Test
       state: {}
     )
     source = [
-      LittleGhost::StreamEvent.build(:text_delta, text: "Visible "),
-      LittleGhost::StreamEvent.build(:reasoning_delta, text: reasoning),
-      LittleGhost::StreamEvent.build(:text_delta, text: "answer"),
-      LittleGhost::StreamEvent.build(:message_stop),
+      agent_event(:text_delta, text: "Visible "),
+      agent_event(:reasoning_delta, text: reasoning),
+      agent_event(:text_delta, text: "answer"),
+      agent_event(:message_stop),
       LittleGhost::StreamEvent.build(:invocation_stop, result:),
       LittleGhost::StreamEvent.build(:run_stop, response: "Visible answer")
     ]
@@ -186,8 +186,8 @@ class AGUITest < Minitest::Test
 
   def test_closes_open_messages_before_terminal_events
     error_events = [
-      LittleGhost::StreamEvent.build(:message_start),
-      LittleGhost::StreamEvent.build(:reasoning_delta, text: "Checking"),
+      agent_event(:message_start),
+      agent_event(:reasoning_delta, text: "Checking"),
       LittleGhost::StreamEvent.build(:run_error, message: "Provider failed")
     ]
 
@@ -205,7 +205,7 @@ class AGUITest < Minitest::Test
     %i[run_partial run_cancel run_stop].each do |type|
       data = (type == :run_partial || type == :run_stop) ? {response: "Partial"} : {}
       events = [
-        LittleGhost::StreamEvent.build(:text_delta, text: "Partial"),
+        agent_event(:text_delta, text: "Partial"),
         LittleGhost::StreamEvent.build(type, **data)
       ]
       types = LittleGhost::AGUI::Adapter.new.stream(events, thread_id: "thread", run_id: "run").map { |event| event[:type] }
@@ -239,26 +239,142 @@ class AGUITest < Minitest::Test
     assert_equal({trace_id: "abc"}, translated.last[:value])
   end
 
-  def test_ignores_contextual_agent_events
-    source = LittleGhost::AgentStreamSource.build(
-      agent_id: "researcher",
-      agent_path: "/root",
-      operation_id: "agent-1",
-      parent_operation_id: "run-1",
-      assembly_path: []
-    )
+  def test_default_source_selection_excludes_nested_participants_and_subagents
+    nested = root_source.with(assembly_path: [LittleGhost::AgentStreamStep.build(
+      assembly_id: "response_workflow", assembly_kind: :workflow, participant: "researcher", step_id: "step-1"
+    )])
+    subagent = root_source.with(agent_path: "/root/researcher")
     events = [
       LittleGhost::StreamEvent.build(:run_start),
-      LittleGhost::StreamEvent.build(
-        :agent_stream,
-        source:,
-        event: LittleGhost::StreamEvent.build(:text_delta, text: "private work")
-      ),
+      agent_event(:text_delta, source: nested, text: "private participant work"),
+      agent_event(:text_delta, source: subagent, text: "private subagent work"),
       LittleGhost::StreamEvent.build(:run_stop, response: "done")
     ]
 
     translated = LittleGhost::AGUI::Adapter.new.stream(events, thread_id: "thread", run_id: "run").to_a
 
     assert_equal %w[RUN_STARTED RUN_FINISHED], translated.map { |event| event[:type] }
+  end
+
+  def test_source_filter_selects_a_participant_without_exposing_its_reviewer_or_children
+    response_step = LittleGhost::AgentStreamStep.build(
+      assembly_id: "response_workflow", assembly_kind: :workflow, participant: "response", step_id: "step-1"
+    )
+    response = root_source.with(assembly_path: [response_step])
+    reviewer = response.with(assembly_path: [response_step.with(participant: "reviewer")])
+    subagent = response.with(agent_path: "/root/researcher")
+    nested = response.with(assembly_path: [response_step, response_step.with(step_id: "step-2")])
+    adapter = LittleGhost::AGUI::Adapter.new(source_filter: lambda { |source|
+      step = source.assembly_path.first
+      source.agent_path == "/root" && source.assembly_path.length == 1 &&
+        step.assembly_id == "response_workflow" && step.participant == "response"
+    })
+    events = [
+      LittleGhost::StreamEvent.build(:run_start),
+      *[reviewer, subagent, nested, root_source].map { |source|
+        agent_event(:text_delta, source:, text: "private work")
+      },
+      agent_event(:text_delta, source: response, text: "Looking up your order."),
+      agent_event(:message_stop, source: response),
+      LittleGhost::StreamEvent.build(:run_stop, response: "Your order has shipped.")
+    ]
+
+    translated = adapter.stream(events, thread_id: "thread", run_id: "run").to_a
+
+    assert_equal %w[RUN_STARTED TEXT_MESSAGE_START TEXT_MESSAGE_CONTENT TEXT_MESSAGE_END RUN_FINISHED],
+      translated.map { |event| event[:type] }
+    assert_equal "Looking up your order.", translated.fetch(2).fetch(:delta)
+    assert_equal "Your order has shipped.", translated.last.dig(:result, :response)
+    refute_includes JSON.generate(translated), "private work"
+  end
+
+  def test_ignores_raw_progress_and_wrapped_usage_or_terminal_events
+    usage = LittleGhost::Usage.new(input_tokens: 5, output_tokens: 3)
+    result = Struct.new(:usage).new(usage)
+    events = [
+      LittleGhost::StreamEvent.build(:run_start),
+      agent_event(:text_delta, text: "Hello"),
+      LittleGhost::StreamEvent.build(:text_delta, text: "Hello"),
+      LittleGhost::StreamEvent.build(:reasoning_delta, text: "raw reasoning"),
+      LittleGhost::StreamEvent.build(:tool_call_start, index: 0, id: "raw-tool", name: "lookup"),
+      agent_event(:invocation_stop, result:),
+      agent_event(:invocation_error, usage:),
+      agent_event(:run_stop, response: "unapproved response"),
+      agent_event(:run_error, message: "participant failure"),
+      LittleGhost::StreamEvent.build(:invocation_stop, result:),
+      LittleGhost::StreamEvent.build(:run_stop, response: "Approved response")
+    ]
+
+    translated = LittleGhost::AGUI::Adapter.new.stream(events, thread_id: "thread", run_id: "run").to_a
+
+    assert_equal %w[RUN_STARTED TEXT_MESSAGE_START TEXT_MESSAGE_CONTENT CUSTOM TEXT_MESSAGE_END RUN_FINISHED],
+      translated.map { |event| event[:type] }
+    assert_equal 1, translated.count { |event| event[:type] == "TEXT_MESSAGE_CONTENT" }
+    assert_equal 1, translated.count { |event| event[:name] == "little_ghost.usage" }
+    assert_equal 8, translated.fetch(3).dig(:value, :usage, :total_tokens)
+    assert_equal "Approved response", translated.last.dig(:result, :response)
+  end
+
+  def test_translates_tool_progress_and_subagent_lifecycle
+    tool_use = LittleGhost::Content::ToolUse.new(id: "tool-1", name: "lookup", input: {order_id: "123"})
+    result = LittleGhost::Tool::ExecutionResult.new(content: "shipped", status: :success)
+    events = [
+      agent_event(:tool_call_start, index: 0, id: tool_use.id, name: tool_use.name),
+      agent_event(:tool_call_delta, index: 0, arguments: '{"order_id":"123"}'),
+      agent_event(:tool_call_stop, tool_use:),
+      agent_event(:tool_stop, tool_use:, result:),
+      LittleGhost::StreamEvent.build(:subagent, event: {event: "turn_finished", subagent_id: "researcher"})
+    ]
+
+    translated = LittleGhost::AGUI::Adapter.new.stream(events, thread_id: "thread", run_id: "run").to_a
+
+    assert_equal %w[TOOL_CALL_START TOOL_CALL_ARGS TOOL_CALL_END TOOL_CALL_RESULT CUSTOM],
+      translated.map { |event| event[:type] }
+    assert_equal "tool-1", translated.fetch(1).fetch(:toolCallId)
+    assert_equal '{"order_id":"123"}', translated.fetch(1).fetch(:delta)
+    assert_equal "shipped", translated.fetch(3).fetch(:content)
+    assert_equal "little_ghost.subagent", translated.last.fetch(:name)
+    assert_equal "turn_finished", translated.last.dig(:value, :event)
+  end
+
+  def test_requires_native_source_and_progress_values_even_with_a_custom_filter
+    source = root_source
+    progress = LittleGhost::StreamEvent.build(:text_delta, text: "not native")
+    filter_calls = 0
+    adapter = LittleGhost::AGUI::Adapter.new(source_filter: ->(_) { filter_calls += 1 })
+    events = [
+      LittleGhost::StreamEvent.build(:agent_stream, source: source.to_h, event: progress),
+      LittleGhost::StreamEvent.build(:agent_stream, source:, event: progress.to_h),
+      LittleGhost::StreamEvent.build(:agent_stream, source:, event: LittleGhost::StreamEvent.build(:run_stop, response: "hidden"))
+    ]
+
+    assert_empty adapter.stream(events, thread_id: "thread", run_id: "run").to_a
+    assert_equal 0, filter_calls
+  end
+
+  def test_source_filter_requires_a_callable_and_propagates_filter_errors
+    assert_raises(ArgumentError) { LittleGhost::AGUI::Adapter.new(source_filter: "response") }
+    assert_raises(ArgumentError) { LittleGhost::AGUI::Adapter.new(source_filter: false) }
+    failure = RuntimeError.new("source selection failed")
+    adapter = LittleGhost::AGUI::Adapter.new(source_filter: ->(_) { raise failure })
+
+    error = assert_raises(RuntimeError) do
+      adapter.stream([agent_event(:text_delta, text: "Hello")], thread_id: "thread", run_id: "run").to_a
+    end
+
+    assert_same failure, error
+  end
+
+  private
+
+  def agent_event(type, source: root_source, **data)
+    LittleGhost::StreamEvent.build(:agent_stream, source:, event: LittleGhost::StreamEvent.build(type, **data))
+  end
+
+  def root_source
+    LittleGhost::AgentStreamSource.build(
+      agent_id: "customer_support", agent_path: "/root", operation_id: "agent-1",
+      parent_operation_id: "run-1", assembly_path: []
+    )
   end
 end

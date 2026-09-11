@@ -218,19 +218,32 @@ values as the answer arrives:
 stream = CustomerSupportAgent.stream_ask(question)
 
 run = stream.each do |event|
-  publish(event) if event.type == :text_delta
+  next unless event.type == :agent_stream
+
+  source = event.data.fetch(:source)
+  next unless source.agent_path == "/root" && source.assembly_path.empty?
+
+  progress = event.data.fetch(:event)
+  publish(progress) if progress.type == :text_delta
 end
 
 record_outcome(run.outcome, error_type: run.error&.class&.name)
 ```
 
-Composite assembly streams include intermediate and nested Agent work as `:agent_stream` events. This default also applies to the event consumer passed to `start_execution`. Pass `include_agent_events: false` when only the ordinary public stream is needed.
+Every Run includes live source-tagged `:agent_stream` events from all its Agents,
+including nested assemblies and subagents. This example displays only root Agent
+text. The same contract applies to `start_execution`. Progress is not repeated
+as raw events or replayed when a Workflow selects a result. Read `run.result`
+or the terminal Run event for the complete answer and aggregate usage. Pass
+`include_agent_events: false` to omit all Agent progress without changing work,
+lifecycle events, or final results.
 
 > **Safety note:** Contextual events can include inputs, reasoning, Tool
 > arguments and results, errors, and output from every participant. Check that
 > the destination may see the complete Run, or filter the events before sending
-> or storing them. LittleGhost's AG-UI adapter ignores these events unless the
-> application translates them explicitly.
+> or storing them. LittleGhost's [AG-UI adapter](integrations.md) selects root
+> Agent progress by default; its `source_filter:` option lets the application
+> select permitted assembly participants.
 
 Use `start_execution` when the caller must stay free for other work, or when you want to deliver an interjection to an active response:
 

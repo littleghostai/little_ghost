@@ -172,18 +172,31 @@ stream = CustomerSupportAgent.stream_ask("Can I get a refund?")
 
 run = stream.each do |event|
   case event.type
-  when :text_delta
-    print event.data.fetch(:text)
+  when :agent_stream
+    source = event.data.fetch(:source)
+    next unless source.agent_path == "/root" && source.assembly_path.empty?
+
+    progress = event.data.fetch(:event)
+    print progress.data.fetch(:text) if progress.type == :text_delta
   when :run_error
     warn event.data.fetch(:message)
   end
 end
 
-puts "\n#{run.response}" if run.completed?
+run.response # The completed answer, separate from live progress.
 warn run.error.class.name if run.failed?
 ```
 
-The stream yields `LittleGhost::StreamEvent` values. Text, tool activity, usage, and completion all look the same across providers. When enumeration finishes, `.each` returns the same `LittleGhost::Run` that now holds the final outcome and response.
+The stream yields `LittleGhost::StreamEvent` values. Agent progress arrives once
+inside `:agent_stream`, with source metadata identifying who produced it. This
+example displays only the root Agent's text. Every participating Agent emits
+progress, including nested agents, so filter sources and fields before sending
+events to a destination that may see only part of the work.
+
+Text, tool activity, usage, and completion use the same event shapes across
+providers. Lifecycle events and final results are separate from Agent progress.
+When enumeration finishes, `.each` returns the same `LittleGhost::Run` that now
+holds the final outcome and response.
 
 ## Give the code a home
 

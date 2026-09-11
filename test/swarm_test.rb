@@ -75,7 +75,7 @@ class SwarmTest < Minitest::Test
 
   Run = Struct.new(:runtime, :workspace, :sandbox)
 
-  def test_hides_handoff_content_and_streams_the_final_member
+  def test_keeps_handoff_content_out_of_the_final_member_result
     swarm_class = Class.new(LittleGhost::Swarm) do
       member FirstAgent
       member SecondAgent
@@ -92,10 +92,10 @@ class SwarmTest < Minitest::Test
 
     assert_equal %i[
       assembly_step_start assembly_step_stop assembly_transition
-      assembly_step_start assembly_step_stop text_delta invocation_stop
+      assembly_step_start assembly_step_stop invocation_stop
     ], events.map(&:type)
     refute events.any? { |event| event.type == :text_delta && event.data[:text] == "private route" }
-    assert_equal "final answer", events.find { |event| event.type == :text_delta }.data.fetch(:text)
+    assert_equal "final answer", events.last.data.fetch(:result).text
     assert_equal 7, events.last.data.fetch(:result).usage.input_tokens
     assert_includes second.calls.first.text, "Handoff from first:"
     assert_includes second.calls.first.text, "Please answer"
@@ -140,21 +140,22 @@ class SwarmTest < Minitest::Test
     assert_same token, captured
   end
 
-  def test_rejects_oversized_and_overly_nested_buffered_events
-    swarm = Class.new(LittleGhost::Swarm).new(runtime: Object.new)
-    oversized = LittleGhost::StreamEvent.build(
-      :message_stop,
-      metadata: {content: "x" * (LittleGhost::Swarm::MAX_BUFFERED_EVENT_BYTES + 1)}
-    )
+  def test_rejects_oversized_and_overly_nested_terminal_results
+    swarm_class = Class.new(LittleGhost::Swarm) do
+      member FirstAgent
+      member SecondAgent
+      start FirstAgent
+    end
+    oversized = "x" * (10 * 1024 * 1024 + 1)
     nested = "small"
     34.times { nested = [nested] }
-    overly_nested = LittleGhost::StreamEvent.build(:message_stop, metadata: {content: nested})
-
-    assert_raises(LittleGhost::AssemblyLimitError) do
-      swarm.send(:buffer_event!, [], oversized, bytes: 0)
-    end
-    assert_raises(LittleGhost::AssemblyLimitError) do
-      swarm.send(:buffer_event!, [], overly_nested, bytes: 0)
+    [oversized, nested].each do |content|
+      first = FakeAgent.new(result: result("answer").with(state: {"content" => content}))
+      runtime = Runtime.new(FirstAgent => [first])
+      assert_raises(LittleGhost::AssemblyLimitError) do
+        swarm_class.new(run: Run.new(runtime), runtime:).stream("request").to_a
+      end
+      assert first.closed?
     end
   end
 
