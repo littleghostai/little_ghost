@@ -60,7 +60,7 @@ module LittleGhost
     ].freeze # :nodoc:
     CALLBACKS = %i[
       after_initialize
-      before_invocation after_invocation
+      before_invocation before_completion after_invocation
       before_model after_model after_model_error
       before_tool after_tool
     ].freeze # :nodoc:
@@ -145,7 +145,9 @@ module LittleGhost
       # Inherited execution limits for model turns, tool calls, and tool output.
       #
       # Keyword arguments merge into the current limits and the zero-argument
-      # form returns them.
+      # form returns them. Set +max_turns+ or +max_tool_calls+ to +nil+ to
+      # disable that cumulative limit. Cancellation, deadlines, and individual
+      # tool resource limits still apply.
       def limits(**values)
         return limits_value if values.empty?
 
@@ -321,6 +323,27 @@ module LittleGhost
       # :singleton-method: after_invocation
       # :call-seq:
       #   after_invocation(callable = nil, prepend: false) { |payload| ... } -> self
+
+      ##
+      # Checks whether a proposed response completes the application's task.
+      #
+      # The payload contains +:response+ (ModelResponse), +:messages+ (a frozen
+      # conversation array), and zero-based +:turn+. A callback may accept
+      # <tt>context:</tt> to inspect current state. Return
+      # CompletionDecision.accept or CompletionDecision.continue with text
+      # feedback. The first continuation skips later completion callbacks and
+      # requests another model turn in the same invocation. Ordinary callback
+      # cancellation remains supported.
+      #
+      # Valid structured results pass through this check too. Invalid or
+      # truncated responses follow their existing error and repair paths.
+      # Candidate text may already have streamed, but invocation completion and
+      # +after_invocation+ occur only after acceptance. Check observed application
+      # state rather than trusting the model's claim that work is complete.
+      #
+      # :singleton-method: before_completion
+      # :call-seq:
+      #   before_completion(callable = nil, prepend: false) { |payload| ... } -> self
 
       ##
       # Runs before a model request is sent.
@@ -591,8 +614,8 @@ module LittleGhost
       @executor = executor || Support::Executor.new(runner: task_runner)
       @delegation_activity = delegation_activity
       @agent_path = Subagents::AgentPath.validate!(agent_path)
-      @max_turns = Integer(max_turns)
-      @max_tool_calls = Integer(max_tool_calls)
+      @max_turns = max_turns.nil? ? nil : Integer(max_turns)
+      @max_tool_calls = max_tool_calls.nil? ? nil : Integer(max_tool_calls)
       @max_tool_result_tokens = Integer(max_tool_result_tokens)
       @closed = false
       @close_mutex = Mutex.new
@@ -605,8 +628,8 @@ module LittleGhost
       @assembly_transition = nil
       @_little_ghost_invocation_mutex = Mutex.new
       @_little_ghost_invocation_active = false
-      raise ArgumentError, "max_turns must be at least 1" if @max_turns < 1
-      raise ArgumentError, "max_tool_calls must be at least 1" if @max_tool_calls < 1
+      raise ArgumentError, "max_turns must be at least 1" if @max_turns && @max_turns < 1
+      raise ArgumentError, "max_tool_calls must be at least 1" if @max_tool_calls && @max_tool_calls < 1
       raise ArgumentError, "max_tool_result_tokens must be at least 1" if @max_tool_result_tokens < 1
       @artifact_lifecycle = @runtime&.then do |resolved_runtime|
         resolved_runtime.runtime_hooks.find { |hook| hook.is_a?(Runtime::Hooks::Artifacts) }
@@ -934,7 +957,7 @@ module LittleGhost
       @framework_prompts @framework_prompt_invocation_paths
       @structured_output_strategy @task_runner @template_resolver @tool_loop_except
       @tool_loop_fallback @tool_loop_mutex @tool_loop_runs @tool_loop_terminate_at
-      @tool_loop_warning_at @tool_registry @workspace
+      @tool_loop_warning_at @tool_loop_on_limit @tool_registry @workspace
       @_little_ghost_invocation_active @_little_ghost_invocation_mutex
     ].freeze # :nodoc:
 
@@ -1107,7 +1130,9 @@ module LittleGhost
       context.checkpoint(messages)
       emit(events, :invocation_start, agent_id: self.class.agent_id)
 
-      @max_turns.times do |turn|
+      turn = -1
+      while @max_turns.nil? || turn + 1 < @max_turns
+        turn += 1
         turn_operation_id = SecureRandom.uuid
         turn_handle = start_instrumentation(
           :agent_turn,
@@ -1139,6 +1164,10 @@ module LittleGhost
             )
             unless validation_error
               messages[-1] = redact_structured_result_message(response.message)
+              if continue_completion?(response:, messages:, context:, turn:, events:, turn_handle:, turn_operation_id:)
+                structured_result_repair_due = false
+                next
+              end
               unless interjections.finish
                 context.checkpoint(messages)
                 finish_instrumentation(
@@ -1200,6 +1229,10 @@ module LittleGhost
             end
 
             if interjected || !@structured_output_strategy
+              if continue_completion?(response:, messages:, context:, turn:, events:, turn_handle:, turn_operation_id:)
+                structured_result_repair_due = false
+                next
+              end
               unless interjections.finish
                 context.checkpoint(messages)
                 finish_instrumentation(
@@ -1220,6 +1253,10 @@ module LittleGhost
               end
               unless validation_error
                 messages[-1] = redact_structured_result_message(response.message)
+                if continue_completion?(response:, messages:, context:, turn:, events:, turn_handle:, turn_operation_id:)
+                  structured_result_repair_due = false
+                  next
+                end
                 unless interjections.finish
                   context.checkpoint(messages)
                   finish_instrumentation(
@@ -1424,6 +1461,29 @@ module LittleGhost
       raise
     ensure
       @framework_prompt_invocation_paths = previous_framework_prompt_invocation_paths
+    end
+
+    def continue_completion?(response:, messages:, context:, turn:, events:, turn_handle:, turn_operation_id:)
+      context.check!
+      decision = run_callbacks(
+        :before_completion,
+        {response:, messages: messages.dup.freeze, turn:},
+        context:
+      )
+      apply_cancellation_decision!(decision)
+      context.check!
+      return false unless decision.is_a?(CompletionDecision) && decision.continue?
+
+      context.submit_structured_result(nil)
+      messages << Message.new(
+        role: :user,
+        content: decision.feedback,
+        metadata: {little_ghost_completion_feedback: true}
+      )
+      context.checkpoint(messages)
+      finish_instrumentation(turn_handle, operation_id: turn_operation_id, outcome: :continued, turn: turn + 1)
+      emit(events, :completion_continued, turn: turn + 1)
+      true
     end
 
     def invoke_model(

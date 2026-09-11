@@ -105,7 +105,8 @@ module LittleGhost
           raise ToolError, prompt("code_mode/feedback/closed", resource: "session") if @closed
           ensure_program_can_start!
           @programs += 1
-          raise ToolError, prompt("code_mode/feedback/limit_exceeded", limit: "program") if @programs > @limits.fetch(:programs)
+          program_limit = @limits.fetch(:programs)
+          raise ToolError, prompt("code_mode/feedback/limit_exceeded", limit: "program") if program_limit && @programs > program_limit
           source = String(source)
           raise ToolError, prompt("code_mode/feedback/limit_exceeded", limit: "source size") if source.bytesize > @limits.fetch(:source_bytes)
           normalized_catalog = Catalog.new(catalog).host_definitions

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../completion_decision"
+
 module LittleGhost
   module Support
     # Callbacks lets extensions prepare, replace, or cancel framework work in a
@@ -8,7 +10,9 @@ module LittleGhost
     #
     # A callback may return Callbacks.continue, Callbacks.cancel, or
     # Callbacks.replace. Any other return value means continue. Replacements
-    # become the payload for later callbacks.
+    # become the payload for later callbacks. Completion checks may also return
+    # CompletionDecision: acceptance proceeds to the next callback, while
+    # continuation returns that decision immediately to the agent loop.
     #
     # Every decision responds to +continue?+, +cancel?+, and +replace?+. A
     # cancellation also exposes +reason+; a replacement exposes +value+.
@@ -112,6 +116,8 @@ module LittleGhost
             next
           when Replace
             current = decision.value
+          when CompletionDecision
+            return decision if decision.continue?
           else
             return decision
           end
@@ -144,7 +150,7 @@ module LittleGhost
       end
 
       def normalize(decision)
-        return decision if decision.is_a?(Continue) || decision.is_a?(Cancel) || decision.is_a?(Replace)
+        return decision if decision.is_a?(Continue) || decision.is_a?(Cancel) || decision.is_a?(Replace) || decision.is_a?(CompletionDecision)
 
         self.class.continue
       end

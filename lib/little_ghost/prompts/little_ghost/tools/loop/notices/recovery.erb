@@ -1,0 +1,10 @@
+<%#
+# Key: tools/loop/notices/recovery
+# Purpose: Suppressed repeated Tool-call feedback.
+# Used: Returned by tool-loop detection in feedback mode.
+# Locals:
+# - tool_name: The repeated tool's name.
+# Constraints:
+# - Must render non-blank.
+-%>
+The repeated <%= tool_name %> call was not executed because identical calls have returned the same result without progress. Change the arguments, use another tool, or investigate why the result is unchanged before trying again. Continue working on the task.

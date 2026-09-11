@@ -263,10 +263,10 @@ module LittleGhost
   class AgentBuilder < AssemblyBuilder
     DECLARATIONS = %i[
       model limits result_schema capture_diagnostics system_template system_prompt
-      tools after_initialize before_invocation after_invocation
+      tools after_initialize before_invocation before_completion after_invocation
       before_model after_model after_model_error before_tool after_tool
       manage_context detect_tool_loops skills subagent subagents
-      subagent_long_poll_duration agent_as_tool agents_as_tools
+      subagent_long_poll_duration subagent_limits agent_as_tool agents_as_tools
       assembly_as_tool assemblies_as_tools
     ].freeze # :nodoc:
 

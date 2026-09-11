@@ -185,6 +185,7 @@ module LittleGhost
 
       Subagents::Manager.new(
         definitions,
+        **agent_class.subagent_limits,
         runtime:,
         wait_timeout: agent_class.subagent_long_poll_duration,
         parent_session: conversation_id ? runtime.open_subagent_session(run, conversation_id) : run.session,

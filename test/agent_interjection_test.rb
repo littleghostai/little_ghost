@@ -246,6 +246,50 @@ class AgentInterjectionTest < Minitest::Test
     agent&.close
   end
 
+  def test_interjection_queued_during_completion_check_survives_continuation
+    checking = Queue.new
+    release = Queue.new
+    telemetry = []
+    LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      subscribers: [TestTelemetryRecorder.new(telemetry)]
+    )
+    agent_class = Class.new(LittleGhost::Agent) do
+      before_completion do |payload|
+        if payload.fetch(:turn).zero?
+          checking << true
+          release.pop
+          LittleGhost::CompletionDecision.continue(feedback: "Check the delivery status.")
+        else
+          LittleGhost::CompletionDecision.accept
+        end
+      end
+    end
+    model = SequencedModel.new(model_response("Not checked yet."), model_response("Confirmed delivery."))
+    agent = agent_class.new(model:)
+    runner = Thread.new { agent.call("Investigate") }
+
+    assert checking.pop(timeout: 1), "completion check did not start"
+    interjected = Thread.new { agent.interject("Include the delivery date") }
+    wait_until { telemetry.any? { |name, _| name == :agent_interjection_queued } }
+    release << true
+
+    assert runner.join(1), "agent did not finish after continuation"
+    assert interjected.join(1), "interjection was not resolved"
+    assert_equal "Confirmed delivery.", runner.value.text
+    assert_equal "Confirmed delivery.", interjected.value.text
+    messages = model.requests.last.messages.map(&:text)
+    assert_includes messages, "Check the delivery status."
+    assert_includes messages.last, "Include the delivery date"
+  ensure
+    release << true if runner&.alive?
+    runner&.join(1)
+    runner&.kill if runner&.alive?
+    runner&.join
+    interjected&.kill
+    interjected&.join
+    agent&.close
+  end
+
   def test_unkeyed_interjections_are_delivered_one_per_boundary
     interjections = LittleGhost::AgentInterjections.new
     message = LittleGhost::Message.new(role: :user, content: "steer")

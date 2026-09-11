@@ -40,6 +40,8 @@ module LittleGhost
       end
 
       # Opens a Ruby Session with engine defaults merged with +limits+.
+      # Set +programs+ to +nil+ to disable the cumulative program count limit.
+      # Per-program time, tool-call, and resource limits remain active.
       # Unsupported limit keys raise ArgumentError.
       def open_session(broker:, sandbox_factory:, limits: {}, framework_prompt_scope: {})
         Ruby::Session.new(

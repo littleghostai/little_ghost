@@ -104,6 +104,8 @@ module LittleGhost
       Entry.new(key: "structured_output/validation/feedback/too_complex", summary: "Overly complex structured-result feedback", required: true),
       Entry.new(key: "tools/loop/notices/warning", summary: "Repeated Tool-call warning", required: true),
       Entry.new(key: "tools/loop/notices/final_warning", summary: "Final repeated Tool-call warning", required: true),
+      Entry.new(key: "tools/loop/notices/recovery_warning", summary: "Warning before suppressing a repeated Tool call", required: true),
+      Entry.new(key: "tools/loop/notices/recovery", summary: "Suppressed repeated Tool-call feedback", locals: %i[tool_name], required: true),
       Entry.new(key: "tools/loop/notices/termination", summary: "Repeated Tool-call termination reason", locals: %i[tool_name], required: true),
       Entry.new(key: "tools/feedback/invalid_input", summary: "Invalid Tool input feedback", locals: %i[errors], required: true),
       Entry.new(key: "tools/errors/unexpected_failure", summary: "Sanitized unexpected Tool failure", locals: %i[error_class], required: true),

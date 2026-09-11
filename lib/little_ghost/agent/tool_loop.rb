@@ -42,17 +42,27 @@ module LittleGhost
         # +warning_at+ defaults to 3 identical calls and +terminate_at+ defaults
         # to 5. +except+ accepts tool classes, instances, names, or symbols.
         #
-        # Raises ArgumentError unless +warning_at+ is at least 2 and
-        # +terminate_at+ is greater than +warning_at+.
-        def detect_tool_loops(warning_at: 3, terminate_at: 5, except: [])
+        # With <tt>on_limit: :feedback</tt>, the repeat is suppressed and its
+        # tool result asks the model to change approach. The invocation keeps
+        # running, allowing a different tool or arguments to make progress.
+        # A successful different call with a new or changed result permits
+        # previously suppressed calls to run again.
+        # The default <tt>on_limit: :raise</tt> stops with ToolLoopError.
+        #
+        # Raises ArgumentError unless +warning_at+ is at least 2,
+        # +terminate_at+ is greater than +warning_at+, and +on_limit+ is
+        # +:raise+ or +:feedback+.
+        def detect_tool_loops(warning_at: 3, terminate_at: 5, except: [], on_limit: :raise)
           warning_at = Integer(warning_at)
           terminate_at = Integer(terminate_at)
           raise ArgumentError, "warning_at must be at least 2" if warning_at < 2
           raise ArgumentError, "terminate_at must be greater than warning_at" if terminate_at <= warning_at
+          raise ArgumentError, "on_limit must be :raise or :feedback" unless %i[raise feedback].include?(on_limit)
 
           self.tool_loop_configuration_value = {
             warning_at:,
             terminate_at:,
+            on_limit:,
             except: Array(except).map { |tool| tool_name(tool) }
           }
           after_initialize :initialize_tool_loop
@@ -117,6 +127,9 @@ module LittleGhost
           repeat = state[:repeats][key]
           newly_terminated = false
           if repeat && repeat[:count] >= @tool_loop_terminate_at - 1
+            if @tool_loop_on_limit == :feedback
+              next [render_framework_prompt("tools/loop/notices/recovery", tool_name: tool_use.name), true]
+            end
             unless state[:termination]
               state[:termination] = render_framework_prompt("tools/loop/notices/termination", tool_name: tool_use.name)
               newly_terminated = true
@@ -134,7 +147,7 @@ module LittleGhost
               :tool_loop,
               operation_id: payload[:operation_id],
               parent_operation_id: payload[:parent_operation_id],
-              action: :terminate,
+              action: (@tool_loop_on_limit == :feedback) ? :feedback : :terminate,
               tool_name: tool_use.name
             )
           end
@@ -156,6 +169,11 @@ module LittleGhost
           result_digest = tool_loop_digest(status: result.status, content: result.content)
           key = call.fetch(:key)
           previous = state[:repeats][key]
+          if @tool_loop_on_limit == :feedback && result.success? && (!previous || previous[:result] != result_digest)
+            state[:repeats].delete_if do |other_key, repeat|
+              other_key != key && repeat[:count] >= @tool_loop_terminate_at - 1
+            end
+          end
           count = (previous && previous[:result] == result_digest) ? previous[:count] + 1 : 1
           state[:repeats][key] = {result: result_digest, count: count}
           count
@@ -163,8 +181,15 @@ module LittleGhost
         return Support::Callbacks.continue unless count == @tool_loop_warning_at || count == @tool_loop_terminate_at - 1
 
         action = (count == @tool_loop_warning_at) ? :warn : :final_warning
+        warning_key = if action == :warn
+          "tools/loop/notices/warning"
+        elsif @tool_loop_on_limit == :feedback
+          "tools/loop/notices/recovery_warning"
+        else
+          "tools/loop/notices/final_warning"
+        end
         warning = render_framework_prompt(
-          (action == :warn) ? "tools/loop/notices/warning" : "tools/loop/notices/final_warning"
+          warning_key
         )
         Instrumentation.publish(
           :tool_loop,
@@ -204,6 +229,7 @@ module LittleGhost
         configuration = self.class.tool_loop_configuration
         @tool_loop_warning_at = configuration.fetch(:warning_at)
         @tool_loop_terminate_at = configuration.fetch(:terminate_at)
+        @tool_loop_on_limit = configuration.fetch(:on_limit)
         @tool_loop_except = configuration.fetch(:except)
         @tool_loop_mutex = Mutex.new
         @tool_loop_runs = {}

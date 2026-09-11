@@ -207,7 +207,8 @@ module LittleGhost
       end
 
       # Configures a bounded manager. Durable restoration is enabled only when
-      # +parent_session+ is supplied.
+      # +parent_session+ is supplied. Set +max_turns+ to +nil+ to allow any
+      # number of conversation turns while preserving other capacity limits.
       def initialize(
         definitions,
         runtime: nil,
@@ -230,7 +231,7 @@ module LittleGhost
         @prompt_renderer = ->(key, **locals) { @framework_prompts.render(key, locals:) }
         validate_limit(:max_concurrent, max_concurrent)
         validate_limit(:max_identities, max_identities)
-        validate_limit(:max_turns, max_turns)
+        validate_limit(:max_turns, max_turns) unless max_turns.nil?
         validate_limit(:max_queued_turns_per_identity, max_queued_turns_per_identity)
         validate_limit(:max_message_chars, max_message_chars)
         validate_limit(:max_response_chars, max_response_chars)
@@ -1538,7 +1539,7 @@ module LittleGhost
             message: prompt("subagents/feedback/message_limit", limit: @max_message_chars)
           }
         end
-        if @turn_count >= @max_turns
+        if @max_turns && @turn_count >= @max_turns
           return {
             status: "capacity_reached",
             limit: @max_turns,

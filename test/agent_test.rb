@@ -1572,6 +1572,18 @@ class AgentTest < Minitest::Test
     assert_equal 30.0, child.subagent_long_poll_duration
   end
 
+  def test_subagent_limits_merge_with_inherited_values_and_validate_capacity
+    parent = Class.new(LittleGhost::Agent) { subagent_limits max_turns: nil, max_concurrent: 3 }
+    child = Class.new(parent) { subagent_limits max_concurrent: 2 }
+
+    assert_equal({max_turns: nil, max_concurrent: 3}, parent.subagent_limits)
+    assert_equal({max_turns: nil, max_concurrent: 2}, child.subagent_limits)
+    assert_predicate child.subagent_limits, :frozen?
+    assert_raises(ArgumentError) { child.subagent_limits max_concurrent: nil }
+    assert_raises(ArgumentError) { child.subagent_limits max_turns: 0 }
+    assert_raises(ArgumentError) { child.subagent_limits invalid: 1 }
+  end
+
   def test_subagent_long_poll_duration_can_be_overridden_by_a_child
     parent = Class.new(LittleGhost::Agent) { subagent_long_poll_duration 30 }
     child = Class.new(parent) { subagent_long_poll_duration 5 }

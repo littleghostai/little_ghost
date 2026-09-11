@@ -174,6 +174,94 @@ class AgentToolLoopTest < Minitest::Test
     assert_equal "turn", attributes[:parent_operation_id]
   end
 
+  def test_feedback_mode_suppresses_repeated_calls_and_keeps_the_agent_running
+    executed = []
+    search = LittleGhost::Tool.define(name: "search", description: "Search", input_schema: {
+      type: "object", properties: {q: {type: "string"}}, required: ["q"]
+    }) do |input|
+      executed << input.fetch("q")
+      "unchanged"
+    end
+    agent_class = Class.new(LittleGhost::Agent) do
+      detect_tool_loops warning_at: 2, terminate_at: 4, on_limit: :feedback
+    end
+    requests = []
+    model = Object.new.extend(LittleGhost::ModelInterface)
+    model.define_singleton_method(:stream) do |request|
+      requests << request
+      turn = requests.length
+      content = if turn <= 7
+        LittleGhost::Content::ToolUse.new(id: turn.to_s, name: "search", input: {"q" => (turn == 6) ? "changed" : "same"})
+      else
+        "Finished after changing approach."
+      end
+      response = LittleGhost::ModelResponse.new(message: LittleGhost::Message.new(role: :assistant, content:),
+        stop_reason: (turn <= 7) ? :tool_use : :end_turn, usage: LittleGhost::Usage.new)
+      [LittleGhost::StreamEvent.build(:message_stop, response:)].each
+    end
+    agent = agent_class.new(model:, tools: [search])
+
+    assert_equal "Finished after changing approach.", agent.call("Search").text
+    assert_equal %w[same same same changed same], executed
+    assert_includes requests.fetch(4).messages.last.content.first.content, "was not executed"
+    refute_includes requests.fetch(3).messages.last.content.first.content, "stop the run"
+  ensure
+    agent&.close
+  end
+
+  def test_rejects_an_unknown_loop_limit_action
+    assert_raises(ArgumentError) do
+      Class.new(LittleGhost::Agent) { detect_tool_loops on_limit: :unknown }
+    end
+  end
+
+  def test_failed_intervening_tool_does_not_release_suppressed_calls
+    agent_class = Class.new(LittleGhost::Agent) do
+      detect_tool_loops warning_at: 2, terminate_at: 4, on_limit: :feedback
+    end
+    agent = agent_class.new(model: Object.new)
+    context = LittleGhost::RunContext.new
+    run_callback(agent, :before_invocation, {}, context)
+    search = LittleGhost::Tool.define(name: "search", description: "Search") { "unchanged" }.new
+    use = LittleGhost::Content::ToolUse.new(id: "1", name: "search", input: {})
+    3.times { |index| call_tool(agent, use.with(id: index.to_s), search, execution("unchanged"), context) }
+    assert run_callback(agent, :before_tool, {tool_use: use.with(id: "blocked"), tool: search}, context).cancel?
+
+    edit = LittleGhost::Tool.define(name: "edit", description: "Edit") { "failed" }.new
+    edit_use = LittleGhost::Content::ToolUse.new(id: "edit", name: "edit", input: {})
+    failed = LittleGhost::Tool::ExecutionResult.new(content: "permission denied", status: :error)
+    call_tool(agent, edit_use, edit, failed, context)
+
+    assert run_callback(agent, :before_tool, {tool_use: use.with(id: "still-blocked"), tool: search}, context).cancel?
+    assert run_callback(agent, :before_model, {}, context).continue?
+  ensure
+    agent&.close
+    search&.close
+    edit&.close
+  end
+
+  def test_successful_changed_work_after_final_warning_allows_the_original_call
+    agent_class = Class.new(LittleGhost::Agent) do
+      detect_tool_loops warning_at: 2, terminate_at: 4, on_limit: :feedback
+    end
+    agent = agent_class.new(model: Object.new)
+    context = LittleGhost::RunContext.new
+    run_callback(agent, :before_invocation, {}, context)
+    search = LittleGhost::Tool.define(name: "search", description: "Search") { "unchanged" }.new
+    use = LittleGhost::Content::ToolUse.new(id: "search", name: "search", input: {})
+    3.times { |index| call_tool(agent, use.with(id: index.to_s), search, execution("unchanged"), context) }
+
+    edit = LittleGhost::Tool.define(name: "edit", description: "Edit") { "updated" }.new
+    edit_use = LittleGhost::Content::ToolUse.new(id: "edit", name: "edit", input: {})
+    call_tool(agent, edit_use, edit, execution("updated"), context)
+
+    assert run_callback(agent, :before_tool, {tool_use: use.with(id: "retry"), tool: search}, context).continue?
+  ensure
+    agent&.close
+    search&.close
+    edit&.close
+  end
+
   private
 
   def framework_prompt(key)

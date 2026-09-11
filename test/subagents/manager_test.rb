@@ -895,6 +895,20 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
+  def test_nil_turn_limit_allows_repeated_followups_without_removing_identity_capacity
+    manager = manager_for(->(_id) { ControlledAgent.new }, max_turns: nil, max_identities: 1)
+    manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "sync")
+
+    101.times do |index|
+      result = manager.send_message(subagent_id: "/root/explore", message: "followup #{index}", mode: "sync")
+      assert_equal "finished", result[:status]
+    end
+    limited = manager.spawn(kind: "explore", task_name: "second", task: "second", mode: "sync")
+    assert_equal "capacity_reached", limited[:status]
+  ensure
+    manager&.close
+  end
+
   def test_sync_followup_waits_for_exact_turn
     manager = manager_for(->(_id) { ControlledAgent.new })
     spawned = manager.spawn(kind: "explore", task_name: "explore", task: "first", mode: "sync")

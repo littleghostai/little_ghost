@@ -95,7 +95,7 @@ module LittleGhost
     def record_tool_calls!(count, maximum:) # :nodoc:
       @tool_call_count_mutex.synchronize do
         @tool_call_count += Integer(count)
-        raise ProtocolError, "The agent reached its maximum tool calls" if @tool_call_count > Integer(maximum)
+        raise ProtocolError, "The agent reached its maximum tool calls" if maximum && @tool_call_count > Integer(maximum)
       end
     end
 

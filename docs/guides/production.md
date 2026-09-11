@@ -83,6 +83,60 @@ The controller supplies identity and account access from authenticated applicati
 
 Configure LittleGhost before the first Agent or Assembly call. Once application services start successfully, the configuration is locked so every request sees one stable setup.
 
+## Check that work is complete
+
+An ordinary response without Tool calls ends an Agent invocation. When your
+application has a completion requirement, use `before_completion` to check the
+candidate response against observed state and send unfinished work back to the
+same model loop:
+
+```ruby
+class CustomerSupportAgent < LittleGhost::Agent
+  before_completion do |_payload, context:|
+    if context.state["delivery_checked"]
+      LittleGhost::CompletionDecision.accept
+    else
+      LittleGhost::CompletionDecision.continue(
+        feedback: "Look up the delivery status before answering the customer."
+      )
+    end
+  end
+end
+```
+
+In this example, an application Tool records `delivery_checked` after completing
+the lookup. Choose evidence appropriate to your task; model-written checklists
+alone do not prove that external work succeeded. The callback receives the
+candidate `response`, current `messages`, and zero-based `turn`, plus `context:`
+when requested. It also runs for valid structured results.
+
+Continuation preserves the current conversation, state, Tools, and workspace.
+Its feedback becomes a user message in the next request. Candidate text may
+already appear in the stream, but `after_invocation` and terminal Run events
+wait for an accepted response. The first callback requesting continuation ends
+that completion check. Cancellation, deadlines, provider failures, and configured
+execution limits retain their normal behavior.
+
+For tasks whose duration varies, remove cumulative effort limits explicitly:
+
+```ruby
+class ResearchAgent < LittleGhost::Agent
+  limits max_turns: nil, max_tool_calls: nil
+  subagent_limits max_turns: nil
+  detect_tool_loops on_limit: :feedback
+end
+```
+
+Subagent identity, concurrency, message, and queue limits remain bounded.
+`on_limit: :feedback` suppresses an identical ineffective Tool call and asks the
+model to change approach while allowing work to continue. The default `:raise`
+mode raises `ToolLoopError` at the configured repeat limit. After a different
+successful Tool call produces a new or changed result, suppressed calls may run
+again. These controls do not
+extend an invocation deadline or preserve a process across a host restart; use
+your application's session storage and supervision for that lifecycle. Ruby
+code mode has a separate [program count limit](code_mode.md#set-limits-for-the-work-you-expect).
+
 ## Use an existing fiber scheduler
 
 If your application already runs inside a Ruby Fiber scheduler, LittleGhost

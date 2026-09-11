@@ -211,6 +211,12 @@ Application defaults apply to every Agent that declares `code_mode`. An Agent
 can override the engine, Sandbox, limits, or excluded Tools in its own
 declaration.
 
+Set the Ruby engine's `programs` limit to `nil` when an invocation should not
+stop after a fixed number of programs. This changes only the cumulative count;
+each program still has its time, Tool-call, memory, and output limits. Agent
+model-turn and application Tool-call limits are configured separately with
+`limits max_turns: nil, max_tool_calls: nil`.
+
 The operating-system Sandbox contains the interpreter. The parent Ruby process
 starts it, brokers Tool calls, and cleans it up. Language restrictions alone
 cannot contain native extensions, interpreter bugs, files, subprocesses, or

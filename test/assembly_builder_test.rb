@@ -53,6 +53,17 @@ class AssemblyBuilderTest < Minitest::Test
     assert_equal({name: "mutated"}, workflow.target)
   end
 
+  def test_agent_builder_exposes_completion_and_delegation_limits
+    builder = LittleGhost::AgentBuilder.new(id: "checked_answer")
+    builder.before_completion { LittleGhost::CompletionDecision.accept }
+    builder.limits(max_turns: nil, max_tool_calls: nil).subagent_limits(max_turns: nil)
+    implementation = builder.definition.implementation
+
+    assert_equal({max_turns: nil}, implementation.subagent_limits)
+    assert_nil implementation.limits.fetch(:max_turns)
+    assert implementation.callbacks.run(:before_completion, {}).continue?
+  end
+
   def test_graph_builder_is_mutable_and_produces_isolated_snapshots
     builder = LittleGhost::GraphBuilder.new(id: "dynamic_graph")
     builder.node(:first, FirstAgent).start(:first).finish(:first)

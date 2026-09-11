@@ -32,12 +32,33 @@ module LittleGhost
           default: Subagents::Manager::DEFAULT_WAIT_TIMEOUT
         base.class_attribute :subagent_declarations_value, default: []
         base.class_attribute :subagent_resolvers_value, default: []
+        base.class_attribute :subagent_limits_value, default: {}
         base.class_attribute :assembly_tool_declarations_value, default: []
       end
 
       # Exposes delegation declarations on agent classes.
       # These methods become inheritable DSL entries when the capability is included.
       module ClassMethods
+        # Configures managed subagent capacity for this agent and its subclasses.
+        #
+        # +max_turns+ limits the cumulative number of delegated conversation
+        # turns; +nil+ disables that limit. Other keys are +max_concurrent+,
+        # +max_identities+, +max_queued_turns_per_identity+, +max_message_chars+,
+        # and +max_response_chars+, which require positive Integers. Unspecified
+        # limits retain Subagents::Manager defaults. Calls merge with inherited
+        # settings, and the zero-argument form returns the current settings.
+        def subagent_limits(**values)
+          return subagent_limits_value if values.empty?
+
+          allowed = %i[max_turns max_concurrent max_identities max_queued_turns_per_identity max_message_chars max_response_chars]
+          values.each do |key, value|
+            raise ArgumentError, "unknown subagent limit: #{key}" unless allowed.include?(key)
+            next if key == :max_turns && value.nil?
+            raise ArgumentError, "#{key} must be a positive Integer" unless value.is_a?(Integer) && value.positive?
+          end
+          self.subagent_limits_value = subagent_limits.merge(values).freeze
+        end
+
         # :call-seq:
         #   subagent_long_poll_duration() -> Float
         #   subagent_long_poll_duration(seconds) -> Float

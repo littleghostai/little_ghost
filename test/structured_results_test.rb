@@ -725,6 +725,50 @@ class StructuredResultsTest < Minitest::Test
     end
   end
 
+  def test_completion_feedback_continues_valid_structured_results_with_working_tools
+    agent = nil
+    [LittleGhost::ModelCapabilities.permissive, tool_capabilities].each do |capabilities|
+      checked = false
+      lookup = LittleGhost::Tool.define(name: "lookup", description: "Check delivery") { checked = true }
+      agent_class = Class.new(structured_agent) do
+        before_model do |_payload, context:|
+          raise "stale structured result" if context.structured_result
+        end
+        before_completion do
+          checked ? LittleGhost::CompletionDecision.accept :
+            LittleGhost::CompletionDecision.continue(feedback: "Check delivery before answering.")
+        end
+      end
+      native = capabilities.native_structured_output?
+      candidates = %w[pending delivered].each_with_index.map do |answer, index|
+        if native
+          response(JSON.generate("answer" => answer))
+        else
+          response(LittleGhost::Content::ToolUse.new(
+            id: "result-#{index}", name: "investigation_result", input: {"answer" => answer}
+          ), stop_reason: :tool_use)
+        end
+      end
+      model = ScriptedModel.new(
+        candidates.first,
+        response(LittleGhost::Content::ToolUse.new(id: "lookup", name: "lookup", input: {}), stop_reason: :tool_use),
+        candidates.last,
+        capabilities:
+      )
+      agent = agent_class.new(model:, tools: [lookup])
+
+      result = agent.call("question")
+
+      assert_equal({"answer" => "delivered"}, result.output)
+      assert_equal 3, model.requests.length
+      assert_equal "Check delivery before answering.", model.requests.fetch(1).messages.last.text
+      refute_includes model.requests.fetch(1).messages.map(&:to_h).inspect, '"answer"=>"pending"'
+      agent.close
+    end
+  ensure
+    agent&.close
+  end
+
   private
 
   def structured_agent

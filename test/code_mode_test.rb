@@ -694,6 +694,20 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
+  def test_ruby_engine_allows_an_unlimited_program_count_with_other_limits_intact
+    registry = LittleGhost::ToolRegistry.new([])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    session = ruby_session(broker:, programs: nil, source_bytes: 3)
+
+    9.times do |index|
+      assert_equal index, session.execute(source: index.to_s, catalog: broker.catalog).value
+    end
+    assert_raises(LittleGhost::ToolError) { session.execute(source: "1234", catalog: broker.catalog) }
+  ensure
+    session&.close
+    registry&.close
+  end
+
   def test_ruby_engine_keeps_direct_stdout_writes_outside_the_protocol
     calls = []
     tool = LittleGhost::Tool.define(name: "record-call", description: "Record a call.") { calls << true }
