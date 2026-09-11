@@ -46,7 +46,7 @@ module LittleGhost
   # All participating Agents publish live +:agent_stream+ progress to the owning
   # Run, regardless of how results are accessed. Selecting a result does not
   # replay its progress. Applications choose which sources to show the caller;
-  # see Run for the source metadata and disclosure boundary.
+  # see Run for how to identify participants and choose which data to share.
   #
   # A child receives the Workflow input unless +invoke+ supplies another one.
   # It also inherits history, settings, cancellation, deadline, template paths,
@@ -277,8 +277,8 @@ module LittleGhost
     #
     # Read +result+ or +output+ to execute the child and inspect its answer.
     # Return the invocation from +perform+ to select that result without repeating
-    # work or replaying progress. +as+ supplies the
-    # participant name used in steps and telemetry. Retries default to zero;
+    # work or replaying progress. +as+ names the participant in steps and
+    # telemetry. Retries default to zero;
     # a positive +retries+ value requires explicit exception classes in +retry_on+.
     def invoke(
       assembly,

@@ -77,13 +77,14 @@ include both the candidate and the review. Repeated `.result` or `.output` reads
 reuse the completed result. An invocation must belong to the workflow returning
 it and must complete successfully.
 
-All child calls publish source-tagged `:agent_stream` progress live, without
-retaining raw child deltas for final-answer playback. Your application chooses
-which sources to show, as described in [Watch every agent](#watch-every-agent-in-an-assembly).
-Reviewing an answer does not hide its progress automatically. Terminal results
-remain size-bounded. Cancellation and deadlines are checked before each child
-execution and before returning a selected or computed result, including after
-its checkpoint callback.
+You can watch each Agent while the Workflow runs, including while an answer is
+being reviewed. Reviewing an answer does not hide its progress. Choose which
+participants your audience may see, as described in
+[Watch every agent](#watch-every-agent-in-an-assembly).
+
+Cancellation and deadlines apply before each child runs and before the Workflow
+returns its answer. They also apply if a checkpoint callback cancels the run or
+finishes after the deadline.
 
 When Ruby should compute the caller-visible result, consume every child and return the computed value:
 
@@ -412,9 +413,9 @@ policy = trajectory.find { |step| step.participant == "policy" }
 trajectory.concurrent?(ledger.id, policy.id)
 ```
 
-Step outputs and terminal results have size limits. Workflow, Graph, and Swarm
-calls do not retain raw child deltas. Use your
-application's instrumentation when you need deeper diagnostics.
+The trajectory retains step outputs, not a transcript of streaming events.
+Step outputs and final results have size limits. Use your application's
+instrumentation when you need deeper diagnostics.
 
 ## Compose assemblies inside assemblies
 

@@ -137,11 +137,9 @@ request ──> SupportFlowGraph ──> TriageAgent ──edge──> ResponseA
 
 The result stays familiar too. Every call returns a `Run` with the response,
 outcome, usage, and any final error. A coordinated assembly also records which
-participants ran. Use `.stream_ask` to watch the work as it happens. Every Agent's
-progress carries its source in an `:agent_stream` event, including nested work;
-your application chooses which participants to display. The final result stays
-separate from progress. [Getting Started](docs/guides/getting_started.md) shows
-how to display only the root Agent's text.
+participants ran. Use `.stream_ask` to watch the work as it happens and choose
+which participants to display. [Getting Started](docs/guides/getting_started.md)
+shows how to stream an Agent's answer and read the completed result.
 
 LittleGhost is pre-1.0. Pin the gem version and review release notes before
 upgrading, because interfaces may change between releases.

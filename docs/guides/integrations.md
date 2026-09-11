@@ -30,8 +30,8 @@ events.each { |event| websocket.write(JSON.generate(event)) }
 The adapter translates Run lifecycle and final outcomes, plus selected Agent
 progress such as model output, Tool activity, and retries. By default, it selects
 only the root Agent: `agent_path == "/root"` with an empty `assembly_path`.
-Nested Agent progress is not forwarded. It ignores raw progress and wrapped
-terminal snapshots, so text and usage are not duplicated.
+Nested Agent progress is not forwarded. The adapter reads Agent progress from
+`:agent_stream` and reports aggregate usage separately.
 
 Pass `source_filter:` to `LittleGhost::AGUI::Adapter.new` to select other
 participants. This application-owned callable receives an `AgentStreamSource`
