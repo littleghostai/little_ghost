@@ -1,6 +1,9 @@
 # Core Concepts
 
-Define an Agent in a Ruby class, then call it with `.ask`.
+Start with an Agent: a Ruby class that gives a model instructions and operations
+it can call. This guide builds on the help center example in
+[Getting Started](getting_started.md), including its `HelpCenterLookupTool` and
+provider setup.
 
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
@@ -9,15 +12,19 @@ class CustomerSupportAgent < LittleGhost::Agent
   tools HelpCenterLookupTool
 end
 
-run = CustomerSupportAgent.ask("Where is my order?")
+run = CustomerSupportAgent.ask("What is the refund policy?")
 run.response
 ```
 
 From there, add only what the work needs. Give the agent a tool. Let it ask a specialist for help. Or coordinate several agents while the rest of your application keeps making the same call.
 
-## An Agent owns one model loop
+## An Agent carries a request through to an answer
 
 An **Agent** defines one model-driven behavior. It chooses the model, supplies the instructions and tools, and carries one request through to an answer.
+
+The model can answer immediately or ask to call a Tool. LittleGhost runs the
+Tool and sends its result back to the model, which can continue working. That
+back-and-forth is the **model loop**.
 
 The class holds the behavior you want to reuse. Each call brings its own input, history, context, settings, and attachments. Request data never needs to live on the class.
 
@@ -60,71 +67,32 @@ inside the Tool using identity and account information from your application.
 [Tools](tools.md) follows that path from model input to application code,
 including run-scoped bindings, concurrency, retries, and sandbox delegation.
 
-## A Run owns one top-level execution
+## A Run records one request
 
 Every `.ask` or `.stream_ask` creates a **Run**. Think of it as the record of one trip through LittleGhost. It opens what the request needs, records how the work ended, and closes the resources it owns.
 
 ```ruby
-run = CustomerSupportAgent.ask("Where is order 481?")
+run = CustomerSupportAgent.ask("What is the refund policy?")
 
 run.completed? # => true
 run.response
-# One possible response: Order 481 is out for delivery.
-run.usage      # => normalized token usage
+# One possible response: Refunds are available within 30 days.
+run.usage      # Token counts reported by the model provider.
 run.result     # => the complete LittleGhost::RunResult
 ```
 
 The Agent defines reusable behavior; the Run records what happened this time.
 
-### Follow one request
+The final **RunResult**, available through `run.result`, holds the answer and
+details such as token usage. Its `output` returns text unless you configured
+the Agent to return checked data, such as a hash of named fields. See
+[Structured Results and Content](structured_outputs_and_content.md) for that
+alternative. Use `run.response` when you want the text answer.
 
-One Run owns the trip from request to result:
-
-```text
-Run
-├── Invocation: caller input, history, and application context
-├── RunContext: mutable working state for this execution
-└── Agent and Tools ──> RunResult
-```
-
-An **Invocation** is the request in LittleGhost's standard shape. Its `context`
-contains current request values supplied by your application. A Tool can read
-those values through `run.invocation.context` when it checks permission.
-
-A **Session** stores conversation state between Runs when persistence is
-configured. The **RunContext** carries mutable working state in `context.state`
-during one Run. LittleGhost loads saved Session state before adding the current
-Invocation context. Recheck saved values before using them for permission
-decisions.
-
-A Tool's **Binding** gives the Tool access to objects created for this run,
-including the Agent, Run, Workspace, and Sandbox. These objects are separate
-from arguments chosen by the model. [Tools](tools.md) explains the binding;
-[Workspaces and Sandboxes](sandboxing.md) explains delegated files and child
-processes.
-
-The final **RunResult** keeps the complete assembly result. Its `text` is the final text answer. Its `output` returns structured data when the Agent declared a result schema, and text otherwise. The top-level `Run#response` is always the caller-facing text.
-
-### See how a call ended
-
-Top-level calls normally return a Run, even when execution fails. The terminal event carries the same outcome when you stream:
-
-| What happened | Run outcome | Terminal event | What Ruby does |
-| --- | --- | --- | --- |
-| The assembly completed | `completed` | `:run_stop` | Returns the Run |
-| Model, provider, or assembly execution failed | `failed` | `:run_error` | Returns the Run; inspect `run.error` |
-| The deadline stopped work | `partial` | `:run_partial` | Returns the Run with any response produced so far |
-| Cancellation stopped work | `cancelled` | `:run_cancel` | Returns the Run without a response |
-| Tool input or a `ToolError` failed | The model may recover | No terminal event by itself | Gives a safe error result back to the model |
-| Input, configuration, or resources failed before a Run could start | No Run exists | None | Raises the exception |
-
-Unexpected Tool exception messages are hidden from the model. The original
-exception remains available to application callbacks and diagnostics.
-
-Failures while closing resources, delivering events, or reporting
-instrumentation sit outside the normal result path. They raise a Ruby exception
-because LittleGhost can no longer promise that it delivered a clean ending.
-[Running in Production](production.md) covers supervision and shutdown.
+When a Tool needs to know who is asking, pass information from your application
+with the request. [Tools](tools.md) explains how it reaches the Tool. When a
+conversation should continue across requests, a **Session** saves its history
+and working state; [Running in Production](production.md) covers that setup.
 
 ## An Assembly can look like one Agent
 
@@ -157,6 +125,10 @@ The coordination types differ mainly in who decides what happens next:
 
 A **subagent** is a specialist that a parent Agent can call for help. The parent model chooses when to delegate, reads the result, and then continues its own answer.
 
+The examples below omit the specialist Agent definitions. Each is an Agent
+class like `CustomerSupportAgent`, with instructions and tools suited to its
+task. [Compose Agents](assemblies.md) expands on these coordination patterns.
+
 ```ruby
 class CustomerSupportAgent < LittleGhost::Agent
   model "openrouter:openai/gpt-5.6-luna"
@@ -166,20 +138,13 @@ end
 
 Use a subagent when delegation is part of one model's decision-making. Use a Workflow when application code must guarantee that a step happens.
 
-When an Agent also uses code mode, subagent controls stay in the Agent's
-conversation. Code-mode programs can compose ordinary Tools, while spawning,
-messaging, and checking on subagents remain decisions for the parent model.
-
 ### Workflows make Ruby the coordinator
 
 A **Workflow** coordinates work with ordinary Ruby. Its `perform` method can call an Agent or another Assembly, read a result, choose a branch, or run independent steps together.
 
-`invoke` prepares a lazy child call. Reading `.result` runs the child and returns
-its `RunResult`; `.output` returns its text or structured value. Repeated reads
-reuse that result. Return an invocation to select its answer as the Workflow's
-result, whether or not you inspected it first. Every Agent publishes live
-source-tagged progress independently of result access or selection, and your
-application chooses which participants to display.
+`invoke` prepares a participant's call without running it yet. Read `.output`
+to run it and use its answer in Ruby. Return the final `invoke` call to use
+that participant's answer as the Workflow's result.
 
 ```ruby
 class ResponseWorkflow < LittleGhost::Workflow
@@ -196,6 +161,13 @@ class ResponseWorkflow < LittleGhost::Workflow
   end
 end
 ```
+
+In this example, research finishes before the support Agent begins. `input.text`
+is the original question; the Workflow adds the research to it.
+
+You can also inspect an answer before choosing it as the final result, without
+running the participant again. [Compose Agents](assemblies.md) shows how, along
+with ways to display each participant's progress.
 
 Workflow children receive the caller's history and application context by default. Pass `history: []`, `context: {}`, or redacted values when a participant should receive less.
 
@@ -221,7 +193,8 @@ Agent should use it as context rather than proof that an action is permitted.
 
 ### Graphs make routes visible
 
-A **Graph** connects named Assembly nodes with declared edges. Nodes can contain Agents, Workflows, Swarms, or other Graphs.
+A **Graph** lays out the steps and routes through a task. Each named **node**
+runs an Agent or another Assembly. An **edge** says which node can run next.
 
 ```ruby
 class SupportFlowGraph < LittleGhost::Graph
@@ -240,6 +213,10 @@ class SupportFlowGraph < LittleGhost::Graph
   finish :respond
 end
 ```
+
+Here, `TriageAgent` is expected to answer `billing` for billing questions.
+That answer selects the conditional billing route. Otherwise, the unconditional
+general route is the fallback; it does not run alongside the billing route.
 
 Graph nodes receive the original task and results from the nodes immediately
 before them. They do not receive caller history or application context unless
@@ -260,6 +237,28 @@ run.result.trajectory.transitions
 
 This record shows which participants ran. [Compose Agents](assemblies.md)
 explains builders, detailed routing records, and live events from nested Agents.
+
+## Handle the outcome
+
+An Agent or coordinated Assembly normally returns a Run even when the work
+fails. Check its outcome before using the answer:
+
+| What happened | Run outcome | What to inspect |
+| --- | --- | --- |
+| Work completed | `completed` | `run.response` or `run.result` |
+| Model, provider, or assembly execution failed | `failed` | `run.error` |
+| The deadline stopped work | `partial` | Any response produced so far |
+| Cancellation stopped work | `cancelled` | No response is returned |
+
+A Tool error need not end the Run: LittleGhost can give the model a safe error
+result so it can try again. Unexpected exception messages stay in application
+diagnostics rather than going to the model.
+
+Some failures raise Ruby exceptions instead of returning a Run, including
+invalid setup before work starts and failures while closing resources or
+delivering events. [Running in Production](production.md) covers error handling
+and shutdown; [Run](rdoc-ref:LittleGhost::Run) lists the streaming events for
+each outcome.
 
 The pieces now fit together: Agents define behavior. Tools connect them to Ruby. Runs record one execution. Assemblies let the system grow without changing the caller.
 

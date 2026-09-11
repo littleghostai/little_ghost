@@ -507,7 +507,7 @@ class LittleGhostDocsTest < Minitest::Test
       File.write(File.join(source, "site", "index.html"), <<~HTML)
         <main>
           <section class="home-intro"><p>Agents in Ruby.</p></section>
-          <section class="demo-section" id="first-agent"><span data-plain="Agent.new"></span></section>
+          <section class="demo-section" id="first-agent"><p>Set <code>EXAMPLE_API_KEY</code> before running.</p><span data-plain="Agent.new"></span></section>
           <section class="demo-section" id="agent-graph"><span data-plain="Graph.new"></span></section>
           <section class="batteries-section"><article><h3>Tools</h3><p>Call Ruby code.</p></article></section>
         </main>
@@ -544,6 +544,7 @@ class LittleGhostDocsTest < Minitest::Test
       assert_includes docs_home, "Canonical HTML: https://littleghostai.org/versions/0.1.0/docs/"
       assert_includes homepage_markdown, "https://littleghostai.org/versions/0.1.0/llms.txt"
       assert_includes homepage_markdown, "](llms.txt)"
+      assert_includes homepage_markdown, "Set `EXAMPLE_API_KEY` before running."
       assert_includes docs_home, "(legacy_guide.md)"
       assert_includes docs_home, "(LittleGhost/Agent.md)"
       assert_includes docs_home, "https://github.com/littleghostai/little_ghost/tree/v0.1.0/examples/basic_agent"
