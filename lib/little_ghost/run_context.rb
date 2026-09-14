@@ -70,6 +70,27 @@ module LittleGhost
       raise DeadlineExceededError, "The run deadline was reached" if deadline && Time.now >= deadline
     end
 
+    # Creates a context for work owned by this context. Child work shares the
+    # parent's state and usage, while its cancellation can be requested
+    # independently. Cancellation of the parent still propagates downward.
+    def child
+      context = self.class.new(
+        state:,
+        cancellation_token: cancellation_token.child,
+        deadline:,
+        metadata:,
+        checkpoint: @checkpoint,
+        conversation_id:,
+        interjection_metadata: interjection_metadata,
+        interjection_ids:
+      )
+      context.instance_variable_set(:@state, @state)
+      context.instance_variable_set(:@usage, @usage)
+      context.instance_variable_set(:@usage_mutex, @usage_mutex)
+      context.instance_variable_set(:@agent_operation_id, agent_operation_id)
+      context
+    end
+
     # Sends +messages+ and current state to the configured checkpoint callback.
     # With no checkpoint callback, this method does nothing and returns +nil+.
     def checkpoint(messages)

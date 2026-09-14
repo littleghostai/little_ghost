@@ -47,6 +47,8 @@ module LittleGhost
 
       attr_writer :context # :nodoc:
 
+      attr_reader :context # :nodoc:
+
       attr_reader :task_runner # :nodoc:
 
       def bind(context:, events:, parent_operation_id:, parent_trace_context: nil) # :nodoc:
@@ -61,7 +63,7 @@ module LittleGhost
       # has +id+, decoded +value+, and model-safe +error+ fields. +arguments+
       # remains untrusted until the ordinary Tool path validates and authorizes
       # it.
-      def call(name, arguments = {}, id: SecureRandom.uuid)
+      def call(name, arguments = {}, id: SecureRandom.uuid, context: @context)
         @call_mutex.synchronize do
           @call_count += 1
           raise ToolError, prompt("code_mode/feedback/limit_exceeded", limit: "Tool call") if @max_calls && @call_count > @max_calls
@@ -83,7 +85,7 @@ module LittleGhost
           emit_brokered_tool_call(use)
           executed = @agent.dispatch_tools(
             [use],
-            context: @context,
+            context:,
             events: @events,
             parent_operation_id: @parent_operation_id,
             parent_trace_context: @parent_trace_context
@@ -92,7 +94,7 @@ module LittleGhost
           execution_result = executed.execution_result
         else
           tool = @registry.fetch(name)
-          execution = tool.execute(arguments, context: @context)
+          execution = tool.execute(arguments, context:)
           record_delivery(execution.presentation_content, execution.artifacts)
           return CallResult.new(id:, value: execution.value, error: execution.error? ? execution.content : nil)
         end

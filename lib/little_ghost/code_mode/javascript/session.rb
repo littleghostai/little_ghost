@@ -51,6 +51,7 @@ module LittleGhost
         @deadline_condition = ConditionVariable.new
         @deadlines = {}
         @pending_deadline_errors = []
+        @program_contexts = {}
       end
 
       def execute(source:, catalog:, frame: nil, max_output_tokens: DEFAULT_OUTPUT_TOKENS, context: nil)
@@ -136,6 +137,8 @@ module LittleGhost
         raise_pending_deadline_error!
         javascript_catalog = Javascript::Catalog.new(catalog)
         program_id = SecureRandom.uuid
+        base_context = context || (@broker.context if @broker.respond_to?(:context))
+        @program_contexts[program_id] = base_context&.then { |value| value.respond_to?(:child) ? value.child : value }
         @frames_mutex.synchronize do
           if @current_program_id
             raise LittleGhost::ToolError, prompt("code_mode/feedback/program_active")
@@ -277,6 +280,7 @@ module LittleGhost
           @discarded_programs[program_id] = true
         end
         cancel_deadline(program_id)
+        cancel_program_context(program_id, remove: true)
       end
 
       def ensure_worker
@@ -336,9 +340,10 @@ module LittleGhost
 
           results = Support::Executor.new(max_concurrency: @max_concurrency, runner: @task_runner).map(valid) do |call|
             definition = catalog.fetch(call.name)
-            @broker.call(
+            broker_call(
               definition.fetch("canonical_name"), call.arguments,
-              id: "code-mode-#{call.program_id}-#{call.call_id}"
+              id: "code-mode-#{call.program_id}-#{call.call_id}",
+              context: @program_contexts[call.program_id]
             )
           end
           valid.zip(results).each do |call, result|
@@ -370,6 +375,15 @@ module LittleGhost
         calls.reject! { |call| rejected.include?(call) }
       end
 
+      def broker_call(name, arguments, id:, context:)
+        options = {id:}
+        accepts_context = @broker.method(:call).parameters.any? do |kind, parameter|
+          kind == :keyrest || (%i[key keyreq].include?(kind) && parameter == :context)
+        end
+        options[:context] = context if accepts_context
+        @broker.call(name, arguments, **options)
+      end
+
       def finish_dispatch(calls)
         @dispatch_mutex.synchronize do
           Array(calls).each do |call|
@@ -382,8 +396,14 @@ module LittleGhost
 
       def begin_termination(program_ids = nil)
         ids = program_ids || @frames_mutex.synchronize { @frames.keys }
+        ids.each { |program_id| cancel_program_context(program_id) }
         @dispatch_mutex.synchronize { ids.each { |program_id| @terminating_programs[program_id] = true } }
         ids
+      end
+
+      def cancel_program_context(program_id, remove: false)
+        context = remove ? @program_contexts.delete(program_id) : @program_contexts[program_id]
+        context.cancellation_token.cancel if context&.respond_to?(:cancellation_token)
       end
 
       def wait_for_dispatches(program_ids)
