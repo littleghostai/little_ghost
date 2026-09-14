@@ -46,6 +46,7 @@ module LittleGhost
           @watchdog_mutex = Mutex.new
           @watchdog_condition = ConditionVariable.new
           @watchdog_generation = nil
+          @program_context = nil
         end
 
         def execute(source:, catalog:, frame: nil, max_output_tokens: nil, context: nil)
@@ -110,6 +111,8 @@ module LittleGhost
           raise ToolError, prompt("code_mode/feedback/limit_exceeded", limit: "source size") if source.bytesize > @limits.fetch(:source_bytes)
           normalized_catalog = Catalog.new(catalog).host_definitions
 
+          base_context = context || (@broker.context if @broker.respond_to?(:context))
+          @program_context = base_context&.then { |value| value.respond_to?(:child) ? value.child : value }
           generation, process = open_process
           process_opened = true
           process.write(Protocol.dump(
@@ -146,6 +149,7 @@ module LittleGhost
           context&.check!
           generation, process = active_process
           mark_process_closing
+          cancel_program_context
           termination_error = nil
           begin
             process.terminate
@@ -284,7 +288,9 @@ module LittleGhost
         end
 
         def answer_call(message, process, closing_marker)
-          result = @broker.call(message.fetch("name"), message.fetch("arguments"), id: message.fetch("id"))
+          result = @broker.call(
+            message.fetch("name"), message.fetch("arguments"), id: message.fetch("id"), context: @program_context
+          )
           frame = Protocol.dump(type: "result", id: result.id, value: result.value, error: result.error)
           begin
             process.write(frame)
@@ -304,6 +310,8 @@ module LittleGhost
             closing_marker = @closing_marker
             @call_tasks << @task_runner.spawn do
               answer_call(message, process, closing_marker)
+            rescue CancelledError, DeadlineExceededError
+              raise unless @call_mutex.synchronize { closing_marker.fetch(:closing) }
             rescue => error
               @call_mutex.synchronize { call_errors << error }
             end
@@ -371,6 +379,8 @@ module LittleGhost
             values
           end
           target, session, sandbox, workspace, directory = claimed
+          cancel_program_context
+          @program_context = nil
           watchdog = cancel_watchdog(target)
           tasks, call_errors = @call_mutex.synchronize do
             current_tasks = @call_tasks
@@ -423,6 +433,10 @@ module LittleGhost
           end
           watchdog&.wait unless watchdog&.current?
           raise first_error if first_error
+        end
+
+        def cancel_program_context
+          @program_context&.cancellation_token&.cancel
         end
 
         def start_watchdog(generation, deadline)

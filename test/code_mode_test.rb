@@ -879,6 +879,31 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
+  def test_ruby_engine_cancels_a_brokered_tool_before_waiting_for_cleanup
+    entered = Queue.new
+    tool = LittleGhost::Tool.define(name: "slow", description: "Wait.") do |_input, context:|
+      entered << true
+      loop do
+        context.check!
+        sleep 0.01
+      end
+    end
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    session = ruby_session(broker:, cleanup_seconds: 0.01, observation_seconds: 0.1)
+
+    running = session.execute(source: "tools.slow", catalog: broker.catalog)
+    Timeout.timeout(5) { entered.pop }
+
+    terminated = session.stop
+
+    assert_equal :still_working, running.status
+    assert_equal :terminated, terminated.status
+  ensure
+    session&.close
+    registry&.close
+  end
+
   def test_ruby_termination_ignores_a_late_reply_to_the_closed_process
     tool = LittleGhost::Tool.define(name: "slow", description: "Wait.") { "unused" }
     registry = LittleGhost::ToolRegistry.new([tool])
