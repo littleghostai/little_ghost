@@ -57,6 +57,7 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
   ).freeze
   TEMPLATE_ROOT = Pathname.new(File.expand_path("site/rdoc", __dir__)).freeze
   FAVICON_SOURCE = Pathname.new(File.expand_path("site/assets/favicon.svg", __dir__)).freeze
+  THEME_REVEAL_SOURCE = Pathname.new(File.expand_path("site/assets/theme-reveal.js", __dir__)).freeze
   CUSTOM_TEMPLATES = %w[_footer.rhtml _header.rhtml _sidebar_classes.rhtml _sidebar_pages.rhtml].to_h do |file_name|
     [file_name, TEMPLATE_ROOT.join(file_name)]
   end.freeze
@@ -93,6 +94,7 @@ class RDoc::Generator::LittleGhost < RDoc::Generator::Aliki
   def generate
     super
     @outputdir.join("favicon.svg").binwrite(FAVICON_SOURCE.binread)
+    @outputdir.join("theme-reveal.js").binwrite(THEME_REVEAL_SOURCE.binread)
     rewrite_output
   end
 
@@ -154,6 +156,7 @@ class LittleGhostSiteChecker
     "404.html",
     "assets/site.css",
     "assets/site.js",
+    "assets/theme-reveal.js",
     "assets/version-selector.css",
     "assets/version-selector.js",
     "assets/favicon.svg",
@@ -168,6 +171,7 @@ class LittleGhostSiteChecker
     "docs/api.html",
     "docs/api.md",
     "docs/favicon.svg",
+    "docs/theme-reveal.js",
     "docs/getting_started.html",
     "docs/prompt_views.html",
     "docs/core_concepts.html",

@@ -9,6 +9,23 @@ const updateHeader = () => header?.classList.toggle("is-scrolled", window.scroll
 updateHeader();
 window.addEventListener("scroll", updateHeader, { passive: true });
 
+const themeToggle = document.querySelector("#theme-toggle");
+const themeColor = document.querySelector('meta[name="theme-color"]');
+const syncThemeControls = () => {
+  const dark = root.dataset.theme !== "light";
+  themeToggle?.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+  themeColor?.setAttribute("content", dark ? "#070811" : "#f8f6fb");
+};
+
+syncThemeControls();
+themeToggle?.addEventListener("click", () => {
+  root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
+  try {
+    localStorage.setItem("rdoc-theme", root.dataset.theme);
+  } catch {}
+  syncThemeControls();
+});
+
 const introGhost = document.querySelector(".intro-ghost");
 let pointerFrame = 0;
 let pointerX = window.innerWidth / 2;
@@ -399,7 +416,10 @@ class Constellation {
     this.frame = 0;
     this.running = false;
     this.pointer = { x: window.innerWidth / 2, y: window.innerHeight / 2, active: false };
-    this.colors = ["121, 246, 212", "180, 154, 255", "255, 143, 169", "247, 244, 237"];
+    this.palettes = {
+      dark: { particles: ["121, 246, 212", "180, 154, 255", "255, 143, 169", "247, 244, 237"], link: "194, 180, 245", glow: "121, 246, 212" },
+      light: { particles: ["15, 127, 103", "109, 80, 200", "196, 61, 99", "80, 63, 119"], link: "109, 80, 200", glow: "109, 80, 200" },
+    };
     this.resize = this.resize.bind(this);
     this.draw = this.draw.bind(this);
     this.handlePointer = this.handlePointer.bind(this);
@@ -413,6 +433,7 @@ class Constellation {
       this.pointer.active = false;
     });
     document.addEventListener("visibilitychange", this.handleVisibility);
+    new MutationObserver(() => this.paint(false)).observe(root, { attributeFilter: ["data-theme"] });
     if (reduceMotion.matches) this.drawStatic();
     else this.start();
   }
@@ -451,7 +472,7 @@ class Constellation {
       vy: (Math.random() - 0.5) * 0.14,
       radius: 0.65 + Math.random() * 1.45,
       alpha: 0.16 + Math.random() * 0.42,
-      color: this.colors[index % this.colors.length],
+      colorIndex: index % this.palettes.dark.particles.length,
     };
   }
 
@@ -479,6 +500,7 @@ class Constellation {
 
   paint(update) {
     const context = this.context;
+    const palette = this.palettes[root.dataset.theme === "light" ? "light" : "dark"];
     context.clearRect(0, 0, this.width, this.height);
     this.particles.forEach((particle) => {
       if (update) {
@@ -502,7 +524,7 @@ class Constellation {
       }
 
       context.beginPath();
-      context.fillStyle = `rgba(${particle.color}, ${particle.alpha})`;
+      context.fillStyle = `rgba(${palette.particles[particle.colorIndex]}, ${particle.alpha})`;
       context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
       context.fill();
     });
@@ -519,7 +541,7 @@ class Constellation {
         context.beginPath();
         context.moveTo(particle.x, particle.y);
         context.lineTo(neighbor.x, neighbor.y);
-        context.strokeStyle = `rgba(194, 180, 245, ${(1 - distance / linkDistance) * 0.075})`;
+        context.strokeStyle = `rgba(${palette.link}, ${(1 - distance / linkDistance) * 0.075})`;
         context.lineWidth = 0.6;
         context.stroke();
       }
@@ -528,8 +550,8 @@ class Constellation {
     if (this.pointer.active) {
       const radius = 190;
       const glow = context.createRadialGradient(this.pointer.x, this.pointer.y, 0, this.pointer.x, this.pointer.y, radius);
-      glow.addColorStop(0, "rgba(121, 246, 212, 0.045)");
-      glow.addColorStop(1, "rgba(121, 246, 212, 0)");
+      glow.addColorStop(0, `rgba(${palette.glow}, 0.045)`);
+      glow.addColorStop(1, `rgba(${palette.glow}, 0)`);
       context.fillStyle = glow;
       context.fillRect(this.pointer.x - radius, this.pointer.y - radius, radius * 2, radius * 2);
     }
