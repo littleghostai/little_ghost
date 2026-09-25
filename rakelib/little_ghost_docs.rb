@@ -37,6 +37,8 @@ module LittleGhostDocs
     {source: "docs/guides/core_concepts.md", output: "core_concepts.html", title: "Core Concepts", section: "Learn"},
     {source: "docs/guides/models_and_providers.md", output: "models_and_providers.html", title: "Models and Providers", section: "Configure"},
     {source: "docs/guides/providers.md", output: "providers.html", title: "Provider Support", section: "Configure"},
+    {source: "docs/guides/decisions.md", output: "decisions.html", title: "Decisions", section: "Build with agents"},
+    {source: "docs/guides/embeddings.md", output: "embeddings.html", title: "Embeddings", section: "Build with agents"},
     {source: "docs/guides/prompt_views.md", output: "prompt_views.html", title: "Prompts as Views", section: "Build with agents"},
     {source: "docs/guides/tools.md", output: "tools.html", title: "Tools", section: "Build with agents"},
     {source: "docs/guides/mcp.md", output: "mcp.html", title: "MCP", section: "Build with agents"},

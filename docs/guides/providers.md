@@ -40,7 +40,7 @@ TypeSafe Jev is a decision model that returns structured answers to typed
 questions. Its API and OpenRouter's Jev routes support the same question
 types.
 These operations return structured answers directly and do not create an Agent
-Run. See [Models and Providers](models_and_providers.md#make-a-typed-decision).
+Run. See [Decisions](decisions.md) for the question and answer model.
 
 Capabilities can vary by model, account, and server version. Handle provider
 failures even when a model is expected to support a feature.

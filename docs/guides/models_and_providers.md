@@ -156,76 +156,9 @@ Results and Content](structured_outputs_and_content.md) covers strict schemas,
 provider strategies, repair behavior, and the application checks that still
 belong outside the schema.
 
-## Make a typed decision
-
-Use `LittleGhost.decide` to ask a decision model typed questions and receive
-structured answers with token usage. Jev is TypeSafe's decision model. It
-supports Choice, Score, and Noul (yes/no probability) questions:
-
-```ruby
-result = LittleGhost.decide(
-  model: "primary:typesafe/jev-latest",
-  state: {payout_status: "failed", failed_days: 3},
-  questions: [
-    {id: "route", type: :choice, instructions: "Choose a route", criteria: ["review", "approve", "decline"]},
-    {id: "urgent", type: :noul, instructions: "Does this need same-day attention?"}
-  ]
-)
-
-result.answers.fetch("route").choice
-result.answers.fetch("urgent").noul
-```
-
-Choice answers return the selected label. Noul answers return the probability
-of yes from 0 to 1. Score answers return a probability-weighted value across
-the declared levels.
-
-For reusable decisions, declare questions once on a `Decision` class. A class
-can mix question types:
-
-```ruby
-class ApplicationTriage < LittleGhost::Decision
-  model "primary:typesafe/jev-latest"
-  choice :route, instructions: "Choose a route", criteria: ["review", "approve", "decline"]
-  noul :urgent, instructions: "Does this need same-day attention?"
-  score :quality, instructions: "Rate the quality", criteria: ["accuracy", "completeness"]
-end
-
-application_state = {payout_status: "failed", failed_days: 3}
-result = ApplicationTriage.ask(application_state)
-result.answers.fetch("quality").score
-```
-
-For connection setup, see [Provider Support](providers.md). The class-level
-`.ask` and an instance's `#ask` both return
-`LittleGhost::DecisionResult`. Use `LittleGhost::DecisionAnswer#value` for
-the typed value or its type-specific reader (`choice`, `noul`, or `score`).
-Choose a TypeSafe connection or an OpenRouter connection configured for one of
-its Jev decision endpoints; other providers raise
-`UnsupportedModelOperationError`.
-## Create embeddings
-
-Use `LittleGhost.embed` when your application needs numeric representations for
-search, clustering, or another similarity-based feature:
-
-```ruby
-response = LittleGhost.embed(
-  model: "primary:openai/text-embedding-3-small",
-  inputs: ["Reset a password", "Track a transfer"]
-)
-
-response.vectors.length # => 2
-response.dimensions
-response.usage.input_tokens
-```
-
-The response keeps vectors in the same order as the inputs. LittleGhost rejects
-an incomplete or malformed response instead of returning a partial batch.
-Embedding text is sent to the selected provider, so choose one appropriate for
-that data. [Provider Support](providers.md) identifies adapters with embedding
-support; `LittleGhost::Embeddings::Request` documents settings and request
-bounds.
-
-Continue with [Prompts as Views](prompt_views.md) when an Agent's instructions
-outgrow one string. See [Structured Results and Content](structured_outputs_and_content.md)
-when you need checked result shapes, images, or documents.
+Continue with [Decisions](decisions.md) for typed, structured answers or
+[Embeddings](embeddings.md) for text representations. [Prompts as
+Views](prompt_views.md) moves growing Agent instructions into conventional ERB
+files. See [Structured Results and
+Content](structured_outputs_and_content.md) for checked result shapes, images,
+or documents.
