@@ -14,6 +14,7 @@ module LittleGhost
       "openai" => Providers::OpenAI,
       "lm_studio" => Providers::LMStudio,
       "openrouter" => Providers::OpenRouter,
+      "typesafe" => Providers::Typesafe,
       "anthropic" => Providers::Anthropic,
       "gemini" => Providers::Gemini,
       "vertex_ai" => Providers::VertexAI,

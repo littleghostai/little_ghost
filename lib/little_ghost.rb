@@ -23,6 +23,7 @@ require_relative "little_ghost/model_response"
 require_relative "little_ghost/embeddings/request"
 require_relative "little_ghost/embeddings/response"
 require_relative "little_ghost/run_result"
+require_relative "little_ghost/decision"
 require_relative "little_ghost/model_capabilities"
 require_relative "little_ghost/models/target"
 require_relative "little_ghost/models/details"
@@ -37,6 +38,7 @@ require_relative "little_ghost/providers/openai_compatible"
 require_relative "little_ghost/providers/openai"
 require_relative "little_ghost/providers/lm_studio"
 require_relative "little_ghost/providers/open_router"
+require_relative "little_ghost/providers/typesafe"
 require_relative "little_ghost/providers/bedrock"
 require_relative "little_ghost/providers/anthropic"
 require_relative "little_ghost/providers/gemini"
@@ -179,6 +181,9 @@ module LittleGhost
     # +model+, +settings+, and any raised +limits+ are trusted application
     # controls. The operation raises rather than returning a partial batch.
     def embed(...) = runtime.embed(...)
+
+    # Runs typed choice, noul, or score questions against a decision model.
+    def decide(...) = runtime.decide(...)
 
     # Makes +configuration+ and its independent shared Runtime current only
     # while the block runs.

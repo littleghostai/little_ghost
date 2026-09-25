@@ -155,6 +155,47 @@ Results and Content](structured_outputs_and_content.md) covers strict schemas,
 provider strategies, repair behavior, and the application checks that still
 belong outside the schema.
 
+## Make a typed decision
+
+Use `LittleGhost.decide` for a direct choice, yes/no (noul), or score
+question. The result contains typed answers and normalized token usage:
+
+```ruby
+result = LittleGhost.decide(
+  model: "typesafe:jev-latest",
+  state: {application: "..."},
+  questions: [
+    {id: "route", type: :choice, instructions: "Choose a route", criteria: ["review", "approve", "decline"]},
+    {id: "urgent", type: :noul, instructions: "Does this need same-day attention?"}
+  ]
+)
+
+result.answers.fetch("route").choice
+result.answers.fetch("urgent").noul
+```
+
+For reusable decisions, declare questions once on a `Decision` class. A class
+can mix question types:
+
+```ruby
+class ApplicationTriage < LittleGhost::Decision
+  model "openrouter:typesafe/jev-latest"
+  choice :route, instructions: "Choose a route", criteria: ["review", "approve", "decline"]
+  noul :urgent, instructions: "Does this need same-day attention?"
+  score :quality, instructions: "Rate the quality", criteria: ["accuracy", "completeness"]
+end
+
+result = ApplicationTriage.ask(application_state)
+result.answers.fetch("quality").score
+```
+
+The class-level `.ask` and an instance's `#ask` both return
+`LittleGhost::DecisionResult`. Use `LittleGhost::DecisionAnswer#value` for
+the typed value or its type-specific reader (`choice`, `noul`, or `score`).
+Choose a TypeSafe connection or an OpenRouter connection configured for one of
+its Jev decision endpoints; other providers raise
+`UnsupportedModelOperationError`.
+
 ## Create embeddings
 
 Use `LittleGhost.embed` when your application needs numeric representations for

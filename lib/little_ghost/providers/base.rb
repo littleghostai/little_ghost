@@ -47,6 +47,11 @@ module LittleGhost
         raise UnsupportedModelOperationError, "#{self.class} does not support embeddings"
       end
 
+      # Executes a typed decision request when the adapter supports it.
+      def decide(_request)
+        raise UnsupportedModelOperationError, "#{self.class} does not support decisions"
+      end
+
       # Applies provider-specific capability constraints before streaming.
       def prepare_request(request, capabilities:)
         request

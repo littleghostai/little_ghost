@@ -23,17 +23,22 @@ end
 protocol. An Agent can now use a target such as
 `primary:openai/gpt-5.6-luna`.
 
-| Provider or endpoint | Adapter | Generation | Embeddings |
-| --- | --- | --- | --- |
-| OpenRouter | `:openrouter` | Chat Completions | When the model supports it |
-| OpenAI | `:openai` | Responses or Chat Completions | Yes |
-| Compatible API | `:openai_compatible` | Responses or Chat Completions | When the endpoint implements it |
-| Ollama | `:openai_compatible` | Responses or Chat Completions | When the model supports it |
-| Anthropic | `:anthropic` | Messages | No |
-| Gemini | `:gemini` | Gemini API | No |
-| Vertex AI | `:vertex_ai` | Gemini on Vertex AI | No |
-| Bedrock | `:bedrock` | Converse | Titan Text Embeddings V2 |
-| LM Studio | `:lm_studio` | Responses or Chat Completions | Yes |
+| Provider or endpoint | Adapter | Generation | Decisions | Embeddings |
+| --- | --- | --- | --- | --- |
+| OpenRouter | `:openrouter` | Chat Completions | Jev endpoints | When the model supports it |
+| TypeSafe | `:typesafe` | No | Jev System One | No |
+| OpenAI | `:openai` | Responses or Chat Completions | No | Yes |
+| Compatible API | `:openai_compatible` | Responses or Chat Completions | No | When the endpoint implements it |
+| Ollama | `:openai_compatible` | Responses or Chat Completions | No | When the model supports it |
+| Anthropic | `:anthropic` | Messages | No | No |
+| Gemini | `:gemini` | Gemini API | No | No |
+| Vertex AI | `:vertex_ai` | Gemini on Vertex AI | No | No |
+| Bedrock | `:bedrock` | Converse | No | Titan Text Embeddings V2 |
+| LM Studio | `:lm_studio` | Responses or Chat Completions | No | Yes |
+
+TypeSafe Jev and OpenRouter's decision endpoints support typed decisions.
+These operations return structured answers directly and do not create an Agent
+Run. See [Models and Providers](models_and_providers.md#make-a-typed-decision).
 
 Capabilities can vary by model, account, and server version. Handle provider
 failures even when a model is expected to support a feature.
@@ -59,6 +64,36 @@ Use OpenRouter's `publisher/model` form, such as
 `openrouter:anthropic/claude-sonnet-4`. `app_name` and `site_url` are optional.
 The selected model must support embeddings before you call
 `LittleGhost.embed`.
+
+For Jev decisions, OpenRouter supports both decision endpoints. The default
+uses the Decisions API and namespaced model identifiers:
+
+```ruby
+openrouter: {
+  adapter: :openrouter,
+  api_key: ENV.fetch("OPENROUTER_API_KEY"),
+  decision_api: :decisions
+}
+```
+
+Set `decision_api: :system_one` to use `/api/v1/systemone`; that route
+accepts TypeSafe model identifiers such as `jev-latest`.
+
+### TypeSafe
+
+Connect directly to TypeSafe's System One endpoint with a TypeSafe API key:
+
+```ruby
+config.providers = {
+  typesafe: {
+    adapter: :typesafe,
+    api_key: ENV.fetch("TYPESAFE_API_KEY")
+  }
+}
+```
+
+Use a Jev identifier such as `typesafe:jev-latest`. This adapter supports
+typed decisions only.
 
 ### OpenAI
 
