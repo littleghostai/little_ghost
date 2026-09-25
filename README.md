@@ -73,7 +73,9 @@ The source checkout also includes a complete
 [single-file Agent](https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent)
 and
 [coding harness](https://github.com/littleghostai/little_ghost/tree/main/examples/coding_harness),
-both configured for local Ollama.
+both configured for local Ollama. The
+[decision example](https://github.com/littleghostai/little_ghost/tree/main/examples/decision)
+shows typed questions with TypeSafe Jev.
 
 ## Give an agent real capabilities
 
