@@ -74,9 +74,10 @@ application obtains short-lived credentials at runtime, configure a credential
 resolver that returns them for the selected connection.
 
 > **Safety note:** The selected provider may receive system instructions,
-> caller input, conversation history, Tool results, schemas, and attachments.
-> Choose a provider that is appropriate for that data, and keep credentials and
-> provider endpoints under application control.
+> caller input, application state, question text, conversation
+> history, Tool results, schemas, and attachments. Choose a provider that is
+> appropriate for that data, and keep credentials and provider endpoints under
+> application control.
 
 ## Choose a role for each request
 
@@ -155,29 +156,9 @@ Results and Content](structured_outputs_and_content.md) covers strict schemas,
 provider strategies, repair behavior, and the application checks that still
 belong outside the schema.
 
-## Create embeddings
-
-Use `LittleGhost.embed` when your application needs numeric representations for
-search, clustering, or another similarity-based feature:
-
-```ruby
-response = LittleGhost.embed(
-  model: "primary:openai/text-embedding-3-small",
-  inputs: ["Reset a password", "Track a transfer"]
-)
-
-response.vectors.length # => 2
-response.dimensions
-response.usage.input_tokens
-```
-
-The response keeps vectors in the same order as the inputs. LittleGhost rejects
-an incomplete or malformed response instead of returning a partial batch.
-Embedding text is sent to the selected provider, so choose one appropriate for
-that data. [Provider Support](providers.md) identifies adapters with embedding
-support; `LittleGhost::Embeddings::Request` documents settings and request
-bounds.
-
-Continue with [Prompts as Views](prompt_views.md) when an Agent's instructions
-outgrow one string. See [Structured Results and Content](structured_outputs_and_content.md)
-when you need checked result shapes, images, or documents.
+Continue with [Decisions](decisions.md) for typed, structured answers or
+[Embeddings](embeddings.md) for text representations. [Prompts as
+Views](prompt_views.md) moves growing Agent instructions into conventional ERB
+files. See [Structured Results and
+Content](structured_outputs_and_content.md) for checked result shapes, images,
+or documents.

@@ -208,6 +208,11 @@ module LittleGhost
       @model_operations.embed(**arguments)
     end
 
+    # Runs typed decision questions without creating a Run.
+    def decide(**arguments)
+      @model_operations.decide(**arguments)
+    end
+
     # Creates a Run that owns any workspace and sandbox built for the request.
     #
     # +include_agent_events_by_default+ defaults to +true+, exposing source-tagged

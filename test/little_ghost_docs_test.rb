@@ -60,6 +60,8 @@ class LittleGhostDocsTest < Minitest::Test
       "Structured Results and Content",
       "Compose Agents",
       "Skills",
+      "Decisions",
+      "Embeddings",
       "Workspaces and Sandboxes",
       "Code Mode",
       "Integrations",

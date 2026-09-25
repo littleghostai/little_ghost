@@ -96,6 +96,11 @@ module LittleGhost
       response
     end
 
+    # Executes a typed decision through this model's provider.
+    def decide(request)
+      provider.decide(request)
+    end
+
     # Uses advertised provider capabilities.
     def capabilities
       @capabilities ||= provider.capabilities(metadata: details.attributes)

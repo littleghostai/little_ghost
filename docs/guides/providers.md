@@ -23,17 +23,24 @@ end
 protocol. An Agent can now use a target such as
 `primary:openai/gpt-5.6-luna`.
 
-| Provider or endpoint | Adapter | Generation | Embeddings |
-| --- | --- | --- | --- |
-| OpenRouter | `:openrouter` | Chat Completions | When the model supports it |
-| OpenAI | `:openai` | Responses or Chat Completions | Yes |
-| Compatible API | `:openai_compatible` | Responses or Chat Completions | When the endpoint implements it |
-| Ollama | `:openai_compatible` | Responses or Chat Completions | When the model supports it |
-| Anthropic | `:anthropic` | Messages | No |
-| Gemini | `:gemini` | Gemini API | No |
-| Vertex AI | `:vertex_ai` | Gemini on Vertex AI | No |
-| Bedrock | `:bedrock` | Converse | Titan Text Embeddings V2 |
-| LM Studio | `:lm_studio` | Responses or Chat Completions | Yes |
+| Provider or endpoint | Adapter | Generation | Decisions | Embeddings |
+| --- | --- | --- | --- | --- |
+| OpenRouter | `:openrouter` | Chat Completions | Typed decision endpoints | When the model supports it |
+| TypeSafe | `:typesafe` | No | System One decisions | No |
+| OpenAI | `:openai` | Responses or Chat Completions | No | Yes |
+| Compatible API | `:openai_compatible` | Responses or Chat Completions | No | When the endpoint implements it |
+| Ollama | `:openai_compatible` | Responses or Chat Completions | No | When the model supports it |
+| Anthropic | `:anthropic` | Messages | No | No |
+| Gemini | `:gemini` | Gemini API | No | No |
+| Vertex AI | `:vertex_ai` | Gemini on Vertex AI | No | No |
+| Bedrock | `:bedrock` | Converse | No | Titan Text Embeddings V2 |
+| LM Studio | `:lm_studio` | Responses or Chat Completions | No | Yes |
+
+TypeSafe Jev is a decision model that returns structured answers to typed
+questions. Its API and OpenRouter's Jev routes support the same question
+types.
+These operations return structured answers directly and do not create an Agent
+Run. See [Decisions](decisions.md) for the question and answer model.
 
 Capabilities can vary by model, account, and server version. Handle provider
 failures even when a model is expected to support a feature.
@@ -59,6 +66,46 @@ Use OpenRouter's `publisher/model` form, such as
 `openrouter:anthropic/claude-sonnet-4`. `app_name` and `site_url` are optional.
 The selected model must support embeddings before you call
 `LittleGhost.embed`.
+
+For Jev decisions, OpenRouter supports both decision endpoints. The default
+uses the Decisions API and namespaced model identifiers such as
+`openrouter:~typesafe/jev-latest`:
+
+```ruby
+LittleGhost.configure do |config|
+  config.providers = {
+    openrouter: {
+      adapter: :openrouter,
+      api_key: ENV.fetch("OPENROUTER_API_KEY"),
+      decision_api: :decisions
+    }
+  }
+end
+```
+
+Set `decision_api: :system_one` to use `/api/v1/systemone`; that route
+accepts a bare TypeSafe model identifier such as `jev-latest`, used as
+`openrouter:jev-latest`.
+OpenRouter describes these routes in its [Jev guide](https://openrouter.ai/blog/insights/what-is-jev/).
+
+### TypeSafe
+
+Connect directly to TypeSafe's System One endpoint with a TypeSafe API key:
+
+```ruby
+LittleGhost.configure do |config|
+  config.providers = {
+    typesafe: {
+      adapter: :typesafe,
+      api_key: ENV.fetch("TYPESAFE_API_KEY")
+    }
+  }
+end
+```
+
+Use a Jev identifier such as `typesafe:jev-latest`. This adapter supports
+typed decisions only. See the [TypeSafe API reference](https://docs.typesafe.ai/api)
+for question and answer fields.
 
 ### OpenAI
 

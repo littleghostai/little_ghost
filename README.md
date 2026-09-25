@@ -73,7 +73,9 @@ The source checkout also includes a complete
 [single-file Agent](https://github.com/littleghostai/little_ghost/tree/main/examples/basic_agent)
 and
 [coding harness](https://github.com/littleghostai/little_ghost/tree/main/examples/coding_harness),
-both configured for local Ollama.
+both configured for local Ollama. The
+[decision example](https://github.com/littleghostai/little_ghost/tree/main/examples/decision)
+shows typed questions with Jev through OpenRouter.
 
 ## Give an agent real capabilities
 
@@ -160,6 +162,8 @@ upgrading, because interfaces may change between releases.
 - [Structured Results and Content](docs/guides/structured_outputs_and_content.md) covers checked result shapes, images, and documents.
 - [Compose Agents](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
 - [Skills](docs/guides/skills.md) organizes reusable instructions and supporting resources.
+- [Decisions](docs/guides/decisions.md) explains typed questions and structured answers.
+- [Embeddings](docs/guides/embeddings.md) explains text representations for similarity-based features.
 - [Workspaces and Sandboxes](docs/guides/sandboxing.md) gives files and child processes a deliberate place to run.
 - [Code Mode](docs/guides/code_mode.md) lets a model compose Tools in sandboxed Ruby or optional JavaScript.
 - [Integrations](docs/guides/integrations.md) connects Run streams to AG-UI and OpenTelemetry.

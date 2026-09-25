@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "openai_compatible"
+require_relative "decision_http"
 require_relative "open_router/catalog_source"
 
 module LittleGhost
@@ -20,6 +21,8 @@ module LittleGhost
     # Requests that need a capability ask OpenRouter to route only to providers
     # that advertise it.
     class OpenRouter < OpenAICompatible
+      include DecisionHTTP
+
       # Adds OpenRouter attribution to the shared OpenAI-compatible policy.
       def self.request_options = (super + [:app_name]).freeze
 
@@ -38,10 +41,24 @@ module LittleGhost
 
       # Configures an OpenRouter client. All OpenAICompatible options, including
       # +api_key+, +model+, retry limits, timeouts, and custom transport, apply.
-      def initialize(site_url: nil, app_name: nil, base_url: DEFAULT_BASE_URL, **arguments)
+      def initialize(site_url: nil, app_name: nil, base_url: DEFAULT_BASE_URL, decision_api: :decisions, **arguments)
         @site_url = site_url
         @app_name = app_name
+        @decision_api = decision_api.to_sym
+        raise ConfigurationError, "decision_api must be :decisions or :system_one" unless %i[decisions system_one].include?(@decision_api)
+        @decision_base_url = base_url
         super(base_url:, api: :chat_completions, **arguments)
+      end
+
+      # Executes typed decisions through OpenRouter's selected Jev endpoint.
+      def decide(request)
+        base_url = @decision_base_url.end_with?("/") ? @decision_base_url : "#{@decision_base_url}/"
+        endpoint = if @decision_api == :decisions
+          URI.join(base_url, "../alpha/decisions").to_s
+        else
+          URI.join(base_url, "systemone").to_s
+        end
+        send_decision(request, endpoint:, model:, api_key: @api_key)
       end
 
       # Reads model capabilities from OpenRouter +supported_parameters+ metadata.

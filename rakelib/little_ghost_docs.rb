@@ -43,6 +43,8 @@ module LittleGhostDocs
     {source: "docs/guides/structured_outputs_and_content.md", output: "structured_outputs_and_content.html", title: "Structured Results and Content", section: "Build with agents"},
     {source: "docs/guides/assemblies.md", output: "assemblies.html", title: "Compose Agents", section: "Build with agents"},
     {source: "docs/guides/skills.md", output: "skills.html", title: "Skills", section: "Build with agents"},
+    {source: "docs/guides/decisions.md", output: "decisions.html", title: "Decisions", section: "Build with agents"},
+    {source: "docs/guides/embeddings.md", output: "embeddings.html", title: "Embeddings", section: "Build with agents"},
     {source: "docs/guides/sandboxing.md", output: "sandboxing.html", title: "Workspaces and Sandboxes", section: "Run code"},
     {source: "docs/guides/code_mode.md", output: "code_mode.html", title: "Code Mode", section: "Run code"},
     {source: "docs/guides/integrations.md", output: "integrations.html", title: "Integrations", section: "Operate"},

@@ -89,6 +89,20 @@ module LittleGhost
       raise
     end
 
+    def decide(model:, state:, questions:, cancellation_token: Support::CancellationToken.new, deadline: nil)
+      request = DecisionRequest.new(state:, questions:, cancellation_token:, deadline:)
+      resolved = @model_resolver.resolve(model)
+      handle = Instrumentation.start(:decision, model_provider: resolved.target.provider, model_id: resolved.model_id, question_count: request.questions.length)
+      result = resolved.decide(request)
+      raise ProtocolError, "Decision provider returned an unexpected result" unless result.is_a?(DecisionResult)
+
+      handle.finish(outcome: :success, **usage_attributes(result.usage))
+      result
+    rescue => error
+      handle&.finish(outcome: :error, error_type: error.class.name) if handle&.active?
+      raise
+    end
+
     private
 
     def complete(model, messages:, settings:, schema:, strategy:, repair:, invocation_paths:, cancellation_token:, deadline:)

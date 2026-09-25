@@ -129,6 +129,8 @@ rewrite it in approachable language rather than hiding it in a late disclaimer.
 | Core Concepts | “How do these pieces relate, and when do I choose each one?” | A durable mental model from Agent to Assembly, contrasting adjacent choices without cataloguing their options. |
 | Models and Providers | “How do I choose where an Agent sends a request?” | Start with one direct target, then introduce shared roles, connections, per-request selection, and capabilities. |
 | Provider Support | “Which providers and local servers can I use, and how do I connect them?” | An optional setup reference with a compact support matrix and copyable recipes. Put local HTTP guidance beside local examples, and introduce model discovery after connection setup. |
+| Decisions | “How do I ask typed questions and read structured answers?” | A short path from `LittleGhost.decide` to reusable `Decision` classes, answer readers, and supported connections. |
+| Embeddings | “How do I turn text into vectors?” | A short `LittleGhost.embed` example with response ordering, validation, provider support, and request bounds. |
 | Assembly guide | “How do I compose several participants?” | Connected, runnable examples of Workflow, Swarm, Graph, nesting, trajectories, and builders. |
 | Prompts as Views | “Where do growing instructions and shared prompt pieces live?” | Move one inline prompt into a conventional ERB view, then introduce locals, partials, and lookup. |
 | Tools | “What can an agent do, where does that code run, and where is it authorized?” | Tool definition and binding, trusted context, direct application authority, sandbox delegation, concurrency, retries, failures, and the bridge to code mode. |
@@ -461,13 +463,16 @@ Check both content and generated metadata:
 - The landing-page browser title is “LittleGhost API Documentation”; guide and API page titles also include that configured project title.
 - The landing-page description begins with LittleGhost's capability, not project history or development status.
 - `README.md` is the landing page. Guides appear in this order: Getting Started,
-  Core Concepts, Models and Providers, Provider Support, Prompts as Views, Tools, MCP,
-  Structured Results and Content, Compose Agents, Skills, Workspaces and
+  Core Concepts, Models and Providers, Provider Support, Prompts as Views,
+  Tools, MCP, Structured Results and Content, Compose Agents, Skills, Decisions,
+  Embeddings, Workspaces and
   Sandboxes, Code Mode, Integrations, and Running in Production. This
   contributor guideline does not appear in reader navigation.
 - Getting Started and Core Concepts appear under Learn. Models and Providers
-  and Provider Support appear under Configure. Do not create a navigation
-  section for a single page.
+  and Provider Support appear under Configure. Prompts as Views, Tools, MCP,
+  Structured Results and Content, Compose Agents, Skills, Decisions, and
+  Embeddings appear under Build with agents, with Decisions and Embeddings
+  following Skills. Do not create a navigation section for a single page.
 - Page titles, headings, code blocks, tables, navigation, and explicit cross-references render correctly.
 - Public method signatures match the source, with no duplicate generated entries.
 - Pages navigation contains the intended guides, and search data contains the expected public API names without exposing internal-only pages.
