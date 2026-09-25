@@ -20,7 +20,7 @@ class DecisionTest < Minitest::Test
     transport = Transport.new(JSON.generate(
       model: "jev-latest",
       answers: {"fit" => {type: "choice", choice: "yes", probabilities: {yes: 0.9}, confidence: 0.9}},
-      usage: {input_tokens: 12, output_tokens: 2}
+      usage: {input_tokens: 12, output_tokens: 2, cost: 0.0001}
     ))
     provider = LittleGhost::Providers::Typesafe.new(api_key: "secret", model: "jev-latest", transport:)
     request = LittleGhost::DecisionRequest.new(
@@ -39,6 +39,7 @@ class DecisionTest < Minitest::Test
     assert_equal({"yes" => nil, "no" => nil}, payload.dig("questions", "fit", "criteria"))
     assert_equal "yes", result.answers.fetch("fit").choice
     assert_equal 12, result.usage.input_tokens
+    assert_equal 0.0001, result.metadata.fetch(:cost)
   end
 
   def test_typesafe_preserves_custom_base_path_without_trailing_slash
@@ -52,6 +53,18 @@ class DecisionTest < Minitest::Test
     ))
 
     assert_equal "https://typesafe.example/v1/systemone", transport.captured_request[:uri].to_s
+  end
+
+  def test_noul_omits_unset_criteria_from_request
+    transport = Transport.new(JSON.generate(answers: {"present" => {type: "noul", noul: 0.0}}))
+    provider = LittleGhost::Providers::Typesafe.new(api_key: "secret", model: "jev-latest", transport:)
+
+    provider.decide(LittleGhost::DecisionRequest.new(
+      state: "state", questions: [{id: "present", type: :noul, instructions: "Is it present?"}]
+    ))
+
+    payload = JSON.parse(transport.captured_request[:body])
+    refute payload.dig("questions", "present").key?("criteria")
   end
 
   def test_openrouter_decision_routes
@@ -140,6 +153,46 @@ class DecisionTest < Minitest::Test
       Class.new(LittleGhost::Decision) do
         choice :x, instructions: "Pick one", criteria: %w[a b]
         choice :x, instructions: "Pick one", criteria: %w[a b]
+      end
+    end
+  end
+
+  def test_rejects_criteria_that_cannot_be_sent_to_a_decision_provider
+    invalid_questions = [
+      [{id: "route", type: :choice, instructions: "Choose a route", criteria: {retry: 3}}],
+      [{id: "quality", type: :score, instructions: "Rate quality", criteria: [:low, :high]}],
+      [{id: "urgent", type: :noul, instructions: "Is it urgent?", criteria: false}]
+    ]
+
+    invalid_questions.each do |questions|
+      assert_raises(ArgumentError) { LittleGhost::DecisionRequest.new(state: "state", questions:) }
+    end
+  end
+
+  def test_accepts_structured_criteria_and_choice_descriptions_without_extra_detail
+    request = LittleGhost::DecisionRequest.new(
+      state: "state",
+      questions: [
+        {id: "route", type: :choice, instructions: "Choose", criteria: {retry: nil, inspect: {reason: "error"}}},
+        {id: "impact", type: :score, instructions: "Rate", criteria: ["low", {high: "blocking"}]},
+        {id: "urgent", type: :noul, instructions: "Is it urgent?", criteria: {"true" => ["deadline"], "false" => {none: "known"}}}
+      ]
+    )
+
+    assert_equal({retry: nil, inspect: {reason: "error"}}, request.questions[0][:criteria])
+    assert_equal ["low", {high: "blocking"}], request.questions[1][:criteria]
+    assert_equal({"true" => ["deadline"], "false" => {none: "known"}}, request.questions[2][:criteria])
+  end
+
+  def test_rejects_choice_labels_that_collide_after_string_conversion
+    invalid_criteria = [["retry", :retry], {"retry" => nil, :retry => nil}]
+
+    invalid_criteria.each do |criteria|
+      assert_raises(ArgumentError) do
+        LittleGhost::DecisionRequest.new(
+          state: "state",
+          questions: [{id: "route", type: :choice, instructions: "Choose", criteria:}]
+        )
       end
     end
   end

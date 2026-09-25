@@ -69,7 +69,7 @@ The selected model must support embeddings before you call
 
 For Jev decisions, OpenRouter supports both decision endpoints. The default
 uses the Decisions API and namespaced model identifiers such as
-`openrouter:typesafe/jev-latest`:
+`openrouter:~typesafe/jev-latest`:
 
 ```ruby
 LittleGhost.configure do |config|

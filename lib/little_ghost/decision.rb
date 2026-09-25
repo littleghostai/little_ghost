@@ -27,12 +27,35 @@ module LittleGhost
           criteria = item[:criteria]
           raise ArgumentError, "choice criteria must be a mapping or array" unless criteria.is_a?(Hash) || criteria.is_a?(Array)
           raise ArgumentError, "choice criteria must contain between one and 255 options" unless (1..255).cover?(criteria.length)
-          item[:criteria] = criteria.to_h { |label| [label.to_s, nil] } if criteria.is_a?(Array)
+          if criteria.is_a?(Array)
+            labels = criteria.map(&:to_s)
+            raise ArgumentError, "choice criteria labels must be unique" unless labels.uniq.length == labels.length
+
+            item[:criteria] = labels.to_h { |label| [label, nil] }
+          else
+            labels = criteria.keys.map(&:to_s)
+            raise ArgumentError, "choice criteria labels must be unique" unless labels.uniq.length == labels.length
+
+            valid_criteria = criteria.all? do |label, description|
+              valid_label = label.is_a?(String) || label.is_a?(Symbol)
+              valid_description = description.nil? || description.is_a?(String) ||
+                description.is_a?(Hash) || description.is_a?(Array)
+              valid_label && valid_description
+            end
+            raise ArgumentError, "choice criteria must map labels to descriptions" unless valid_criteria
+          end
         elsif type == :score
           criteria = item[:criteria]
           raise ArgumentError, "score criteria must contain between two and ten levels" unless criteria.is_a?(Array) && (2..10).cover?(criteria.length)
-        elsif item[:criteria] && !item[:criteria].is_a?(Hash)
-          raise ArgumentError, "noul criteria must be a mapping"
+          valid_levels = criteria.all? { |level| level.is_a?(String) || level.is_a?(Hash) || level.is_a?(Array) }
+          raise ArgumentError, "score criteria must be descriptions" unless valid_levels
+        elsif !item[:criteria].nil?
+          criteria = item[:criteria]
+          valid_criteria = criteria.is_a?(Hash) && criteria.all? do |key, description|
+            %w[true false].include?(key.to_s) &&
+              (description.is_a?(String) || description.is_a?(Hash) || description.is_a?(Array))
+          end
+          raise ArgumentError, "noul criteria must map true or false to descriptions" unless valid_criteria
         end
         item.freeze
       end
@@ -127,8 +150,8 @@ module LittleGhost
 
   # Results returned by a decision model, keyed by question id.
   #
-  # Provider metadata contains bounded response identifiers and model details;
-  # it does not include request state or question text.
+  # Provider metadata contains bounded response identifiers, model details,
+  # and reported cost when available; it excludes request state and question text.
   DecisionResult = Data.define(:answers, :usage, :metadata) do # :nodoc:
     def initialize(answers:, usage: Usage.new, metadata: {})
       super(answers: answers.to_h.freeze, usage:, metadata: metadata.to_h.freeze)
@@ -147,7 +170,7 @@ module LittleGhost
 
     ##
     # :attr_reader: metadata
-    # Frozen provider response metadata.
+    # Frozen provider metadata such as model, request id, provider, and cost.
   end
 
   # Declarative collection of typed questions for one decision request.

@@ -7,10 +7,19 @@ starting an Agent or creating a Run. Jev supports Choice, Score, and Noul
 
 ```ruby
 result = LittleGhost.decide(
-  model: "primary:typesafe/jev-latest",
+  model: "primary:~typesafe/jev-latest",
   state: {payout_status: "failed", failed_days: 3},
   questions: [
-    {id: "route", type: :choice, instructions: "Choose a route", criteria: ["review", "approve", "decline"]},
+    {
+      id: "route",
+      type: :choice,
+      instructions: "Choose a route",
+      criteria: {
+        review: "Needs more investigation",
+        approve: "Meets the criteria",
+        decline: "Does not meet the criteria"
+      }
+    },
     {id: "urgent", type: :noul, instructions: "Does this need same-day attention?"}
   ]
 )
@@ -21,15 +30,21 @@ result.answers.fetch("urgent").noul
 
 Choice answers contain the selected label. Noul answers contain the
 probability of yes from 0 to 1. Score answers contain a probability-weighted
-value across the declared levels.
+value across the declared levels. Choice and Score answers also include the
+probability distribution and confidence; Score answers include the level
+legend.
 
 For reusable decisions, declare questions once on a `Decision` class. A class
 can mix question types:
 
 ```ruby
 class ApplicationTriage < LittleGhost::Decision
-  model "primary:typesafe/jev-latest"
-  choice :route, instructions: "Choose a route", criteria: ["review", "approve", "decline"]
+  model "primary:~typesafe/jev-latest"
+  choice :route, instructions: "Choose a route", criteria: {
+    review: "Needs more investigation",
+    approve: "Meets the criteria",
+    decline: "Does not meet the criteria"
+  }
   noul :urgent, instructions: "Does this need same-day attention?"
   score :quality, instructions: "Rate the quality", criteria: ["accuracy", "completeness"]
 end

@@ -17,7 +17,7 @@ module LittleGhost
           state: request.state,
           questions: request.questions.to_h do |question|
             id = question.fetch(:id)
-            fields = question.except(:id)
+            fields = question.except(:id).reject { |name, value| name == :criteria && value.nil? }
             [id, fields]
           end
         }
@@ -41,10 +41,11 @@ module LittleGhost
           [id, normalize_answer(question, answer)]
         end
         usage_data = data["usage"] || {}
+        cost = usage_data["cost"] || data["cost"]
         DecisionResult.new(
           answers: normalized,
           usage: Usage.new(input_tokens: usage_data["input_tokens"], output_tokens: usage_data["output_tokens"]),
-          metadata: {model: data["model"], id: data["id"], provider: data["provider"], cost: data["cost"]}
+          metadata: {model: data["model"], id: data["id"], provider: data["provider"], cost:}
         )
       rescue JSON::ParserError, KeyError, TypeError => error
         raise ProtocolError, "Decision provider returned an invalid response (#{error.class})"
