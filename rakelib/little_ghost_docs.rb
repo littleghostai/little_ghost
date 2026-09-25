@@ -16,6 +16,7 @@ module LittleGhostDocs
   class Error < StandardError; end
 
   SITE_URL = "https://littleghostai.org/"
+  SOCIAL_IMAGE_URL = URI.join(SITE_URL, "assets/social-card.png").to_s
   REPOSITORY_URL = "https://github.com/littleghostai/little_ghost"
   LEGACY_PUBLIC_URL_REPLACEMENTS = {
     "https://mattyr.github.io/little_ghost/" => SITE_URL,
@@ -196,6 +197,10 @@ module LittleGhostDocs
       changed = true if rewritten_html != html
       html = rewritten_html
 
+      preview_html = add_social_preview_metadata(html)
+      changed = true if preview_html != html
+      html = preview_html
+
       unless relative_page.basename.to_s == "404.html"
         canonical_html = add_canonical(html, relative_page)
         changed = true if canonical_html != html
@@ -211,6 +216,42 @@ module LittleGhostDocs
 
       page.write(html) if changed
       picker_added
+    end
+
+    def add_social_preview_metadata(html)
+      image = meta_content(html, "property", "og:image") || SOCIAL_IMAGE_URL
+      html = ensure_meta(html, "property", "og:image", image)
+      if image == SOCIAL_IMAGE_URL
+        html = ensure_meta(html, "property", "og:image:width", "1200")
+        html = ensure_meta(html, "property", "og:image:height", "630")
+      end
+
+      unless meta_content(html, "name", "twitter:image")
+        html = ensure_meta(html, "name", "twitter:card", "summary_large_image", replace: true)
+      end
+      html = ensure_meta(html, "name", "twitter:image", image)
+      ensure_meta(html, "name", "twitter:card", "summary_large_image")
+    end
+
+    def meta_content(html, attribute, key)
+      pattern = %r{<meta\b(?=[^>]*\b#{attribute}=["']#{Regexp.escape(key)}["'])[^>]*\bcontent=["']([^"']*)["'][^>]*>}m
+      content = html[pattern, 1]
+      content unless content&.strip&.empty?
+    end
+
+    def ensure_meta(html, attribute, key, content, replace: false)
+      tag = %(<meta #{attribute}="#{key}" content="#{content}">)
+      pattern = %r{<meta\b(?=[^>]*\b#{attribute}=["']#{Regexp.escape(key)}["'])[^>]*>}m
+      if html.match?(pattern)
+        return html.sub(pattern, tag) if replace || meta_content(html, attribute, key).nil?
+
+        return html
+      end
+
+      return html.sub("</head>", "  #{tag}\n</head>") if html.include?("</head>")
+      return html.sub(%r{<body\b}, "#{tag}\n\n<body") if html.match?(%r{<body\b})
+
+      raise Error, "Documentation page has no head or body boundary"
     end
 
     def add_version_picker(html, match, relative_page)
