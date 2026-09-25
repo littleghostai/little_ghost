@@ -75,7 +75,7 @@ and
 [coding harness](https://github.com/littleghostai/little_ghost/tree/main/examples/coding_harness),
 both configured for local Ollama. The
 [decision example](https://github.com/littleghostai/little_ghost/tree/main/examples/decision)
-shows typed questions with TypeSafe Jev.
+shows typed questions with Jev through OpenRouter.
 
 ## Give an agent real capabilities
 

@@ -5,15 +5,16 @@ require "little_ghost"
 
 LittleGhost.configure do |config|
   config.providers = {
-    typesafe: {
-      adapter: :typesafe,
-      api_key: ENV.fetch("TYPESAFE_API_KEY")
+    primary: {
+      adapter: :openrouter,
+      api_key: ENV.fetch("OPENROUTER_API_KEY"),
+      decision_api: :decisions
     }
   }
 end
 
 class BuildTriage < LittleGhost::Decision
-  model "typesafe:jev-latest"
+  model "primary:typesafe/jev-latest"
   choice :route, instructions: "Choose the next action for this failed build.",
     criteria: %w[retry inspect escalate]
   noul :urgent,
