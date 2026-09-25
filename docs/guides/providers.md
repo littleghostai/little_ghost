@@ -25,8 +25,8 @@ protocol. An Agent can now use a target such as
 
 | Provider or endpoint | Adapter | Generation | Decisions | Embeddings |
 | --- | --- | --- | --- | --- |
-| OpenRouter | `:openrouter` | Chat Completions | Jev endpoints | When the model supports it |
-| TypeSafe | `:typesafe` | No | Jev System One | No |
+| OpenRouter | `:openrouter` | Chat Completions | Typed decision endpoints | When the model supports it |
+| TypeSafe | `:typesafe` | No | System One decisions | No |
 | OpenAI | `:openai` | Responses or Chat Completions | No | Yes |
 | Compatible API | `:openai_compatible` | Responses or Chat Completions | No | When the endpoint implements it |
 | Ollama | `:openai_compatible` | Responses or Chat Completions | No | When the model supports it |
@@ -36,7 +36,9 @@ protocol. An Agent can now use a target such as
 | Bedrock | `:bedrock` | Converse | No | Titan Text Embeddings V2 |
 | LM Studio | `:lm_studio` | Responses or Chat Completions | No | Yes |
 
-TypeSafe Jev and OpenRouter's decision endpoints support typed decisions.
+TypeSafe Jev is a decision model that returns structured answers to typed
+questions. Its API and OpenRouter's Jev routes support the same question
+types.
 These operations return structured answers directly and do not create an Agent
 Run. See [Models and Providers](models_and_providers.md#make-a-typed-decision).
 
@@ -66,34 +68,44 @@ The selected model must support embeddings before you call
 `LittleGhost.embed`.
 
 For Jev decisions, OpenRouter supports both decision endpoints. The default
-uses the Decisions API and namespaced model identifiers:
+uses the Decisions API and namespaced model identifiers such as
+`openrouter:typesafe/jev-latest`:
 
 ```ruby
-openrouter: {
-  adapter: :openrouter,
-  api_key: ENV.fetch("OPENROUTER_API_KEY"),
-  decision_api: :decisions
-}
+LittleGhost.configure do |config|
+  config.providers = {
+    openrouter: {
+      adapter: :openrouter,
+      api_key: ENV.fetch("OPENROUTER_API_KEY"),
+      decision_api: :decisions
+    }
+  }
+end
 ```
 
 Set `decision_api: :system_one` to use `/api/v1/systemone`; that route
-accepts TypeSafe model identifiers such as `jev-latest`.
+accepts a bare TypeSafe model identifier such as `jev-latest`, used as
+`openrouter:jev-latest`.
+OpenRouter describes these routes in its [Jev guide](https://openrouter.ai/blog/insights/what-is-jev/).
 
 ### TypeSafe
 
 Connect directly to TypeSafe's System One endpoint with a TypeSafe API key:
 
 ```ruby
-config.providers = {
-  typesafe: {
-    adapter: :typesafe,
-    api_key: ENV.fetch("TYPESAFE_API_KEY")
+LittleGhost.configure do |config|
+  config.providers = {
+    typesafe: {
+      adapter: :typesafe,
+      api_key: ENV.fetch("TYPESAFE_API_KEY")
+    }
   }
-}
+end
 ```
 
 Use a Jev identifier such as `typesafe:jev-latest`. This adapter supports
-typed decisions only.
+typed decisions only. See the [TypeSafe API reference](https://docs.typesafe.ai/api)
+for question and answer fields.
 
 ### OpenAI
 

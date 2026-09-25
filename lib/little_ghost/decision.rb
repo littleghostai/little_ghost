@@ -5,7 +5,7 @@ module LittleGhost
   #
   # State and questions are trusted application inputs. Question ids are
   # normalized to strings and must be unique.
-  DecisionRequest = Data.define(:state, :questions, :cancellation_token, :deadline) do
+  DecisionRequest = Data.define(:state, :questions, :cancellation_token, :deadline) do # :nodoc:
     def initialize(state:, questions:, cancellation_token: Support::CancellationToken.new, deadline: nil)
       unless state.is_a?(String) || state.is_a?(Hash) || state.is_a?(Array)
         raise ArgumentError, "decision state must be a string, mapping, or array"
@@ -44,12 +44,39 @@ module LittleGhost
     end
   end
 
+  # Carries the state, questions, and request controls passed to a decision
+  # provider.
+  class DecisionRequest < Data # :doc:
+    ##
+    # :attr_reader: state
+    # Application state evaluated by the provider.
+
+    ##
+    # :attr_reader: questions
+    # Frozen question declarations, each with a string +id+.
+
+    ##
+    # :attr_reader: cancellation_token
+    # Token the provider checks while the request runs.
+
+    ##
+    # :attr_reader: deadline
+    # Optional request deadline passed to the provider.
+
+    ##
+    # :singleton-method: new
+    # :call-seq:
+    #   new(state:, questions:, cancellation_token: Support::CancellationToken.new, deadline: nil) -> DecisionRequest
+    #
+    # Validates and freezes question declarations before a provider request.
+  end
+
   # A validated, provider-neutral answer to a typed decision question.
   #
   # +value+ contains the choice label, a numeric noul probability from 0 to 1,
   # or a numeric score according to +type+. The type-specific readers return
   # +nil+ for other answer types.
-  DecisionAnswer = Data.define(:type, :value, :probabilities, :confidence, :legend) do
+  DecisionAnswer = Data.define(:type, :value, :probabilities, :confidence, :legend) do # :nodoc:
     def choice
       value if type == :choice
     end
@@ -63,14 +90,64 @@ module LittleGhost
     end
   end
 
+  # One typed answer returned by a decision provider.
+  class DecisionAnswer < Data # :doc:
+    ##
+    # :attr_reader: type
+    # Answer type: +:choice+, +:noul+, or +:score+.
+
+    ##
+    # :attr_reader: value
+    # Selected label, yes probability, or probability-weighted score.
+
+    ##
+    # :attr_reader: probabilities
+    # Option or level probabilities for Choice and Score answers.
+
+    ##
+    # :attr_reader: confidence
+    # Confidence value for Choice and Score answers.
+
+    ##
+    # :attr_reader: legend
+    # Level descriptions for Score answers.
+
+    ##
+    # :method: choice
+    # Returns the selected label for a Choice answer, or +nil+ for another type.
+
+    ##
+    # :method: noul
+    # Returns the yes probability from 0 to 1 for a Noul answer, or +nil+ for another type.
+
+    ##
+    # :method: score
+    # Returns the probability-weighted value for a Score answer, or +nil+ for another type.
+  end
+
   # Results returned by a decision model, keyed by question id.
   #
   # Provider metadata contains bounded response identifiers and model details;
   # it does not include request state or question text.
-  DecisionResult = Data.define(:answers, :usage, :metadata) do
+  DecisionResult = Data.define(:answers, :usage, :metadata) do # :nodoc:
     def initialize(answers:, usage: Usage.new, metadata: {})
       super(answers: answers.to_h.freeze, usage:, metadata: metadata.to_h.freeze)
     end
+  end
+
+  # Carries validated answers and token usage from one decision call.
+  class DecisionResult < Data # :doc:
+    ##
+    # :attr_reader: answers
+    # Frozen question-id to DecisionAnswer mapping.
+
+    ##
+    # :attr_reader: usage
+    # Normalized token usage for the provider request.
+
+    ##
+    # :attr_reader: metadata
+    # Frozen provider response metadata.
   end
 
   # Declarative collection of typed questions for one decision request.
