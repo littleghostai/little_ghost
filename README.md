@@ -154,14 +154,14 @@ upgrading, because interfaces may change between releases.
 - [Core Concepts](docs/guides/core_concepts.md) builds the mental model from Agent to Assembly.
 - [Models and Providers](docs/guides/models_and_providers.md) explains targets, shared roles, and per-request model selection.
 - [Provider Support](docs/guides/providers.md) has copyable setup for hosted APIs and local model servers.
-- [Decisions](docs/guides/decisions.md) explains typed questions and structured answers.
-- [Embeddings](docs/guides/embeddings.md) explains text representations for similarity-based features.
 - [Prompts as Views](docs/guides/prompt_views.md) explains Agent instructions and shared partials, including how to customize LittleGhost's bundled framework prompts.
 - [Tools](docs/guides/tools.md) explains how models call focused Ruby operations.
 - [MCP](docs/guides/mcp.md) connects agents to operations published through the Model Context Protocol.
 - [Structured Results and Content](docs/guides/structured_outputs_and_content.md) covers checked result shapes, images, and documents.
 - [Compose Agents](docs/guides/assemblies.md) walks through workflows, swarms, graphs, nesting, and builders.
 - [Skills](docs/guides/skills.md) organizes reusable instructions and supporting resources.
+- [Decisions](docs/guides/decisions.md) explains typed questions and structured answers.
+- [Embeddings](docs/guides/embeddings.md) explains text representations for similarity-based features.
 - [Workspaces and Sandboxes](docs/guides/sandboxing.md) gives files and child processes a deliberate place to run.
 - [Code Mode](docs/guides/code_mode.md) lets a model compose Tools in sandboxed Ruby or optional JavaScript.
 - [Integrations](docs/guides/integrations.md) connects Run streams to AG-UI and OpenTelemetry.

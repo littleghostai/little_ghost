@@ -463,16 +463,16 @@ Check both content and generated metadata:
 - The landing-page browser title is “LittleGhost API Documentation”; guide and API page titles also include that configured project title.
 - The landing-page description begins with LittleGhost's capability, not project history or development status.
 - `README.md` is the landing page. Guides appear in this order: Getting Started,
-  Core Concepts, Models and Providers, Provider Support, Decisions, Embeddings,
-  Prompts as Views, Tools, MCP,
-  Structured Results and Content, Compose Agents, Skills, Workspaces and
+  Core Concepts, Models and Providers, Provider Support, Prompts as Views,
+  Tools, MCP, Structured Results and Content, Compose Agents, Skills, Decisions,
+  Embeddings, Workspaces and
   Sandboxes, Code Mode, Integrations, and Running in Production. This
   contributor guideline does not appear in reader navigation.
 - Getting Started and Core Concepts appear under Learn. Models and Providers
-  and Provider Support appear under Configure. Decisions, Embeddings, Prompts
-  as Views, Tools, MCP, Structured Results and Content, Compose Agents, and
-  Skills appear under Build with agents. Do not create a navigation section
-  for a single page.
+  and Provider Support appear under Configure. Prompts as Views, Tools, MCP,
+  Structured Results and Content, Compose Agents, Skills, Decisions, and
+  Embeddings appear under Build with agents, with Decisions and Embeddings
+  following Skills. Do not create a navigation section for a single page.
 - Page titles, headings, code blocks, tables, navigation, and explicit cross-references render correctly.
 - Public method signatures match the source, with no duplicate generated entries.
 - Pages navigation contains the intended guides, and search data contains the expected public API names without exposing internal-only pages.
