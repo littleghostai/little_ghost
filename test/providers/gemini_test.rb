@@ -169,6 +169,7 @@ class GeminiTest < Minitest::Test
     follow_up_with(resumed, restored)
 
     assert_equal "sig-a", function_call_part(resumed_transport, index: 0).fetch("thoughtSignature")
+    assert_equal "lookup", function_response_parts(resumed_transport, index: 0).first.dig("functionResponse", "name")
   end
 
   def test_shared_provider_keeps_independent_conversation_signatures
@@ -187,6 +188,55 @@ class GeminiTest < Minitest::Test
 
     assert_equal "conversation-a", function_call_part(transport, index: 2).fetch("thoughtSignature")
     assert_equal "conversation-b", function_call_part(transport, index: 3).fetch("thoughtSignature")
+    assert_equal "lookup", function_response_parts(transport, index: 2).first.dig("functionResponse", "name")
+    assert_equal "lookup", function_response_parts(transport, index: 3).first.dig("functionResponse", "name")
+  end
+
+  def test_tool_results_use_original_function_names_in_reverse_parallel_order
+    transport = Transport.new
+    provider = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport:)
+    call = LittleGhost::Message.new(role: :assistant, content: [
+      LittleGhost::Content::ToolUse.new(id: "first-id", name: "lookup", input: {}),
+      LittleGhost::Content::ToolUse.new(id: "second-id", name: "weather", input: {})
+    ])
+    results = LittleGhost::Message.new(role: :tool, content: [
+      LittleGhost::Content::ToolResult.new(tool_use_id: "second-id", content: "sunny", status: :success),
+      LittleGhost::Content::ToolResult.new(tool_use_id: "first-id", content: "found", status: :success)
+    ])
+
+    provider.stream(LittleGhost::ModelRequest.new(messages: [call, results])).to_a
+
+    parts = JSON.parse(transport.arguments.fetch(:body)).fetch("contents").last.fetch("parts")
+    assert_equal ["weather", "lookup"], parts.map { |part| part.dig("functionResponse", "name") }
+    assert_equal ["second-id", "first-id"], parts.map { |part| part.dig("functionResponse", "id") }
+  end
+
+  def test_reused_tool_ids_keep_function_names_from_preceding_calls
+    transport = Transport.new
+    provider = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport:)
+    first = LittleGhost::Message.new(role: :assistant, content: [LittleGhost::Content::ToolUse.new(id: "same", name: "lookup", input: {})])
+    first_result = LittleGhost::Message.new(role: :tool, content: [LittleGhost::Content::ToolResult.new(tool_use_id: "same", content: "found", status: :success)])
+    second = LittleGhost::Message.new(role: :assistant, content: [LittleGhost::Content::ToolUse.new(id: "same", name: "weather", input: {})])
+    second_result = LittleGhost::Message.new(role: :tool, content: [LittleGhost::Content::ToolResult.new(tool_use_id: "same", content: "sunny", status: :success)])
+
+    provider.stream(LittleGhost::ModelRequest.new(messages: [first, first_result, second, second_result])).to_a
+
+    parts = JSON.parse(transport.arguments.fetch(:body)).fetch("contents").flat_map { |message| message.fetch("parts") }
+    assert_equal ["lookup", "weather"], parts.filter_map { |part| part.dig("functionResponse", "name") }
+  end
+
+  def test_orphaned_results_use_the_tool_id_without_inheriting_other_requests
+    transport = SequencedTransport.new(
+      [{candidates: [{content: {parts: [{functionCall: {id: "same", name: "lookup"}}]}, finishReason: "STOP"}]}],
+      [{candidates: [{content: {parts: [{text: "done"}]}, finishReason: "STOP"}]}]
+    )
+    provider = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport:)
+    call_tool(provider)
+    result = LittleGhost::Message.new(role: :tool, content: [LittleGhost::Content::ToolResult.new(tool_use_id: "same", content: "found", status: :success)])
+
+    provider.stream(LittleGhost::ModelRequest.new(messages: [result])).to_a
+
+    assert_equal "same", function_response_parts(transport, index: 1).first.dig("functionResponse", "name")
   end
 
   def test_vertex_uses_bearer_token_and_vertex_endpoint
@@ -219,6 +269,11 @@ class GeminiTest < Minitest::Test
       LittleGhost::Message.new(role: :tool, content: results)
     ])
     provider.stream(request).to_a
+  end
+
+  def function_response_parts(transport, index:)
+    JSON.parse(transport.requests.fetch(index).fetch(:body)).fetch("contents")
+      .flat_map { |message| message.fetch("parts") }.select { |part| part["functionResponse"] }
   end
 
   def function_call_part(transport, index:)
