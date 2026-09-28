@@ -176,7 +176,7 @@ module LittleGhost
         value = implementation.instance_variable_get(name)
         implementation.instance_variable_set(name, deep_freeze_snapshot_value(value))
       end
-      implementation.methods.grep(/_value\z/).each do |reader|
+      implementation.methods.grep(/_values?\z/).each do |reader|
         writer = :"#{reader}="
         next unless implementation.respond_to?(writer)
 
@@ -232,7 +232,7 @@ module LittleGhost
       value.instance_variables.each do |name|
         snapshot.instance_variable_set(name, Support.deep_dup(value.instance_variable_get(name)))
       end
-      value.methods.grep(/_value\z/).each do |reader|
+      value.methods.grep(/_values?\z/).each do |reader|
         writer = :"#{reader}="
         next unless snapshot.respond_to?(writer)
 
