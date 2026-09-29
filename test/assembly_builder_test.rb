@@ -11,6 +11,37 @@ class AssemblyBuilderTest < Minitest::Test
     description "Second"
   end
 
+  class HookProbeResolver < LittleGhost::ModelResolver
+    class << self
+      attr_accessor :provider
+    end
+
+    def initialize(**)
+    end
+
+    def default_model = "default"
+
+    def resolve(*)
+      LittleGhost::Model.new(provider: self.class.provider, target: "test:model")
+    end
+  end
+
+  class HookProbeProvider < LittleGhost::Providers::Base
+    def stream(_request)
+      response = LittleGhost::ModelResponse.new(
+        message: LittleGhost::Message.new(role: :assistant, content: "done"),
+        stop_reason: :end_turn,
+        usage: LittleGhost::Usage.new(input_tokens: 1, output_tokens: 1)
+      )
+      [
+        LittleGhost::StreamEvent.build(:message_start),
+        LittleGhost::StreamEvent.build(:text_delta, text: "done"),
+        LittleGhost::StreamEvent.build(:message_stop, response:),
+        LittleGhost::StreamEvent.build(:usage, usage: response.usage)
+      ].each
+    end
+  end
+
   def test_agent_builder_snapshots_declarative_configuration
     id = +"dynamic_helper"
     prompt = +"Help clearly"
@@ -200,5 +231,24 @@ class AssemblyBuilderTest < Minitest::Test
 
     assert_equal :agent, runtime.build_agent(builder.definition, run:)
     assert_equal :agent, built.first.kind
+  end
+
+  def test_class_level_hooks_fire_on_the_run_instance_built_via_ask
+    Dir.mktmpdir do |root|
+      HookProbeResolver.provider = HookProbeProvider.new
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.model_resolver = HookProbeResolver
+      agent_class = Class.new(LittleGhost::Agent) do
+        system_prompt "Answer clearly."
+        before_model { |payload, context:| raise "hook ran" }
+      end
+
+      run = LittleGhost.with_configuration(configuration) { agent_class.ask("hello") }
+
+      refute_predicate run, :completed?
+      assert_match(/hook ran/, run.error.message)
+    ensure
+      HookProbeResolver.provider = nil
+    end
   end
 end
