@@ -285,12 +285,14 @@ class CodeModeEngineTest < Minitest::Test
       release << true
     end
 
-    second = first
-    second = session.wait while second.still_working?
+    observations = [first]
+    Timeout.timeout(5) do
+      observations << session.wait while observations.last.still_working?
+    end
 
     assert_equal :still_working, first.status
-    assert_equal :completed, second.status
-    assert_equal "1", second.output
+    assert_equal :completed, observations.last.status
+    assert_equal "1", observations.map(&:output).join
     assert_equal 1, broker.calls.length
     releaser.join
   ensure
@@ -308,6 +310,71 @@ class CodeModeEngineTest < Minitest::Test
       program.observe(timeout: 0, max_tokens: 100))
     assert_equal({status: "still_working", program_id: "program-1", output: ""},
       program.observe(timeout: 0, max_tokens: 100))
+  end
+
+  def test_program_output_can_be_observed_before_completion
+    program = LittleGhost::CodeMode::Javascript::Client::Program.new(
+      id: "program-1", owner: Object.new, dispatcher: Object.new
+    )
+    program.output("1")
+    working = program.observe(timeout: 0, max_tokens: 100)
+    program.complete(status: "completed")
+    completed = program.observe(timeout: 0, max_tokens: 100)
+
+    assert_equal "still_working", working.fetch(:status)
+    assert_equal "1", working.fetch(:output)
+    assert_equal "completed", completed.fetch(:status)
+    assert_equal "", completed.fetch(:output)
+    assert_equal "1", [working, completed].map { |result| result.fetch(:output) }.join
+  end
+
+  def test_client_keeps_a_program_that_completes_after_a_working_observation
+    owner = Object.new
+    client = LittleGhost::CodeMode::Javascript::Client.new(session_factory: -> { flunk "unexpected host start" })
+    program = LittleGhost::CodeMode::Javascript::Client::Program.new(
+      id: "program-1", owner:, dispatcher: Object.new
+    )
+    program.define_singleton_method(:observe) do |**options|
+      observation = super(**options)
+      unless terminal?
+        output("tail")
+        complete(status: "completed")
+      end
+      observation
+    end
+    client.instance_variable_get(:@programs)[program.id] = program
+
+    first = client.observe(owner:, program_id: program.id, timeout: 0, max_tokens: 100)
+    final = client.observe(owner:, program_id: program.id, timeout: 0, max_tokens: 100)
+
+    assert_equal "still_working", first.fetch(:status)
+    assert_equal "completed", final.fetch(:status)
+    assert_equal "tail", final.fetch(:output)
+    assert_raises(LittleGhost::ToolError) do
+      client.observe(owner:, program_id: program.id, timeout: 0, max_tokens: 100)
+    end
+  ensure
+    client&.close
+  end
+
+  def test_client_releases_programs_after_observing_each_terminal_status
+    %w[completed failed terminated].each do |status|
+      owner = Object.new
+      client = LittleGhost::CodeMode::Javascript::Client.new(session_factory: -> { flunk "unexpected host start" })
+      program = LittleGhost::CodeMode::Javascript::Client::Program.new(
+        id: "program-1", owner:, dispatcher: Object.new
+      )
+      client.instance_variable_get(:@programs)[program.id] = program
+      program.complete(status:)
+
+      result = client.observe(owner:, program_id: program.id, timeout: 0, max_tokens: 100)
+
+      assert_equal status, result.fetch(:status)
+      assert_raises(LittleGhost::ToolError) do
+        client.observe(owner:, program_id: program.id, timeout: 0, max_tokens: 100)
+      end
+      client.close
+    end
   end
 
   def test_stop_terminates_a_running_program
