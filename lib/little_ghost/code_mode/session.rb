@@ -16,6 +16,9 @@ module LittleGhost
     # +:still_working+ when an observation interval elapsed, +:terminated+ after
     # requested termination, and +:error+ for a model-program error. +wait+
     # observes an active program without pausing, resuming, or restarting it.
+    # A +:still_working+ result keeps the program available for another observation,
+    # even if it finishes immediately afterward. Collect output from every result;
+    # the terminal result contains only output not returned by earlier observations.
     # Lifecycle, host, and cleanup failures raise rather than becoming a result.
     #
     #   ProgramResult.new(

@@ -341,16 +341,69 @@ class CodeModeTest < Minitest::Test
       source: 'text("before"); tools.pause; text("after"); 4',
       catalog: broker.catalog
     )
-    Timeout.timeout(5) { entered.pop }
-    release << true
     observations = [first]
-    observations << session.wait while observations.last.still_working?
+    Timeout.timeout(5) do
+      observations << session.wait while entered.empty?
+      entered.pop
+    end
+    before_release = observations.length
+    assert_equal "before", observations.map(&:output).join
+    release << true
+    Timeout.timeout(5) { observations << session.wait while observations.last.still_working? }
     completed = observations.last
 
     assert_predicate first, :still_working?
-    assert_equal "before", first.output
-    assert_equal "after", observations.drop(1).map(&:output).join
+    assert_equal "after", observations.drop(before_release).map(&:output).join
     assert_equal 4, completed.value
+  ensure
+    release << true if release && release.empty?
+    session&.close
+    registry&.close
+  end
+
+  def test_wait_dispatches_a_child_call_delivered_after_the_first_observation
+    entered = Queue.new
+    release = Queue.new
+    tool = LittleGhost::Tool.define(name: "pause", description: "Wait for release.") do
+      entered << true
+      release.pop
+      nil
+    end
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    clock = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    reads = 0
+    process = Object.new
+    process.define_singleton_method(:write) { |_frame| nil }
+    process.define_singleton_method(:read) do |timeout:|
+      reads += 1
+      clock += 0.2
+      stdout = (reads == 2) ? LittleGhost::CodeMode::Protocol.dump(type: "call", id: "later", name: "pause", arguments: {}) : ""
+      LittleGhost::Sandbox::ProcessSession::Chunk.new(stdout:, stderr: "", eof: false)
+    end
+    process.define_singleton_method(:terminate) { nil }
+    process.define_singleton_method(:close) { nil }
+    sandbox = Object.new
+    sandbox.define_singleton_method(:open) { self }
+    sandbox.define_singleton_method(:start_program) { |*| process }
+    sandbox.define_singleton_method(:close) { nil }
+    session = LittleGhost::CodeMode::Ruby::Session.new(
+      broker:, sandbox_factory: ->(**) { sandbox }, subprocess_policy: ->(_) { true },
+      limits: LittleGhost::CodeMode::RubyEngine::DEFAULT_LIMITS,
+      observation_seconds: 0.1
+    )
+    session.define_singleton_method(:monotonic_time) { clock }
+
+    first = session.execute(source: "tools.pause", catalog: broker.catalog)
+
+    assert_predicate first, :still_working?
+    assert_equal 1, reads
+    assert entered.empty?
+    second = session.wait
+    assert_predicate second, :still_working?
+    Timeout.timeout(5) { entered.pop }
+    release << true
+    assert_equal :terminated, session.stop.status
   ensure
     release << true if release && release.empty?
     session&.close
@@ -374,34 +427,60 @@ class CodeModeTest < Minitest::Test
   end
 
   def test_observation_timeout_does_not_pause_the_program
-    registry = LittleGhost::ToolRegistry.new([])
+    entered = Queue.new
+    release = Queue.new
+    tool = LittleGhost::Tool.define(name: "pause", description: "Wait for release.") do
+      entered << true
+      release.pop
+      nil
+    end
+    registry = LittleGhost::ToolRegistry.new([tool])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
     session = ruby_session(broker:, observation_seconds: 0.001)
 
-    running = session.execute(source: "sleep(0.02); 7", catalog: [])
+    running = session.execute(source: "tools.pause; 7", catalog: broker.catalog)
+    Timeout.timeout(5) do
+      running = session.wait while entered.empty?
+      entered.pop
+    end
+    release << true
     completed = running
-    completed = session.wait while completed.still_working?
+    Timeout.timeout(5) { completed = session.wait while completed.still_working? }
 
     assert_equal :still_working, running.status
     assert_equal 7, completed.value
   ensure
+    release << true if release && release.empty?
     session&.close
     registry&.close
   end
 
   def test_rejected_exec_does_not_close_the_active_program
-    registry = LittleGhost::ToolRegistry.new([])
+    entered = Queue.new
+    release = Queue.new
+    tool = LittleGhost::Tool.define(name: "pause", description: "Wait for release.") do
+      entered << true
+      release.pop
+      nil
+    end
+    registry = LittleGhost::ToolRegistry.new([tool])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
     session = ruby_session(broker:, observation_seconds: 0.001)
 
-    running = session.execute(source: "sleep(0.02); 7", catalog: [])
+    running = session.execute(source: "tools.pause; 7", catalog: broker.catalog)
 
     assert_equal :still_working, running.status
     assert_raises(LittleGhost::ToolError) { session.execute(source: "8", catalog: []) }
+    Timeout.timeout(5) do
+      running = session.wait while entered.empty?
+      entered.pop
+    end
+    release << true
     result = running
-    result = session.wait while result.still_working?
+    Timeout.timeout(5) { result = session.wait while result.still_working? }
     assert_equal 7, result.value
   ensure
+    release << true if release && release.empty?
     session&.close
     registry&.close
   end
@@ -883,22 +962,33 @@ class CodeModeTest < Minitest::Test
     entered = Queue.new
     tool = LittleGhost::Tool.define(name: "slow", description: "Wait.") do |_input, context:|
       entered << true
-      loop do
-        context.check!
-        sleep 0.01
-      end
+      raise "Cancellation was not delivered" unless context.cancellation_token.wait(5)
+      context.check!
     end
     registry = LittleGhost::ToolRegistry.new([tool])
     broker = LittleGhost::CodeMode::Broker.new(registry:)
-    session = ruby_session(broker:, cleanup_seconds: 0.01, observation_seconds: 0.1)
+    session = ruby_session(broker:, observation_seconds: 0.1)
 
     running = session.execute(source: "tools.slow", catalog: broker.catalog)
-    Timeout.timeout(5) { entered.pop }
+    Timeout.timeout(5) do
+      running = session.wait while entered.empty?
+      entered.pop
+    end
+    program_context = session.instance_variable_get(:@program_context)
+    task = session.instance_variable_get(:@call_tasks).first
+    cleanup_waited = Queue.new
+    original_wait = task.method(:wait)
+    task.define_singleton_method(:wait) do |**options|
+      raise "Cleanup waited before cancellation" unless program_context.cancellation_token.cancelled?
+      cleanup_waited << true
+      original_wait.call(**options)
+    end
 
     terminated = session.stop
 
     assert_equal :still_working, running.status
     assert_equal :terminated, terminated.status
+    assert_equal true, Timeout.timeout(5) { cleanup_waited.pop }
   ensure
     session&.close
     registry&.close
@@ -917,11 +1007,27 @@ class CodeModeTest < Minitest::Test
         LittleGhost::CodeMode::CallResult.new(id: call.id, value: "late", error: nil)
       end
     )
-    session = ruby_session(broker:, cleanup_seconds: 1, observation_seconds: 0.1)
+    session = ruby_session(broker:, observation_seconds: 0.1)
     running = session.execute(source: "tools.slow", catalog: broker.catalog)
-    Timeout.timeout(15) { entered.pop }
+    Timeout.timeout(5) do
+      running = session.wait while entered.empty?
+      entered.pop
+    end
+    closed = Queue.new
+    late_writes = Queue.new
+    process = session.instance_variable_get(:@session)
+    original_close = process.method(:close)
+    process.define_singleton_method(:close) do
+      original_close.call
+      closed << true
+    end
+    original_write = process.method(:write)
+    process.define_singleton_method(:write) do |frame|
+      late_writes << true
+      original_write.call(frame)
+    end
     releaser = Thread.new do
-      sleep(0.05)
+      Timeout.timeout(5) { closed.pop }
       release << true
     end
 
@@ -929,10 +1035,12 @@ class CodeModeTest < Minitest::Test
 
     assert_equal :still_working, running.status
     assert_equal :terminated, terminated.status
-    releaser.join
+    Timeout.timeout(5) { releaser.value }
+    assert_equal true, Timeout.timeout(5) { late_writes.pop }
   ensure
     release << true if release && release.empty?
-    releaser&.join(1)
+    closed << true if closed && closed.empty?
+    Timeout.timeout(5) { releaser&.join }
     session&.close
     registry&.close
   end

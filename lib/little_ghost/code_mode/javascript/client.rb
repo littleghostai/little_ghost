@@ -222,7 +222,7 @@ module LittleGhost
       def observe(owner:, program_id:, timeout:, max_tokens:, context: nil)
         program = owned_program(owner, program_id)
         result = program.observe(timeout:, max_tokens:, context:)
-        release_program(program) if program.terminal?
+        release_program(program) unless result.fetch(:status) == "still_working"
         result
       end
 
