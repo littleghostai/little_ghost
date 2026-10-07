@@ -175,7 +175,7 @@ class GeminiTest < Minitest::Test
   def test_shared_provider_keeps_independent_conversation_signatures
     transport = SequencedTransport.new(
       [{candidates: [{content: {parts: [{functionCall: {id: "tool-1", name: "lookup"}, thoughtSignature: "conversation-a"}]}, finishReason: "STOP"}]}],
-      [{candidates: [{content: {parts: [{functionCall: {id: "tool-1", name: "lookup"}, thoughtSignature: "conversation-b"}]}, finishReason: "STOP"}]}],
+      [{candidates: [{content: {parts: [{functionCall: {id: "tool-1", name: "weather"}, thoughtSignature: "conversation-b"}]}, finishReason: "STOP"}]}],
       [{candidates: [{content: {parts: [{text: "done"}]}, finishReason: "STOP"}]}],
       [{candidates: [{content: {parts: [{text: "done"}]}, finishReason: "STOP"}]}]
     )
@@ -189,7 +189,7 @@ class GeminiTest < Minitest::Test
     assert_equal "conversation-a", function_call_part(transport, index: 2).fetch("thoughtSignature")
     assert_equal "conversation-b", function_call_part(transport, index: 3).fetch("thoughtSignature")
     assert_equal "lookup", function_response_parts(transport, index: 2).first.dig("functionResponse", "name")
-    assert_equal "lookup", function_response_parts(transport, index: 3).first.dig("functionResponse", "name")
+    assert_equal "weather", function_response_parts(transport, index: 3).first.dig("functionResponse", "name")
   end
 
   def test_tool_results_use_original_function_names_in_reverse_parallel_order
