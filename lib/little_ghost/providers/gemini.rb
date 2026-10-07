@@ -2,6 +2,7 @@
 
 require "base64"
 require "json"
+require "securerandom"
 require "uri"
 require_relative "../support/http_client"
 require_relative "../support/sse_parser"
@@ -17,6 +18,14 @@ module LittleGhost
     # LittleGhost StreamEvents. HTTP and response-shape failures become
     # ProviderError subclasses. It uses the built-in HTTP client and does not
     # require Google's SDK.
+    #
+    # Gemini attaches an opaque +thoughtSignature+ to a function-call response
+    # part and expects it echoed back on the next request's matching
+    # +functionCall+. The adapter preserves these opaque values in the response
+    # Message metadata under +gemini/thought_signatures+, keyed by tool-call ID.
+    # Preserve the full assistant Message, including this provider replay metadata,
+    # when storing or rebuilding conversation history. Signatures survive provider
+    # recreation and Message#without_reasoning and replay with their original calls.
     class Gemini < Base
       # Request policy supported by Gemini and Vertex AI HTTP clients.
       def self.request_options = %i[max_response_bytes open_timeout read_timeout].freeze
@@ -93,20 +102,27 @@ module LittleGhost
       end
 
       def google_message(message)
-        {role: (message.role == :assistant) ? "model" : "user", parts: message.content.map { |block| google_content(block) }}
+        signatures = message.metadata.dig(:gemini, :thought_signatures) || {}
+        {role: (message.role == :assistant) ? "model" : "user", parts: message.content.map { |block| google_content(block, signatures) }}
       end
 
-      def google_content(block)
+      def google_content(block, thought_signatures)
         case block
         when Content::Text then {text: block.text}
         when Content::Image, Content::Document
           {inlineData: {mimeType: block.media_type, data: Base64.strict_encode64(block.data)}}
-        when Content::ToolUse then {functionCall: {id: block.id, name: block.name, args: block.input}}
+        when Content::ToolUse then google_tool_use(block, thought_signatures)
         when Content::ToolResult
           {functionResponse: {id: block.tool_use_id, name: block.tool_use_id, response: {output: Array(block.content).join("\n")}}}
         when Content::Reasoning then {text: block.text, thought: true}
         else raise ConfigurationError, "Unsupported Google content block: #{block.class}"
         end
+      end
+
+      def google_tool_use(block, thought_signatures)
+        call = {id: block.id, name: block.name, args: block.input}
+        signature = thought_signatures[block.id]
+        signature ? {functionCall: call, thoughtSignature: signature} : {functionCall: call}
       end
 
       def google_tool(tool)
@@ -123,6 +139,7 @@ module LittleGhost
       class Normalizer # :nodoc:
         def initialize(model:)
           @model = model
+          @thought_signatures = {}
           @text = +""
           @reasoning = +""
           @tools = []
@@ -161,7 +178,8 @@ module LittleGhost
           blocks << Content::Reasoning.new(text: @reasoning) unless @reasoning.empty?
           blocks << Content::Text.new(text: @text) unless @text.empty?
           blocks.concat(@tools)
-          response = ModelResponse.new(message: Message.new(role: :assistant, content: blocks),
+          metadata = @thought_signatures.empty? ? {} : {gemini: {thought_signatures: @thought_signatures}}
+          response = ModelResponse.new(message: Message.new(role: :assistant, content: blocks, metadata:),
             stop_reason: @stop_reason, usage: @usage, metadata: {model: @model})
           [StreamEvent.build(:message_stop, response:)]
         end
@@ -172,8 +190,9 @@ module LittleGhost
           if part["functionCall"]
             call = part.fetch("functionCall")
             index = @tools.length
-            tool = Content::ToolUse.new(id: call["id"] || "call-#{index}", name: call.fetch("name"), input: call["args"] || {})
+            tool = Content::ToolUse.new(id: call["id"] || SecureRandom.uuid, name: call.fetch("name"), input: call["args"] || {})
             @tools << tool
+            @thought_signatures[tool.id] = part["thoughtSignature"] if part["thoughtSignature"]
             [
               StreamEvent.build(:tool_call_start, index:, id: tool.id, name: tool.name),
               StreamEvent.build(:tool_call_stop, index:, tool_use: tool)
