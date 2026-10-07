@@ -26,6 +26,10 @@ module LittleGhost
     # Preserve the full assistant Message, including this provider replay metadata,
     # when storing or rebuilding conversation history. Signatures survive provider
     # recreation and Message#without_reasoning and replay with their original calls.
+    #
+    # Tool results use the function name from their preceding ToolUse in the
+    # request history. Keep each tool call before its result when restoring history.
+    # Results without a preceding call retain their tool-use ID as the name.
     class Gemini < Base
       # Request policy supported by Gemini and Vertex AI HTTP clients.
       def self.request_options = %i[max_response_bytes open_timeout read_timeout].freeze
@@ -84,7 +88,8 @@ module LittleGhost
 
       def request_body(request)
         system, messages = request.messages.partition { |message| message.role == :system }
-        body = {contents: messages.map { |message| google_message(message) }}
+        tool_names = {}
+        body = {contents: messages.map { |message| google_message(message, tool_names) }}
         body[:systemInstruction] = {parts: system.flat_map { |message| message.content.grep(Content::Text).map { |block| {text: block.text} } }} unless system.empty?
         body[:tools] = [{functionDeclarations: request.tools.map { |tool| google_tool(tool) }}] unless request.tools.empty?
         body[:toolConfig] = google_tool_choice(request.tool_choice) if request.tool_choice
@@ -101,19 +106,21 @@ module LittleGhost
         {max_tokens: :maxOutputTokens, top_p: :topP, top_k: :topK, stop_sequences: :stopSequences}[key.to_sym] || key.to_sym
       end
 
-      def google_message(message)
+      def google_message(message, tool_names)
         signatures = message.metadata.dig(:gemini, :thought_signatures) || {}
-        {role: (message.role == :assistant) ? "model" : "user", parts: message.content.map { |block| google_content(block, signatures) }}
+        {role: (message.role == :assistant) ? "model" : "user", parts: message.content.map { |block| google_content(block, signatures, tool_names) }}
       end
 
-      def google_content(block, thought_signatures)
+      def google_content(block, thought_signatures, tool_names)
         case block
         when Content::Text then {text: block.text}
         when Content::Image, Content::Document
           {inlineData: {mimeType: block.media_type, data: Base64.strict_encode64(block.data)}}
-        when Content::ToolUse then google_tool_use(block, thought_signatures)
+        when Content::ToolUse
+          tool_names[block.id] = block.name
+          google_tool_use(block, thought_signatures)
         when Content::ToolResult
-          {functionResponse: {id: block.tool_use_id, name: block.tool_use_id, response: {output: Array(block.content).join("\n")}}}
+          {functionResponse: {id: block.tool_use_id, name: tool_names.fetch(block.tool_use_id, block.tool_use_id), response: {output: Array(block.content).join("\n")}}}
         when Content::Reasoning then {text: block.text, thought: true}
         else raise ConfigurationError, "Unsupported Google content block: #{block.class}"
         end
