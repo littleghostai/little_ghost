@@ -213,6 +213,7 @@ class LittleGhostSiteChecker
     check_landing_page
     check_getting_started_page
     check_api_index_metadata
+    check_social_preview_metadata
     check_documentation_navigation
     check_guide_heading_outlines
     check_local_links
@@ -317,6 +318,20 @@ class LittleGhostSiteChecker
     errors << "API index has the wrong Open Graph description" unless html.include?(%(property="og:description" content="#{description}"))
     errors << "API index has the wrong Twitter title" unless html.include?(%(name="twitter:title" content="#{title}"))
     errors << "API index has the wrong Twitter description" unless html.include?(%(name="twitter:description" content="#{description}"))
+  end
+
+  def check_social_preview_metadata
+    site_root.glob("**/*.html").each do |page|
+      next if page.basename.to_s == "404.html"
+
+      html = page.read
+      relative_page = page.relative_path_from(site_root)
+      errors << "#{relative_page} is missing Open Graph image metadata" unless html.match?(%r{<meta\b(?=[^>]*\bproperty=["']og:image["'])[^>]*\bcontent=["'][^"']+["'][^>]*>}m)
+      unless html.match?(%r{<meta\b(?=[^>]*\bname=["']twitter:card["'])[^>]*\bcontent=["'][^"']+["'][^>]*>}m) &&
+          html.match?(%r{<meta\b(?=[^>]*\bname=["']twitter:image["'])[^>]*\bcontent=["'][^"']+["'][^>]*>}m)
+        errors << "#{relative_page} is missing Twitter image preview metadata"
+      end
+    end
   end
 
   def check_documentation_navigation
