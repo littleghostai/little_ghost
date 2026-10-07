@@ -2,6 +2,7 @@
 
 require "base64"
 require "json"
+require "securerandom"
 require "uri"
 require_relative "../support/http_client"
 require_relative "../support/sse_parser"
@@ -20,9 +21,11 @@ module LittleGhost
     #
     # Gemini attaches an opaque +thoughtSignature+ to a function-call response
     # part and expects it echoed back on the next request's matching
-    # +functionCall+. The adapter caches each signature by tool-call id for the
-    # life of this instance and replays it automatically; application code
-    # never sees or handles thought signatures directly.
+    # +functionCall+. The adapter preserves these opaque values in the response
+    # Message metadata under +gemini/thought_signatures+, keyed by tool-call ID.
+    # Preserve the full assistant Message, including this provider replay metadata,
+    # when storing or rebuilding conversation history. Signatures survive provider
+    # recreation and Message#without_reasoning and replay with their original calls.
     class Gemini < Base
       # Request policy supported by Gemini and Vertex AI HTTP clients.
       def self.request_options = %i[max_response_bytes open_timeout read_timeout].freeze
@@ -40,7 +43,6 @@ module LittleGhost
         @api_key = api_key
         @model = model
         @transport = transport || Support::HTTPClient.new(base_url:, open_timeout:, read_timeout:, max_response_bytes:)
-        @thought_signatures = {}
       end
 
       # Streams normalized events for +request+.
@@ -48,7 +50,7 @@ module LittleGhost
         return enum_for(__method__, request) unless block_given?
 
         parser = Support::SSEParser.new
-        normalizer = Normalizer.new(model:, thought_signatures: @thought_signatures)
+        normalizer = Normalizer.new(model:)
         @transport.stream(
           path: endpoint,
           headers: request_headers(request),
@@ -100,15 +102,16 @@ module LittleGhost
       end
 
       def google_message(message)
-        {role: (message.role == :assistant) ? "model" : "user", parts: message.content.map { |block| google_content(block) }}
+        signatures = message.metadata.dig(:gemini, :thought_signatures) || {}
+        {role: (message.role == :assistant) ? "model" : "user", parts: message.content.map { |block| google_content(block, signatures) }}
       end
 
-      def google_content(block)
+      def google_content(block, thought_signatures)
         case block
         when Content::Text then {text: block.text}
         when Content::Image, Content::Document
           {inlineData: {mimeType: block.media_type, data: Base64.strict_encode64(block.data)}}
-        when Content::ToolUse then google_tool_use(block)
+        when Content::ToolUse then google_tool_use(block, thought_signatures)
         when Content::ToolResult
           {functionResponse: {id: block.tool_use_id, name: block.tool_use_id, response: {output: Array(block.content).join("\n")}}}
         when Content::Reasoning then {text: block.text, thought: true}
@@ -116,9 +119,9 @@ module LittleGhost
         end
       end
 
-      def google_tool_use(block)
+      def google_tool_use(block, thought_signatures)
         call = {id: block.id, name: block.name, args: block.input}
-        signature = @thought_signatures[block.id]
+        signature = thought_signatures[block.id]
         signature ? {functionCall: call, thoughtSignature: signature} : {functionCall: call}
       end
 
@@ -134,9 +137,9 @@ module LittleGhost
       end
 
       class Normalizer # :nodoc:
-        def initialize(model:, thought_signatures:)
+        def initialize(model:)
           @model = model
-          @thought_signatures = thought_signatures
+          @thought_signatures = {}
           @text = +""
           @reasoning = +""
           @tools = []
@@ -175,7 +178,8 @@ module LittleGhost
           blocks << Content::Reasoning.new(text: @reasoning) unless @reasoning.empty?
           blocks << Content::Text.new(text: @text) unless @text.empty?
           blocks.concat(@tools)
-          response = ModelResponse.new(message: Message.new(role: :assistant, content: blocks),
+          metadata = @thought_signatures.empty? ? {} : {gemini: {thought_signatures: @thought_signatures}}
+          response = ModelResponse.new(message: Message.new(role: :assistant, content: blocks, metadata:),
             stop_reason: @stop_reason, usage: @usage, metadata: {model: @model})
           [StreamEvent.build(:message_stop, response:)]
         end
@@ -186,7 +190,7 @@ module LittleGhost
           if part["functionCall"]
             call = part.fetch("functionCall")
             index = @tools.length
-            tool = Content::ToolUse.new(id: call["id"] || "call-#{index}", name: call.fetch("name"), input: call["args"] || {})
+            tool = Content::ToolUse.new(id: call["id"] || SecureRandom.uuid, name: call.fetch("name"), input: call["args"] || {})
             @tools << tool
             @thought_signatures[tool.id] = part["thoughtSignature"] if part["thoughtSignature"]
             [

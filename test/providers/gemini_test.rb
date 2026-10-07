@@ -56,8 +56,8 @@ class GeminiTest < Minitest::Test
     )
     provider = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport:)
 
-    tool_use = call_tool(provider)
-    follow_up_with(provider, tool_use)
+    message = call_tool(provider)
+    follow_up_with(provider, message)
 
     assert_equal "sig-abc", function_call_part(transport, index: 1).fetch("thoughtSignature")
   end
@@ -70,8 +70,8 @@ class GeminiTest < Minitest::Test
     )
     provider = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport:)
 
-    tool_use = call_tool(provider)
-    follow_up_with(provider, tool_use)
+    message = call_tool(provider)
+    follow_up_with(provider, message)
 
     refute function_call_part(transport, index: 1).key?("thoughtSignature")
   end
@@ -84,9 +84,9 @@ class GeminiTest < Minitest::Test
     )
     provider = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport:)
 
-    tool_use = call_tool(provider)
-    assert_equal "call-0", tool_use.id
-    follow_up_with(provider, tool_use)
+    message = call_tool(provider)
+    assert_match(/\A[0-9a-f-]{36}\z/, message.content.grep(LittleGhost::Content::ToolUse).first.id)
+    follow_up_with(provider, message)
 
     assert_equal "sig-noid", function_call_part(transport, index: 1).fetch("thoughtSignature")
   end
@@ -104,13 +104,89 @@ class GeminiTest < Minitest::Test
 
     request = LittleGhost::ModelRequest.new(messages: [LittleGhost::Message.new(role: :user, content: "Hi")])
     response = provider.stream(request).to_a.last.data.fetch(:response)
-    tool_uses = response.message.content.grep(LittleGhost::Content::ToolUse)
-    follow_up_with(provider, *tool_uses)
+    follow_up_with(provider, response.message)
 
     sent_parts = JSON.parse(transport.requests.last.fetch(:body)).fetch("contents")
       .flat_map { |message| message.fetch("parts") }.select { |part| part["functionCall"] }
     assert_equal "sig-1", sent_parts.find { |part| part.dig("functionCall", "id") == "tool-1" }.fetch("thoughtSignature")
     refute sent_parts.find { |part| part.dig("functionCall", "id") == "tool-2" }.key?("thoughtSignature")
+  end
+
+  def test_sequential_idless_calls_keep_their_original_signatures_in_full_history
+    transport = SequencedTransport.new(
+      [{candidates: [{content: {parts: [{functionCall: {name: "lookup", args: {}}, thoughtSignature: "sig-a"}]}, finishReason: "STOP"}]}],
+      [{candidates: [{content: {parts: [{functionCall: {name: "lookup", args: {}}, thoughtSignature: "sig-b"}]}, finishReason: "STOP"}]}],
+      [{candidates: [{content: {parts: [{text: "done"}]}, finishReason: "STOP"}]}]
+    )
+    provider = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport:)
+    first = call_tool(provider)
+    first_result = LittleGhost::Message.new(role: :tool, content: [
+      LittleGhost::Content::ToolResult.new(tool_use_id: first.content.first.id, content: "ok", status: :success)
+    ])
+    history = [LittleGhost::Message.new(role: :user, content: "Hi"), first, first_result]
+    second = provider.stream(LittleGhost::ModelRequest.new(messages: history)).to_a.last.data.fetch(:response).message
+    refute_equal first.content.first.id, second.content.first.id
+
+    second_result = LittleGhost::Message.new(role: :tool, content: [
+      LittleGhost::Content::ToolResult.new(tool_use_id: second.content.first.id, content: "ok", status: :success)
+    ])
+    provider.stream(LittleGhost::ModelRequest.new(messages: history + [second, second_result])).to_a
+
+    assert_equal ["sig-a", "sig-b"], function_call_parts(transport, index: 2).map { |part| part.fetch("thoughtSignature") }
+  end
+
+  def test_reused_explicit_ids_are_scoped_to_each_message
+    transport = SequencedTransport.new(
+      [{candidates: [{content: {parts: [{functionCall: {id: "same", name: "lookup"}, thoughtSignature: "sig-a"}]}, finishReason: "STOP"}]}],
+      [{candidates: [{content: {parts: [{functionCall: {id: "same", name: "lookup"}, thoughtSignature: "sig-b"}]}, finishReason: "STOP"}]}],
+      [{candidates: [{content: {parts: [{functionCall: {id: "same", name: "lookup"}}]}, finishReason: "STOP"}]}],
+      [{candidates: [{content: {parts: [{text: "done"}]}, finishReason: "STOP"}]}]
+    )
+    provider = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport:)
+    first = call_tool(provider)
+    second = call_tool(provider)
+    unsigned = call_tool(provider)
+
+    provider.stream(LittleGhost::ModelRequest.new(messages: [first, second, unsigned])).to_a
+
+    parts = function_call_parts(transport, index: 3)
+    assert_equal ["same", "same", "same"], parts.map { |part| part.dig("functionCall", "id") }
+    assert_equal ["sig-a", "sig-b", nil], parts.map { |part| part["thoughtSignature"] }
+  end
+
+  def test_persisted_signatures_survive_provider_recreation_and_reasoning_removal
+    transport = SequencedTransport.new(
+      [{candidates: [{content: {parts: [{text: "thinking", thought: true}, {functionCall: {id: "tool-1", name: "lookup"}, thoughtSignature: "sig-a"}]}, finishReason: "STOP"}]}]
+    )
+    provider = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport:)
+    original = call_tool(provider)
+    restored = LittleGhost::Message.coerce(JSON.parse(JSON.generate(original.to_h))).without_reasoning
+    assert_empty restored.content.grep(LittleGhost::Content::Reasoning)
+    assert_equal original.metadata, restored.metadata
+    resumed_transport = SequencedTransport.new([{candidates: [{content: {parts: [{text: "done"}]}, finishReason: "STOP"}]}])
+    resumed = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport: resumed_transport)
+
+    follow_up_with(resumed, restored)
+
+    assert_equal "sig-a", function_call_part(resumed_transport, index: 0).fetch("thoughtSignature")
+  end
+
+  def test_shared_provider_keeps_independent_conversation_signatures
+    transport = SequencedTransport.new(
+      [{candidates: [{content: {parts: [{functionCall: {id: "tool-1", name: "lookup"}, thoughtSignature: "conversation-a"}]}, finishReason: "STOP"}]}],
+      [{candidates: [{content: {parts: [{functionCall: {id: "tool-1", name: "lookup"}, thoughtSignature: "conversation-b"}]}, finishReason: "STOP"}]}],
+      [{candidates: [{content: {parts: [{text: "done"}]}, finishReason: "STOP"}]}],
+      [{candidates: [{content: {parts: [{text: "done"}]}, finishReason: "STOP"}]}]
+    )
+    provider = LittleGhost::Providers::Gemini.new(api_key: "secret", model: "gemini", transport:)
+    conversation_a = call_tool(provider)
+    conversation_b = call_tool(provider)
+
+    follow_up_with(provider, conversation_a)
+    follow_up_with(provider, conversation_b)
+
+    assert_equal "conversation-a", function_call_part(transport, index: 2).fetch("thoughtSignature")
+    assert_equal "conversation-b", function_call_part(transport, index: 3).fetch("thoughtSignature")
   end
 
   def test_vertex_uses_bearer_token_and_vertex_endpoint
@@ -131,21 +207,26 @@ class GeminiTest < Minitest::Test
   def call_tool(provider)
     request = LittleGhost::ModelRequest.new(messages: [LittleGhost::Message.new(role: :user, content: "Hi")])
     response = provider.stream(request).to_a.last.data.fetch(:response)
-    response.message.content.grep(LittleGhost::Content::ToolUse).first
+    response.message
   end
 
-  def follow_up_with(provider, *tool_uses)
+  def follow_up_with(provider, message)
+    tool_uses = message.content.grep(LittleGhost::Content::ToolUse)
     results = tool_uses.map { |tool_use| LittleGhost::Content::ToolResult.new(tool_use_id: tool_use.id, content: "ok", status: :success) }
     request = LittleGhost::ModelRequest.new(messages: [
       LittleGhost::Message.new(role: :user, content: "Hi"),
-      LittleGhost::Message.new(role: :assistant, content: tool_uses),
+      message,
       LittleGhost::Message.new(role: :tool, content: results)
     ])
     provider.stream(request).to_a
   end
 
   def function_call_part(transport, index:)
+    function_call_parts(transport, index:).first
+  end
+
+  def function_call_parts(transport, index:)
     JSON.parse(transport.requests.fetch(index).fetch(:body)).fetch("contents")
-      .flat_map { |message| message.fetch("parts") }.find { |part| part["functionCall"] }
+      .flat_map { |message| message.fetch("parts") }.select { |part| part["functionCall"] }
   end
 end
