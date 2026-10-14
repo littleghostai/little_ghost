@@ -67,6 +67,25 @@ Use OpenRouter's `publisher/model` form, such as
 The selected model must support embeddings before you call
 `LittleGhost.embed`.
 
+OpenRouter chooses which upstream provider serves each request. To prefer the
+lowest-latency provider, set an explicit order, or disable fallbacks, pass
+OpenRouter's [provider selection](https://openrouter.ai/docs/guides/routing/provider-selection)
+preferences as the `provider_routing` model setting:
+
+```ruby
+config.models = {
+  customer_support: {
+    target: "openrouter:google/gemini-3.5-flash",
+    settings: {provider_routing: {sort: "latency"}}
+  }
+}
+```
+
+LittleGhost sends the hash as OpenRouter's `provider` object without
+interpreting it. When a request needs structured output or tools, LittleGhost
+adds `require_parameters: true` so OpenRouter only routes to providers that
+support them.
+
 For Jev decisions, OpenRouter supports both decision endpoints. The default
 uses the Decisions API and namespaced model identifiers such as
 `openrouter:~typesafe/jev-latest`:

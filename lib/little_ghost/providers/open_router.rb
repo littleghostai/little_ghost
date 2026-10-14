@@ -19,7 +19,8 @@ module LittleGhost
     # +site_url+ and +app_name+ populate attribution headers. Capability metadata
     # controls structured output, tools, tool choice, and parameter filtering.
     # Requests that need a capability ask OpenRouter to route only to providers
-    # that advertise it.
+    # that advertise it. The +provider_routing+ setting passes OpenRouter's
+    # provider preferences, such as <tt>{sort: "latency"}</tt>, with each request.
     class OpenRouter < OpenAICompatible
       include DecisionHTTP
 
@@ -145,7 +146,15 @@ module LittleGhost
         result[:cache_control] = {type: "ephemeral"} if model_prefix?(TOP_LEVEL_CACHE_MODELS)
         prompt_cache_key = settings[:prompt_cache_key] || settings["prompt_cache_key"]
         result[:prompt_cache_key] = prompt_cache_key if prompt_cache_key
+        routing = settings[:provider_routing] || settings["provider_routing"]
+        result[:provider] = provider_routing(routing) if routing
         result
+      end
+
+      def provider_routing(routing)
+        raise ConfigurationError, "provider_routing must be a Hash of OpenRouter provider preferences" unless routing.is_a?(Hash)
+
+        routing.transform_keys(&:to_sym)
       end
 
       def chat_reasoning_fields(message)
@@ -163,7 +172,7 @@ module LittleGhost
       def request_body(request)
         body = super
         if request.output_schema || !request.required_capabilities.empty?
-          body[:provider] = {require_parameters: true}
+          body[:provider] = (body[:provider] || {}).merge(require_parameters: true)
         end
         add_message_cache_control(body[:messages]) if model_prefix?(MESSAGE_CACHE_MODELS)
         body

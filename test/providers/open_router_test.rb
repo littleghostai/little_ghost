@@ -38,6 +38,44 @@ class OpenRouterTest < Minitest::Test
     assert_equal "cache-1", body["prompt_cache_key"]
   end
 
+  def test_sends_provider_routing_preferences
+    transport = CaptureTransport.new
+    provider = LittleGhost::Providers::OpenRouter.new(api_key: "secret", model: "google/gemini-3.5-flash", transport:)
+    request = LittleGhost::ModelRequest.new(
+      messages: [{role: :user, content: "Hello"}],
+      settings: {provider_routing: {"sort" => "latency", "order" => ["google-ai-studio"], "allow_fallbacks" => true}}
+    )
+
+    provider.stream(request).to_a
+
+    assert_equal(
+      {"sort" => "latency", "order" => ["google-ai-studio"], "allow_fallbacks" => true},
+      JSON.parse(transport.request[:body])["provider"]
+    )
+  end
+
+  def test_keeps_provider_routing_when_a_capability_requires_parameters
+    transport = CaptureTransport.new
+    provider = LittleGhost::Providers::OpenRouter.new(api_key: "secret", model: "google/gemini-3.5-flash", transport:)
+    output_schema = {
+      name: "answer",
+      schema: {type: "object", properties: {answer: {type: "string"}}, required: ["answer"], additionalProperties: false}
+    }
+    request = LittleGhost::ModelRequest.new(messages: [], output_schema:, settings: {provider_routing: {sort: "latency"}})
+
+    provider.stream(request).to_a
+
+    assert_equal({"sort" => "latency", "require_parameters" => true}, JSON.parse(transport.request[:body])["provider"])
+  end
+
+  def test_rejects_provider_routing_that_is_not_a_hash
+    provider = LittleGhost::Providers::OpenRouter.new(api_key: "secret", model: "google/gemini-3.5-flash", transport: CaptureTransport.new)
+    request = LittleGhost::ModelRequest.new(messages: [], settings: {provider_routing: "latency"})
+
+    error = assert_raises(LittleGhost::ConfigurationError) { provider.stream(request).to_a }
+    assert_match "provider_routing", error.message
+  end
+
   def test_uses_top_level_cache_control_for_anthropic
     transport = CaptureTransport.new
     provider = LittleGhost::Providers::OpenRouter.new(api_key: "secret", model: "anthropic/claude-sonnet-4", transport:)
