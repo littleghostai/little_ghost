@@ -1,0 +1,15 @@
+<%#
+# Key: tools/built_in/write_todos/compaction/plan
+# Purpose: Todo plan carried into a context summary.
+# Used: Appended to a context summary by WriteTodos::PlanContinuity so the current plan survives compaction.
+# Locals:
+# - plan_title: Plan title, possibly empty.
+# - todos: Todo hashes with id, title, status, and optional details.
+# Constraints:
+# - Must render non-blank.
+-%>
+Current plan<%= ": #{plan_title}" unless plan_title.empty? %>
+<% todos.each do |todo| -%>
+<% details = todo["details"].to_s.strip -%>
+- [<%= todo["status"] %>] <%= todo["title"] %> (`<%= todo["id"] %>`)<%= ": #{details}" unless details.empty? %>
+<% end -%>

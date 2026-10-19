@@ -19,6 +19,8 @@ module LittleGhost
     # messages. System and developer messages remain intact, and tool-use/result
     # pairs are never split merely to hit the requested count.
     #
+    # +preserve_invocation_request: true+ keeps the invocation's request verbatim in every summary that replaces it.
+    #
     # Context management is inactive until +manage_context+ is declared. The
     # configured window is a fallback: provider metadata takes precedence when
     # it advertises a positive context-window size. Compaction uses the current
@@ -33,6 +35,9 @@ module LittleGhost
       DEFAULT_COMPRESSION_THRESHOLD = 0.85 # :nodoc:
       DEFAULT_SUMMARY_RATIO = 0.3 # :nodoc:
       DEFAULT_PRESERVE_RECENT_MESSAGES = 10 # :nodoc:
+      INVOCATION_REQUEST_KEY = "little_ghost.invocation_request" # :nodoc:
+      TRACKED_INVOCATION_LIMIT = 1_000 # :nodoc:
+      InvocationRequest = Data.define(:message, :marker) # :nodoc:
       ESTIMATED_CHARS_PER_TOKEN = 4 # :nodoc:
       OUTPUT_LIMIT_STOP_REASONS = %i[max_tokens limit_output_tokens limit_total_tokens limit_turns].freeze # :nodoc:
       def self.included(base) # :nodoc:
@@ -55,7 +60,8 @@ module LittleGhost
           context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
           compression_threshold: DEFAULT_COMPRESSION_THRESHOLD,
           summary_ratio: DEFAULT_SUMMARY_RATIO,
-          preserve_recent_messages: DEFAULT_PRESERVE_RECENT_MESSAGES
+          preserve_recent_messages: DEFAULT_PRESERVE_RECENT_MESSAGES,
+          preserve_invocation_request: false
         )
           context_window_tokens = Integer(context_window_tokens)
           compression_threshold = Float(compression_threshold)
@@ -74,8 +80,12 @@ module LittleGhost
             context_window_tokens:,
             compression_threshold:,
             summary_ratio:,
-            preserve_recent_messages:
+            preserve_recent_messages:,
+            preserve_invocation_request: preserve_invocation_request ? true : false
           }
+          after_initialize :initialize_context_management
+          before_invocation :remember_invocation_request
+          after_invocation :forget_invocation_request
           before_model :compact_model_context
           after_model_error :compact_context_after_overflow
         end
@@ -84,6 +94,28 @@ module LittleGhost
       end
 
       private
+
+      def initialize_context_management
+        @context_management_mutex = Mutex.new
+        @invocation_requests = {}
+      end
+
+      # Tracked per RunContext because one agent instance can serve concurrent invocations.
+      def remember_invocation_request(payload, context: nil)
+        message = payload.fetch(:messages).reverse_each.find { |candidate| candidate.role == :user }
+        request = message && InvocationRequest.new(message:, marker: SecureRandom.uuid)
+        @context_management_mutex.synchronize do
+          @invocation_requests.delete(context)
+          @invocation_requests[context] = request
+          @invocation_requests.shift while @invocation_requests.length > TRACKED_INVOCATION_LIMIT
+        end
+        Support::Callbacks.continue
+      end
+
+      def forget_invocation_request(*, context: nil)
+        @context_management_mutex.synchronize { @invocation_requests.delete(context) }
+        Support::Callbacks.continue
+      end
 
       def compact_model_context(payload, context: nil)
         request = payload.fetch(:request)
@@ -123,7 +155,7 @@ module LittleGhost
         Support::Callbacks.replace(payload.merge(request: compacted))
       end
 
-      def summarize_oldest_messages(request, configuration, context, parent_operation_id:)
+      def summarize_oldest_messages(request, configuration, context, parent_operation_id:, reason:)
         trusted, conversation = request.messages.partition { |message| %i[system developer].include?(message.role) }
         preserve = configuration.fetch(:preserve_recent_messages)
         split = [(conversation.length * configuration.fetch(:summary_ratio)).floor, 1].max
@@ -133,6 +165,8 @@ module LittleGhost
         split = safe_summary_split(conversation, split)
         to_summarize = conversation.first(split)
         summary = generate_context_summary(to_summarize, request, context, parent_operation_id:)
+        summary = summary_with_invocation_request(summary, to_summarize, configuration, context)
+        summary = after_context_compaction_summary(summary, to_summarize, reason, context)
         ModelRequest.new(
           messages: [*trusted, summary, *conversation.drop(split)],
           tools: request.tools,
@@ -153,7 +187,7 @@ module LittleGhost
         parent_operation_id:,
         reason: :threshold
       )
-        compacted = summarize_oldest_messages(request, configuration, context, parent_operation_id:)
+        compacted = summarize_oldest_messages(request, configuration, context, parent_operation_id:, reason:)
         Instrumentation.publish(
           :context_compaction,
           reason:,
@@ -162,6 +196,42 @@ module LittleGhost
           context_window_tokens:
         )
         compacted
+      end
+
+      # Keeps the user role so a preserved request never gains system authority.
+      def summary_with_invocation_request(summary, summarized, configuration, context)
+        return summary unless configuration.fetch(:preserve_invocation_request)
+
+        request = @context_management_mutex.synchronize { @invocation_requests[context] }
+        return summary unless request
+        return summary unless summarized.any? do |message|
+          message.equal?(request.message) || message.metadata[INVOCATION_REQUEST_KEY] == request.marker
+        end
+
+        Message.new(
+          role: :user,
+          content: [
+            *summary.content,
+            Content::Text.new(text: "\n\n#{render_framework_prompt("context_management/summary/invocation_request")}\n\n"),
+            *request.message.content
+          ],
+          metadata: request.message.metadata.to_h.merge(INVOCATION_REQUEST_KEY => request.marker)
+        )
+      end
+
+      def after_context_compaction_summary(summary, summarized, reason, context)
+        decision = run_callbacks(
+          :after_context_compaction,
+          {summary:, summarized_messages: summarized.dup.freeze, reason:},
+          context:
+        )
+        apply_cancellation_decision!(decision)
+        replacement = replacement_value(decision, :summary, summary)
+        unless replacement.is_a?(Message) && replacement.role == :user
+          raise ProtocolError, "after_context_compaction must replace :summary with a user Message"
+        end
+
+        replacement
       end
 
       def safe_summary_split(messages, split)

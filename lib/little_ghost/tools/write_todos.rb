@@ -14,6 +14,37 @@ module LittleGhost
     # than one todo may be in progress. When no context is available, the tool
     # retains fallback state on its instance.
     class WriteTodos < Tool
+      # Include in an agent with +manage_context+ to append the current plan to every context summary.
+      module PlanContinuity
+        def self.included(base) # :nodoc:
+          base.after_context_compaction :append_plan_to_context_summary
+        end
+
+        private
+
+        def append_plan_to_context_summary(payload, context: nil)
+          plan = context&.state&.[]("little_ghost.plan")
+          todos = Array(plan&.[]("todos")).map(&:to_h)
+          return Support::Callbacks.continue if todos.empty?
+
+          text = render_framework_prompt(
+            "tools/built_in/write_todos/compaction/plan",
+            plan_title: plan["plan_title"].to_s.strip,
+            todos:
+          )
+          summary = payload.fetch(:summary)
+          Support::Callbacks.replace(
+            payload.merge(
+              summary: Message.new(
+                role: summary.role,
+                content: [*summary.content, Content::Text.new(text: "\n\n#{text}")],
+                metadata: summary.metadata.to_h
+              )
+            )
+          )
+        end
+      end
+
       tool_name "write_todos"
       description FrameworkPrompts.new.render("tools/built_in/write_todos/description")
       input_schema(
