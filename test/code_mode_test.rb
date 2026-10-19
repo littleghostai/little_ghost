@@ -703,6 +703,38 @@ class CodeModeTest < Minitest::Test
     registry&.close
   end
 
+  def test_ruby_instructions_render_composed_schema_types
+    catalog = [{
+      name: "update-record",
+      description: "Update one record.",
+      input_schema: {
+        "type" => "object",
+        "properties" => {
+          "id" => {"anyOf" => [{"type" => "string"}, {"type" => "integer"}]},
+          "note" => {"type" => %w[string null]},
+          "target" => {"oneOf" => [{"const" => "draft"}, {"type" => "object", "properties" => {"id" => {"type" => "string"}}}]},
+          "change" => {"allOf" => [
+            {"properties" => {"field" => {"type" => "string"}}},
+            {"anyOf" => [{"properties" => {"value" => {"type" => "string"}}}, {"type" => "null"}]}
+          ]},
+          "range" => {"type" => "array", "items" => [{"type" => "integer"}, {"type" => "integer"}]},
+          "labels" => {"type" => "object", "additionalProperties" => {"type" => "boolean"}}
+        },
+        "required" => ["id"]
+      }
+    }]
+
+    instructions = LittleGhost::CodeMode::RubyEngine.new.instructions(catalog:)
+
+    assert_includes instructions, "# @param id [String | Integer] required"
+    assert_includes instructions, "# @param note [String | nil] optional"
+    assert_includes instructions, '# @param target ["draft" | {id: String}] optional'
+    assert_includes instructions, "# @param change [{field: String} & ({value: String} | nil)] optional"
+    assert_includes instructions, "# @param range [[Integer, Integer]] optional"
+    assert_includes instructions, "# @param labels [Hash[String, bool]] optional"
+    refute_includes instructions, "[untyped]"
+  end
+
   def test_ruby_instructions_render_typed_tool_signatures
     catalog = [{
       name: "find-items",
