@@ -25,7 +25,7 @@ jobs:
           persist-credentials: false
       - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1
         with:
-          ruby-version: 4.0.4
+          ruby-version: 4.0.9
           bundler-cache: true
       - name: Verify release tag
         id: release_tag
@@ -71,7 +71,7 @@ jobs:
           persist-credentials: false
       - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1
         with:
-          ruby-version: 4.0.4
+          ruby-version: 4.0.9
           bundler-cache: true
       - name: Reverify immutable release tag
         env:
