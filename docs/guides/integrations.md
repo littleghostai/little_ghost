@@ -80,6 +80,29 @@ by default. If you intentionally need some of that content, install a
 `LittleGhost::Support::ContentCapture` with a scrubber before enabling capture.
 Avoid putting raw user, order, session, or request IDs in span attributes.
 
+Your tracing backend may expect its own attributes, such as an OpenInference
+span kind. Add them with `enrich:`, a callable that receives each lifecycle
+phase, notification name, and attributes and returns a Hash to add:
+
+```ruby
+LittleGhost.configure do |config|
+  config.instrument LittleGhost::Tracing::OpenTelemetry.new(
+    enrich: ->(phase, name, attributes) {
+      {"openinference.span.kind" => (name == :tool) ? "TOOL" : "CHAIN"}
+    },
+    payload_limiter: LittleGhost::Tracing::PayloadLimiter.new(max_bytes: 64_000)
+  )
+end
+```
+
+Captured conversations grow with every turn, and many exporters reject or drop
+large attributes. `PayloadLimiter` shortens any string attribute over its
+budget. Message histories keep their most recent messages, model output keeps
+its leading messages, and a Tool call stays paired with its result. Each
+shortened attribute is recorded under `telemetry_truncation` in the `metadata`
+attribute, so a reader can tell a preview from the full value. The limiter only
+shortens content you chose to capture; it doesn't scrub it.
+
 Attribute names follow the evolving [OpenTelemetry GenAI semantic
 conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) where they
 apply. If the tracing backend buffers data, flush or shut down
