@@ -821,7 +821,6 @@ class BedrockTest < Minitest::Test
     assert_includes result, "lookup_order"
     assert_includes result, "call-1"
     assert_includes result, "Order A1 shipped"
-    refute_includes result, "error"
   end
 
   def test_sends_calls_to_undeclared_tools_as_text_and_keeps_declared_calls_native
@@ -854,7 +853,42 @@ class BedrockTest < Minitest::Test
     assert_includes call, JSON.generate({"command" => "tail shipping.log"})
     assert_includes result, "tools.bash"
     assert_includes result, "Unknown Tool: tools.bash"
-    assert_includes result, "error"
+  end
+
+  def test_tool_result_transcripts_distinguish_errors_from_successes
+    transcripts = %i[success error].map do |status|
+      client = ConverseValidatingClient.new
+      LittleGhost::Providers::Bedrock.new(model: "anthropic.test", client:).stream(request(messages: [
+        {role: :assistant, content: LittleGhost::Content::ToolUse.new(id: "call-1", name: "lookup_order", input: {})},
+        {role: :tool, content: LittleGhost::Content::ToolResult.new(tool_use_id: "call-1", content: "Lookup finished", status:)}
+      ])).to_a
+      client.requests.fetch(0).dig(:messages, 1, :content, 0, :text)
+    end
+
+    refute_equal(*transcripts)
+  end
+
+  def test_decides_each_occurrence_of_a_repeated_call_id_separately
+    client = ConverseValidatingClient.new
+    provider = LittleGhost::Providers::Bedrock.new(model: "anthropic.test", client:)
+    lookup = {name: "lookup_order", description: "Look up an order", input_schema: {type: "object"}}
+
+    provider.stream(LittleGhost::ModelRequest.new(
+      messages: [
+        {role: :assistant, content: LittleGhost::Content::ToolUse.new(id: "call_0", name: "lookup_order", input: {order_id: "A1"})},
+        {role: :tool, content: LittleGhost::Content::ToolResult.new(tool_use_id: "call_0", content: "Order A1 shipped", status: :success)},
+        {role: :assistant, content: LittleGhost::Content::ToolUse.new(id: "call_0", name: "tools.bash", input: {command: "tail shipping.log"})},
+        {role: :tool, content: LittleGhost::Content::ToolResult.new(tool_use_id: "call_0", content: "Unknown Tool: tools.bash", status: :error)}
+      ],
+      tools: [lookup]
+    )).to_a
+
+    messages = client.requests.fetch(0).fetch(:messages)
+    assert_equal "lookup_order", messages.dig(0, :content, 0, :tool_use, :name)
+    assert_equal "call_0", messages.dig(1, :content, 0, :tool_result, :tool_use_id)
+    assert_includes messages.dig(2, :content, 0, :text), "tools.bash"
+    assert_includes messages.dig(3, :content, 0, :text), "tools.bash"
+    assert_includes messages.dig(3, :content, 0, :text), "Unknown Tool: tools.bash"
   end
 
   def test_context_compaction_summarizes_a_tool_using_history

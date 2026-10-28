@@ -63,7 +63,6 @@ class AnthropicTest < Minitest::Test
     assert_includes call, "lookup_order"
     assert_includes call, JSON.generate({"order_id" => "A1"})
     assert_includes result, "Lookup timed out"
-    assert_includes result, "error"
     native_body = JSON.parse(with_tools.arguments.fetch(:body))
     assert_equal "tool_use", native_body.dig("messages", 1, "content", 0, "type")
     assert_equal "tool_result", native_body.dig("messages", 2, "content", 0, "type")

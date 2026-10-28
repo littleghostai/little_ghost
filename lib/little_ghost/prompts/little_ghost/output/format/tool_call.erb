@@ -9,6 +9,7 @@
 # - input: JSON-encoded Tool input.
 # Constraints:
 # - Must render non-blank.
+# - Provider adapters render the bundled template, so application prompt overrides do not apply.
 # - This output is embedded inside a larger model-visible message.
 # - Keep the wording consistent with output/format/tool_result so calls and results pair up.
 -%>

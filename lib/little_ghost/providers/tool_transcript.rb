@@ -15,25 +15,21 @@ module LittleGhost
       module_function
 
       # Returns +messages+ with every ToolUse for which the block returns false,
-      # its matching ToolResult, and any ToolResult without a native ToolUse
-      # rewritten as Content::Text. Unchanged messages are returned as is.
+      # its ToolResult, and any ToolResult without a preceding ToolUse rewritten
+      # as Content::Text. Results pair with calls in order, so a repeated call
+      # id is decided per occurrence. Unchanged messages are returned as is.
       def rewrite(messages)
-        names = {}
-        native = Set.new
-        messages.each do |message|
-          message.content.grep(Content::ToolUse).each do |tool_use|
-            names[tool_use.id] = tool_use.name
-            native << tool_use.id if yield(tool_use)
-          end
-        end
-
+        pending = Hash.new { |hash, id| hash[id] = [] }
         messages.map do |message|
           content = message.content.map do |block|
             case block
             when Content::ToolUse
-              native.include?(block.id) ? block : Content::Text.new(text: tool_use_text(block))
+              native = yield(block)
+              pending[block.id] << [native, block.name]
+              native ? block : Content::Text.new(text: tool_use_text(block))
             when Content::ToolResult
-              native.include?(block.tool_use_id) ? block : Content::Text.new(text: tool_result_text(block, names[block.tool_use_id]))
+              native, name = pending[block.tool_use_id].shift
+              native ? block : Content::Text.new(text: tool_result_text(block, name))
             else
               block
             end
