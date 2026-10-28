@@ -39,7 +39,7 @@ class NetworkHostPolicyTest < Minitest::Test
   def test_deny_paths_win_and_match_regardless_of_case_or_encoding
     hosts = LittleGhost::Network::HostPolicy.new do
       host "git.example.com" do
-        deny_paths %r{/git-receive-pack\z}, "/admin*"
+        deny_paths %r{/git-receive-pack\z}, "/Admin*"
       end
     end
 
@@ -61,6 +61,8 @@ class NetworkHostPolicyTest < Minitest::Test
       "/v1/a\\b",
       "/v1/%00",
       "/v1/%ff",
+      "/v1//answers",
+      "/v1/answers/..;/admin",
       "v1/answers"
     ].each do |path|
       decision = hosts.authorize(request(path:))
@@ -117,12 +119,24 @@ class NetworkHostPolicyTest < Minitest::Test
       "x-envoy-internal" => "true",
       "x-request-id" => "abc",
       "x-trace" => "1",
+      "x-forwarded-user" => "admin",
       "cookie" => "session=value"
     }))
 
     assert decision.allowed
-    assert_equal %w[cookie x-trace], decision.remove_headers.sort
+    assert_equal %w[cookie x-forwarded-user x-trace], decision.remove_headers.sort
     assert_equal :all, hosts.forward_headers
+  end
+
+  def test_method_restrictions_remove_method_override_headers
+    hosts = LittleGhost::Network::HostPolicy.new do
+      host("api.example.com") { methods :get }
+      host("open.example.com") {}
+    end
+    headers = {"x-http-method-override" => "DELETE"}
+
+    assert_equal ["x-http-method-override"], hosts.authorize(request(headers:)).remove_headers
+    assert_empty hosts.authorize(request(host: "open.example.com", headers:)).remove_headers
   end
 
   def test_policy_derives_gateway_settings

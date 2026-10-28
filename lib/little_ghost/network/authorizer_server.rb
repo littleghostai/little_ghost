@@ -45,7 +45,9 @@ module LittleGhost
       ).freeze # :nodoc:
 
       # Builds a server for +socket_path+. +mode+ sets the socket's permission
-      # bits so a separate Envoy user can connect.
+      # bits so a separate Envoy user can connect. Create the socket in a
+      # directory that only Envoy and the authorizer can reach; the socket
+      # briefly has default permissions while it is created.
       def initialize(socket_path:, authorizer:, run: nil, mode: 0o600)
         @socket_path = socket_path
         @authorizer = authorizer
@@ -93,17 +95,25 @@ module LittleGhost
           worker.join
         end
         @thread&.join unless @thread == Thread.current
-        File.unlink(socket_path) if File.exist?(socket_path)
+        remove_socket if @bound
+        @bound = false
         nil
       end
 
       private
 
       def bind
-        File.unlink(socket_path) if File.exist?(socket_path)
+        remove_socket
         @server = UNIXServer.new(socket_path)
+        @bound = true
         @server.listen(128)
         File.chmod(@mode, socket_path)
+      end
+
+      def remove_socket
+        File.unlink(socket_path) if File.socket?(socket_path)
+      rescue Errno::ENOENT
+        nil
       end
 
       def accept_loop(stop_io: nil)
@@ -126,8 +136,7 @@ module LittleGhost
             client.close
             next
           end
-          worker = Thread.new(client) { |connection| handle(connection) }
-          @mutex.synchronize { @workers << worker }
+          @mutex.synchronize { @workers << Thread.new(client) { |connection| handle(connection) } }
         rescue IOError, Errno::EBADF
           break if @stopping
           raise

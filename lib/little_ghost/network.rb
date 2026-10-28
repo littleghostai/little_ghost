@@ -95,6 +95,11 @@ module LittleGhost
     # application makes reachable from the sandbox. +timeout+ bounds each
     # request in seconds; +0+ disables the bound for streaming responses, and
     # +nil+ uses the policy's timeout for the upstream host or no bound.
+    #
+    # Any process that can connect to the facade receives the credentials its
+    # authorizer injects. Place a socket in a directory that only the intended
+    # sandbox can reach, and use a port only when the sandbox has its own
+    # network namespace.
     class Facade < Data.define(:name, :upstream, :port, :socket, :timeout)
       NAME = /\A[a-z][a-z0-9_]{0,62}\z/ # :nodoc:
 

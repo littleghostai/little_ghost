@@ -56,8 +56,11 @@ module LittleGhost
     #
     # Paths are matched after the query string is removed and percent-encoding
     # is decoded. A path that still contains encoded characters after three
-    # rounds of decoding, a backslash, a NUL byte, or a <tt>.</tt> or
-    # <tt>..</tt> segment is rejected with status 400.
+    # rounds of decoding, a backslash, a NUL byte, an empty segment, or a
+    # <tt>.</tt> or <tt>..</tt> segment (including one followed by
+    # <tt>;</tt> parameters) is rejected with status 400. When a rule declares
+    # +methods+, method-override headers such as
+    # <tt>x-http-method-override</tt> are removed.
     #
     # Blocks run in the authorizer's process for every matching request, so
     # they can read a credential that changes over time. They must be
@@ -67,8 +70,9 @@ module LittleGhost
     class HostPolicy
       METHOD = /\A[A-Z][A-Z-]*\z/ # :nodoc:
       HEADER = /\A[a-z0-9][a-z0-9-]*\z/ # :nodoc:
-      UNMANAGED_HEADER_PREFIXES = %w[x-envoy- x-forwarded-].freeze # :nodoc:
-      UNMANAGED_HEADERS = (Decision::FORBIDDEN_MUTATIONS + %w[x-request-id]).freeze # :nodoc:
+      UNMANAGED_HEADER_PREFIXES = %w[x-envoy-].freeze # :nodoc:
+      UNMANAGED_HEADERS = (Decision::FORBIDDEN_MUTATIONS + %w[x-request-id x-forwarded-for x-forwarded-proto]).freeze # :nodoc:
+      METHOD_OVERRIDE_HEADERS = %w[x-http-method-override x-http-method x-method-override].freeze # :nodoc:
 
       Rule = Data.define(:http_methods, :paths, :deny_paths, :pass_headers, :injections, :inject_headers, :requirements, :timeout) # :nodoc:
 
@@ -107,7 +111,7 @@ module LittleGhost
         return Decision.deny(status: 400, reason: "path is not canonical") unless path
 
         lowercase = path.downcase
-        if rule.deny_paths.any? { |pattern| path_match?(pattern, path) || path_match?(pattern, lowercase) }
+        if rule.deny_paths.any? { |pattern| path_match?(pattern, path) || path_match?(pattern, lowercase, fold: true) }
           return Decision.deny(reason: "path is not allowed")
         end
         unless rule.paths.nil? || rule.paths.any? { |pattern| path_match?(pattern, path) }
@@ -180,6 +184,7 @@ module LittleGhost
       def removed_headers(rule, request, set_headers)
         present = request.headers.keys
         removed = present.select { |name| CREDENTIAL_HEADERS.include?(name) }
+        removed += present.select { |name| METHOD_OVERRIDE_HEADERS.include?(name) } if rule.http_methods
         if rule.pass_headers.is_a?(Array)
           removed += present.reject do |name|
             rule.pass_headers.include?(name) || UNMANAGED_HEADERS.include?(name) ||
@@ -199,16 +204,18 @@ module LittleGhost
         end
         return if URI.decode_uri_component(path) != path
         return unless path.valid_encoding? && path.start_with?("/")
-        return if path.include?("\\") || path.include?("\0")
-        return if path.split("/").any? { |segment| segment == "." || segment == ".." }
+        return if path.include?("\\") || path.include?("\0") || path.include?("//")
+        return if path.split("/").any? { |segment| %w[. ..].include?(segment.split(";", 2).first) }
 
         path
       rescue ArgumentError
         nil
       end
 
-      def path_match?(pattern, path)
+      def path_match?(pattern, path, fold: false)
         return pattern.match?(path) if pattern.is_a?(Regexp)
+
+        pattern = pattern.downcase if fold
         return path.start_with?(pattern.delete_suffix("*")) if pattern.end_with?("*")
 
         path == pattern

@@ -290,6 +290,9 @@ class NetworkTest < Minitest::Test
       assert_equal({"socket_address" => {"address" => "127.0.0.1", "port_value" => 3130}}, answers.fetch("address"))
       assert_equal File.join(root, "search.sock"), search.dig("address", "pipe", "path")
       assert_nil answers.dig("filter_chains", 0, "transport_socket")
+      assert answers_manager.fetch("normalize_path")
+      assert answers_manager.fetch("merge_slashes")
+      assert_equal "REJECT_REQUEST", answers_manager.fetch("path_with_escaped_slashes_action")
       assert_equal %w[envoy.filters.http.ext_authz envoy.filters.http.dynamic_forward_proxy envoy.filters.http.router],
         answers_manager.fetch("http_filters").map { |filter| filter.fetch("name") }
       assert_equal({"cluster" => "little_ghost_facade_egress", "timeout" => "0s"}, answers_route.fetch("route"))
@@ -344,6 +347,7 @@ class NetworkTest < Minitest::Test
 
       assert_equal({"git.example.com" => "300s", "downloads.example.com" => "0s"}, timeouts)
       assert_equal [{"safe_regex" => {"regex" => ".*"}}], authorizer.dig("allowed_headers", "patterns")
+      assert_includes authorizer.dig("disallowed_headers", "patterns"), {"exact" => "x-little-ghost-facade-upstream"}
       assert_nil authorizer.dig("http_service", "authorization_request", "headers_to_add")
     end
   end

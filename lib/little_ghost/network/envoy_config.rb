@@ -322,6 +322,10 @@ module LittleGhost
               route_config:,
               filters: [authorizer_filter(policy, facade:), dynamic_forward_proxy_filter, router_filter],
               access_log:
+            ).merge(
+              "normalize_path" => true,
+              "merge_slashes" => true,
+              "path_with_escaped_slashes_action" => "REJECT_REQUEST"
             )
           }]}]
         }
