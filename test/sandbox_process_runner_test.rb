@@ -4,6 +4,7 @@ require "test_helper"
 require "async"
 require "little_ghost/sandbox/process_runner"
 require "little_ghost/sandbox/process_session"
+require "tmpdir"
 
 class SandboxProcessRunnerTest < Minitest::Test
   def test_captures_exit_status_and_bounded_output
@@ -69,6 +70,95 @@ class SandboxProcessRunnerTest < Minitest::Test
     end
 
     assert heartbeat_before_finish
+  end
+
+  def test_capture_reports_a_timeout_without_raising
+    result = LittleGhost::Sandbox::ProcessRunner.capture([Gem.ruby, "-e", "sleep 30"], timeout: 0.05)
+
+    assert result.timed_out?
+    refute result.success?
+  end
+
+  def test_capture_reports_truncation_without_a_marker
+    result = LittleGhost::Sandbox::ProcessRunner.capture(
+      [Gem.ruby, "-e", '$stdout.write("a" * 20)'], timeout: 5, max_output_bytes: 5
+    )
+
+    assert_equal "aaaaa", result.stdout
+    assert result.stdout_truncated?
+    refute result.stderr_truncated?
+    assert result.output_truncated?
+  end
+
+  def test_capture_without_an_output_limit_keeps_everything
+    result = LittleGhost::Sandbox::ProcessRunner.capture(
+      [Gem.ruby, "-e", '$stdout.write("a" * 3_000_000)'], timeout: 10, max_output_bytes: nil
+    )
+
+    assert_equal 3_000_000, result.stdout.bytesize
+    refute result.output_truncated?
+  end
+
+  def test_capture_writes_standard_input_and_can_return_binary_output
+    result = LittleGhost::Sandbox::ProcessRunner.capture(
+      [Gem.ruby, "-e", '$stdout.binmode; $stdout.write($stdin.read.bytes.map { |byte| byte ^ 0xff }.pack("C*"))'],
+      timeout: 5, stdin_data: "ghost", binmode: true
+    )
+
+    assert_equal Encoding::BINARY, result.stdout.encoding
+    assert_equal "ghost", result.stdout.bytes.map { |byte| byte ^ 0xff }.pack("C*")
+  end
+
+  def test_capture_can_inherit_and_extend_the_parent_environment
+    previous = ENV["LITTLE_GHOST_INHERITED_TEST"]
+    ENV["LITTLE_GHOST_INHERITED_TEST"] = "parent"
+    result = LittleGhost::Sandbox::ProcessRunner.capture(
+      [Gem.ruby, "-e", 'print ENV["LITTLE_GHOST_INHERITED_TEST"], ":", ENV["EXTRA"]'],
+      timeout: 5, inherit_environment: true, environment: {"EXTRA" => "configured"}
+    )
+
+    assert_equal "parent:configured", result.stdout
+  ensure
+    ENV["LITTLE_GHOST_INHERITED_TEST"] = previous
+  end
+
+  def test_capture_runs_in_the_requested_directory
+    Dir.mktmpdir do |directory|
+      result = LittleGhost::Sandbox::ProcessRunner.capture(
+        [Gem.ruby, "-e", "print Dir.pwd"], timeout: 5, chdir: directory
+      )
+
+      assert_equal File.realpath(directory), File.realpath(result.stdout)
+    end
+  end
+
+  def test_capture_waits_for_group_members_that_outlive_the_leader
+    result = LittleGhost::Sandbox::ProcessRunner.capture(
+      [Gem.ruby, "-e", "fork { $stdout.reopen(File::NULL); sleep 30 }; exit!"], timeout: 0.3
+    )
+
+    assert result.timed_out?
+  end
+
+  def test_capture_stops_the_group_and_raises_when_the_run_is_cancelled
+    context = LittleGhost::RunContext.new
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    canceller = Thread.new do
+      sleep(0.1)
+      context.cancellation_token.cancel
+    end
+
+    assert_raises(LittleGhost::CancelledError) do
+      LittleGhost::Sandbox::ProcessRunner.capture([Gem.ruby, "-e", "sleep 30"], timeout: 30, context:)
+    end
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 5
+  ensure
+    canceller&.join
+  end
+
+  def test_capture_rejects_invalid_limits
+    assert_raises(ArgumentError) { LittleGhost::Sandbox::ProcessRunner.capture(["true"], timeout: 0) }
+    assert_raises(ArgumentError) { LittleGhost::Sandbox::ProcessRunner.capture(["true"], timeout: 1, max_output_bytes: 0) }
   end
 
   def test_process_session_enforces_parent_supervised_memory
