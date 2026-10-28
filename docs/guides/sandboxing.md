@@ -407,9 +407,13 @@ LittleGhost::Network::AuthorizerServer.new(
 ```
 
 Running the authorizer as its own user keeps credentials out of both Envoy and
-the sandbox. `peer_uids` closes connections from any other user, and
-`socket_mode` sets the permission bits of the proxy and facade sockets Envoy
-creates; it never grants access to other users, so give the sandbox user
+the sandbox. `peer_uids` closes connections from any other user. It compares
+user IDs as the authorizer's own user namespace sees them, so it only fits an
+authorizer that shares Envoy's namespace; inside a separate namespace, such as
+a Bubblewrap sandbox, protect the socket with a directory that only Envoy and
+the authorizer can enter. `socket_mode` sets the permission bits of the proxy
+and facade sockets Envoy creates; it never grants access to other users, so
+give the sandbox user
 Envoy's group or run it as Envoy's user with `0o600`. The authorizer answers
 only requests from listeners in this configuration: Envoy tells it whether a
 request came from an inspected host or from a facade, and a client cannot
