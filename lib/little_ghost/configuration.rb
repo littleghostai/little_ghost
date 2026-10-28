@@ -414,9 +414,9 @@ module LittleGhost
       implementation
     end
 
-    # Seconds between automatic model detail refreshes for one target, passed
-    # to the resolver as +catalog_refresh_interval+. Unset, details refresh
-    # only when callers invoke ModelResolver#refresh!.
+    # Seconds between automatic model detail refreshes, passed to the resolver
+    # as +catalog_refresh_interval+. Unset, details refresh only when callers
+    # invoke ModelResolver#refresh!.
     def catalog_refresh_interval(value = :__read__)
       return configuration_values[:catalog_refresh_interval] if value == :__read__
       valid = value.nil? || (value.is_a?(Numeric) && value.positive?)

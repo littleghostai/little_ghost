@@ -21,9 +21,9 @@ module LittleGhost
   # target, settings, and request options are layered over its parent's.
   #
   # Model details come from the bundled catalog until you call #refresh!. A
-  # long-lived process can pass +catalog_refresh_interval+ to refresh a
-  # target's details when they are first needed and again once the interval
-  # has passed.
+  # long-lived process can pass +catalog_refresh_interval+ to refresh every
+  # configured source when details are first needed and again in the
+  # background once the interval has passed.
   class ModelResolver
     DEFAULT_CREDENTIALS = [ # :nodoc:
       ["LITTLEGHOST_OPENROUTER_API_KEY", "openrouter"],
@@ -31,6 +31,8 @@ module LittleGhost
       ["OPENROUTER_API_KEY", "openrouter"],
       ["OPENAI_API_KEY", "openai"]
     ].freeze
+    FIRST_REFRESH_WAIT = 10 # :nodoc:
+    REFRESH_POLL_INTERVAL = 0.05 # :nodoc:
     DEFAULT_MODELS = { # :nodoc:
       "openrouter" => "openai/gpt-5.6-luna",
       "openai" => "gpt-5.6-luna"
@@ -42,13 +44,17 @@ module LittleGhost
     # Builds a resolver from explicit provider connections and profiles. With
     # neither, conventional credentials select GPT-5.6 Luna.
     #
-    # +catalog_refresh_interval+, in seconds, makes #details refresh a target
-    # from the catalog sources the first time it is requested and again after
-    # the interval passes. Leave it +nil+ to refresh only when you call
-    # #refresh!. A failed refresh keeps the last good details and is retried
-    # after the next interval. Concurrent requests for the same target wait for
-    # one refresh; other targets are not blocked. +clock+ returns monotonic
-    # seconds and exists for tests.
+    # +catalog_refresh_interval+, in seconds, makes #details refresh all
+    # configured catalog sources in one background call. The first request
+    # waits up to ten seconds for that refresh, or less when its Run is
+    # cancelled or reaches its deadline, and then uses whatever details are
+    # available. Once the interval has passed, the next request starts another
+    # refresh and returns the current details without waiting. Concurrent
+    # requests share one refresh. A failed refresh keeps the last good details,
+    # emits a +little_ghost.models.catalog_refresh_failed+ warning naming only
+    # the error class, and is retried after the next interval. Leave the
+    # interval +nil+ to refresh only when you call #refresh!. +clock+ returns
+    # monotonic seconds and exists for tests.
     def initialize(providers: nil, profiles: nil, default_model: nil, provider_registry: ProviderRegistry.new,
       catalog: nil, catalog_sources: [], provider_adapters: {}, credential_resolver: nil,
       catalog_refresh_interval: nil, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
@@ -72,8 +78,8 @@ module LittleGhost
       @catalog_refresh_interval = catalog_refresh_interval
       @clock = clock
       @refresh_mutex = Mutex.new
-      @refresh_locks = {}
-      @refreshed_at = {}
+      @refreshed_at = nil
+      @refresh_done = nil
     end
 
     # Seconds between automatic detail refreshes for one target, or +nil+.
@@ -100,7 +106,7 @@ module LittleGhost
         raise ConfigurationError, "Model target references unknown provider #{target.provider}"
       end
       provider_config = provider_config.merge(resolved_credentials(target.provider, provider_config)) if @credential_resolver
-      details = details_for(target, base[:details])
+      details = details_for(target, base[:details], context)
       settings = clamp_output_tokens(base.fetch(:settings), details)
       adapter = provider_config.fetch("adapter")
       provider = @provider_registry.build(
@@ -119,26 +125,66 @@ module LittleGhost
     end
 
     # Returns normalized metadata for +target+ without constructing a provider.
-    # With a +catalog_refresh_interval+, stale details are refreshed first.
-    def details(target)
-      refresh_stale_details(target) if @catalog_refresh_interval
+    # With a +catalog_refresh_interval+, stale details start a refresh first;
+    # see ::new for when this waits. Raises CancelledError or
+    # DeadlineExceededError when +context+ stops while waiting.
+    def details(target, context: nil)
+      refresh_stale_catalog(context)
       catalog.details(target)
     end
 
     # Refreshes configured metadata sources, retaining stale data on failure.
-    def refresh!(target: nil) = catalog.refresh!(target:)
+    # A refresh of every target also restarts the +catalog_refresh_interval+.
+    def refresh!(target: nil)
+      result = catalog.refresh!(target:)
+      @refresh_mutex.synchronize { @refreshed_at = @clock.call } if target.nil?
+      result
+    end
 
     private
 
-    def refresh_stale_details(target)
-      key = Models::Target.parse(target).to_s
-      lock = @refresh_mutex.synchronize { @refresh_locks[key] ||= Mutex.new }
-      lock.synchronize do
-        refreshed_at = @refresh_mutex.synchronize { @refreshed_at[key] }
-        next if refreshed_at && @clock.call - refreshed_at < @catalog_refresh_interval
+    def refresh_stale_catalog(context)
+      return unless @catalog_refresh_interval
 
-        catalog.refresh!(target: key)
-        @refresh_mutex.synchronize { @refreshed_at[key] = @clock.call }
+      done = start_stale_refresh
+      await_first_refresh(done, context) if done
+    end
+
+    def start_stale_refresh
+      @refresh_mutex.synchronize do
+        return @refresh_done if @refresh_done && !@refresh_done.closed?
+        return nil if @refreshed_at && @clock.call - @refreshed_at < @catalog_refresh_interval
+
+        done = Queue.new
+        Thread.new(done) { |signal| background_refresh(signal) }.report_on_exception = false
+        @refresh_done = done
+      end
+    end
+
+    def await_first_refresh(done, context)
+      return unless @refresh_mutex.synchronize { @refreshed_at.nil? }
+
+      deadline = @clock.call + FIRST_REFRESH_WAIT
+      until done.closed? || @clock.call >= deadline
+        context&.check!
+        done.pop(timeout: REFRESH_POLL_INTERVAL)
+      end
+      context&.check!
+    end
+
+    def background_refresh(done)
+      errors = catalog.refresh!.fetch(:errors)
+    rescue Exception => error # rubocop:disable Lint/RescueException
+      errors = [error]
+      raise
+    ensure
+      begin
+        @refresh_mutex.synchronize { @refreshed_at = @clock.call }
+        Array(errors).each do |failure|
+          Events.warn("little_ghost.models.catalog_refresh_failed", error_type: failure.class.name)
+        end
+      ensure
+        done.close
       end
     end
 
@@ -153,8 +199,11 @@ module LittleGhost
       values.to_h { |key, value| [key.to_s, value] }
     end
 
-    def details_for(target, snapshot)
-      return details(target) unless snapshot
+    def details_for(target, snapshot, context)
+      unless snapshot
+        refresh_stale_catalog(context)
+        return details(target)
+      end
 
       values = snapshot.to_h.transform_keys(&:to_sym)
       snapshot_target = Models::Target.parse(values.delete(:target) || target)

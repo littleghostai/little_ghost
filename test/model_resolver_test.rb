@@ -381,36 +381,31 @@ class ModelResolverTest < Minitest::Test
     assert_equal({input: 1.0}, catalog.details("openai:gpt-5.6-terra").pricing)
   end
 
-  def test_catalog_refresh_interval_refreshes_each_target_when_its_details_are_stale
+  def test_catalog_refresh_interval_refreshes_every_source_once_per_interval
     now = 1_000.0
     refreshed = []
     source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
     source.define_singleton_method(:refresh) do |target:|
-      refreshed << target.to_s
-      {target.to_s => {context_window: 100 * refreshed.length}}
+      refreshed << target
+      {"test:model" => {context_window: 100 * refreshed.length}, "test:other" => {context_window: 1}}
     end
-    resolver = LittleGhost::ModelResolver.new(
-      providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
-      profiles: {main: {target: "test:model"}},
-      catalog_sources: [source],
-      catalog_refresh_interval: 60,
-      clock: -> { now }
-    )
+    resolver = refreshing_resolver(source, interval: 60, clock: -> { now })
 
     first = resolver.details("test:model").context_window
     now += 59
     cached = resolver.details("test:model").context_window
-    resolver.details("test:other")
+    other = resolver.details("test:other").context_window
     now += 1
     stale = resolver.details("test:model").context_window
 
-    assert_equal [100, 100, 300], [first, cached, stale]
-    assert_equal %w[test:model test:other test:model], refreshed
+    assert_equal [100, 100, 1, 100], [first, cached, other, stale]
+    assert wait_until { resolver.details("test:model").context_window == 200 }
+    assert_equal [nil, nil], refreshed
   end
 
   def test_catalog_refresh_interval_applies_to_resolved_models
     source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
-    source.define_singleton_method(:refresh) { |target:| {target.to_s => {max_output_tokens: 300}} }
+    source.define_singleton_method(:refresh) { |target:| {"test:model" => {max_output_tokens: 300}} }
     resolver = LittleGhost::ModelResolver.new(
       providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
       profiles: {main: {target: "test:model", settings: {max_tokens: 1_000}}},
@@ -422,35 +417,131 @@ class ModelResolverTest < Minitest::Test
     assert_equal 300, resolver.resolve("main").settings.fetch(:max_tokens)
   end
 
-  def test_failed_interval_refresh_keeps_details_and_waits_for_the_next_interval
+  def test_stale_details_are_served_while_a_slow_refresh_runs
+    now = 0.0
+    release = Queue.new
+    calls = 0
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
+    source.define_singleton_method(:refresh) do |target:|
+      calls += 1
+      release.pop if calls == 2
+      {"test:model" => {context_window: 100 * calls}}
+    end
+    resolver = refreshing_resolver(source, interval: 10, clock: -> { now })
+    resolver.details("test:model")
+    now += 10
+
+    reader = Thread.new { resolver.details("test:model").context_window }
+
+    assert reader.join(2), "stale details waited for the refresh"
+    assert_equal 100, reader.value
+    release << true
+    assert wait_until { resolver.details("test:model").context_window == 200 }
+  ensure
+    release << true
+  end
+
+  def test_first_use_stops_waiting_when_the_run_reaches_its_deadline
+    release = Queue.new
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
+    source.define_singleton_method(:refresh) do |target:|
+      release.pop
+      {}
+    end
+    resolver = refreshing_resolver(source, interval: 60)
+    context = LittleGhost::RunContext.new(deadline: Time.now + 0.1)
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    assert_raises(LittleGhost::DeadlineExceededError) { resolver.details("test:model", context:) }
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 2
+  ensure
+    release << true
+  end
+
+  def test_first_use_waits_a_bounded_time_for_a_slow_refresh
+    now = 0.0
+    release = Queue.new
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
+    source.define_singleton_method(:refresh) do |target:|
+      release.pop
+      {"test:model" => {context_window: 500}}
+    end
+    resolver = refreshing_resolver(source, interval: 60, clock: -> { now += 1 })
+
+    reader = Thread.new { resolver.details("test:model").context_window }
+
+    assert reader.join(5), "first use waited for the refresh without a bound"
+    assert_nil reader.value
+  ensure
+    release << true
+  end
+
+  def test_failed_source_keeps_other_sources_and_reports_only_the_error_class
+    now = 0.0
+    attempts = 0
+    events = []
+    listener = Object.new
+    listener.define_singleton_method(:emit) { |event| events << event }
+    LittleGhost::Events.subscribe(listener)
+    failing = Class.new(LittleGhost::Models::Catalog::Source).new(name: "failing")
+    failing.define_singleton_method(:refresh) do |target:|
+      attempts += 1
+      raise "offline at https://internal.example/secret"
+    end
+    working = Class.new(LittleGhost::Models::Catalog::Source).new(name: "working")
+    working.define_singleton_method(:refresh) { |target:| {"test:model" => {context_window: 200}} }
+    resolver = refreshing_resolver(failing, working, interval: 10, clock: -> { now })
+
+    window = resolver.details("test:model").context_window
+    now += 5
+    resolver.details("test:model")
+
+    assert_equal 200, window
+    assert_equal 1, attempts
+    failures = events.select { |event| event[:name] == "little_ghost.models.catalog_refresh_failed" }
+    assert_equal [{error_type: "RuntimeError"}], failures.map { |event| event[:payload] }
+    refute_includes failures.inspect, "secret"
+  ensure
+    LittleGhost::Events.unsubscribe(listener)
+  end
+
+  def test_refresh_recovers_after_an_error_outside_standard_error
     now = 0.0
     attempts = 0
     source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
     source.define_singleton_method(:refresh) do |target:|
       attempts += 1
-      raise "offline" if attempts == 2
+      raise NotImplementedError, "unsupported" if attempts == 1
 
-      {target.to_s => {context_window: 200}}
+      {"test:model" => {context_window: 300}}
     end
-    resolver = LittleGhost::ModelResolver.new(
-      providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
-      profiles: {main: {target: "test:model"}},
-      catalog_sources: [source],
-      catalog_refresh_interval: 10,
-      clock: -> { now }
-    )
+    resolver = refreshing_resolver(source, interval: 10, clock: -> { now })
 
-    resolver.details("test:model")
+    first = resolver.details("test:model").context_window
     now += 10
-    after_failure = resolver.details("test:model").context_window
-    now += 5
     resolver.details("test:model")
 
-    assert_equal 200, after_failure
-    assert_equal 2, attempts
+    assert_nil first
+    assert wait_until { resolver.details("test:model").context_window == 300 }
   end
 
-  def test_concurrent_requests_for_a_stale_target_share_one_refresh
+  def test_manual_refresh_of_every_target_restarts_the_interval
+    now = 0.0
+    calls = 0
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
+    source.define_singleton_method(:refresh) do |target:|
+      calls += 1
+      {"test:model" => {context_window: calls}}
+    end
+    resolver = refreshing_resolver(source, interval: 10, clock: -> { now })
+
+    resolver.refresh!
+    resolver.details("test:model")
+
+    assert_equal 1, calls
+  end
+
+  def test_concurrent_first_requests_share_one_refresh
     started = Queue.new
     release = Queue.new
     calls = 0
@@ -459,14 +550,9 @@ class ModelResolverTest < Minitest::Test
       calls += 1
       started << true
       release.pop
-      {target.to_s => {context_window: 400}}
+      {"test:model" => {context_window: 400}}
     end
-    resolver = LittleGhost::ModelResolver.new(
-      providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
-      profiles: {main: {target: "test:model"}},
-      catalog_sources: [source],
-      catalog_refresh_interval: 60
-    )
+    resolver = refreshing_resolver(source, interval: 60)
 
     first = Thread.new { resolver.details("test:model").context_window }
     started.pop
@@ -898,6 +984,26 @@ class ModelResolverTest < Minitest::Test
   end
 
   private
+
+  def refreshing_resolver(*sources, interval:, clock: nil)
+    LittleGhost::ModelResolver.new(
+      providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
+      profiles: {main: {target: "test:model"}},
+      catalog_sources: sources,
+      catalog_refresh_interval: interval,
+      **(clock ? {clock:} : {})
+    )
+  end
+
+  def wait_until(timeout = 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    until yield
+      return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep(0.01)
+    end
+    true
+  end
 
   def with_configuration(providers:, models:)
     Dir.mktmpdir do |root|
