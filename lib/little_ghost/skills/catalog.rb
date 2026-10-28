@@ -20,8 +20,10 @@ module LittleGhost
     # matter whose +name+ matches the directory name. A symbolic link that
     # escapes its root or an oversized file raises ConfigurationError. Linked
     # skill directories and manifests, unsafe or mismatched names, and invalid
-    # UTF-8 or YAML are skipped before instructions reach a model. Optional resource listings
-    # are limited by count and depth.
+    # UTF-8 or YAML are skipped before instructions reach a model, and each
+    # skip emits a +little_ghost.skills.skill_skipped+ warning through Events
+    # with the directory name and a +reason+. Optional resource listings are
+    # limited by count and depth.
     #
     # === Layering skill roots
     #
@@ -52,7 +54,14 @@ module LittleGhost
     class Catalog
       include Enumerable
 
-      class InvalidSkillError < ConfigurationError; end # :nodoc:
+      class InvalidSkillError < ConfigurationError # :nodoc:
+        attr_reader :reason
+
+        def initialize(message = nil, reason: :invalid_manifest)
+          super(message)
+          @reason = reason
+        end
+      end
       private_constant :InvalidSkillError
 
       DEFAULT_MAX_SKILLS = 1_000 # :nodoc:
@@ -62,6 +71,9 @@ module LittleGhost
       RESOURCE_DIRECTORIES = %w[scripts references assets].freeze # :nodoc:
       SAFE_NAME_PATTERN = /\A[a-zA-Z0-9_-]+\z/ # :nodoc:
       PRECEDENCES = %i[last first error].freeze # :nodoc:
+      DEFAULT_MAX_MATERIALIZED_BYTES = 100_000_000 # :nodoc:
+      DEFAULT_MAX_MATERIALIZED_FILES = 10_000 # :nodoc:
+      STAGING_PREFIX = ".little_ghost-staging-" # :nodoc:
 
       # Loads valid skills immediately using the supplied safety limits.
       # +resource_root+ may be an absolute process-visible path. A
@@ -165,20 +177,68 @@ module LittleGhost
         )
       end
 
-      # Copies each Skill directory in the catalog into +destination+ and
-      # returns the destination's real path. Each Skill lands in
-      # <tt>destination/name</tt>, replacing an entry with that name; other
-      # entries are left in place. Regular files and directories are copied
-      # with group and world write permission removed. Symbolic links and
-      # special files are skipped, so a copied Skill never points outside
-      # its directory.
+      # Copies each Skill in the catalog into +destination+ and returns the
+      # destination's real path. Each Skill lands in <tt>destination/name</tt>
+      # with its +SKILL.md+ and its +scripts+, +references+, and +assets+
+      # directories; other files in the Skill directory are not copied.
+      # Regular files and directories are copied with group and world write
+      # permission removed. Symbolic links and special files are skipped, so a
+      # copied Skill never points outside its directory.
       #
-      # The destination must not overlap a configured skill root. A
-      # ConfigurationError is raised when it does, or when a +SKILL.md+ no
-      # longer matches the Skill that was loaded.
-      def materialize(destination)
+      # A complete copy replaces an entry with the same name by rename; other
+      # entries are left in place. Concurrent calls for one destination run
+      # one at a time, and each call removes entries whose names start with
+      # <tt>.little_ghost-staging-</tt> left by an interrupted earlier call.
+      #
+      # +max_bytes+ and +max_files+ bound the whole copy, and resource
+      # directories may nest at most three levels. ConfigurationError is
+      # raised, leaving earlier entries in place, when a limit is exceeded,
+      # when the destination overlaps a configured skill root, when a file
+      # cannot be read or written, or when a Skill changed after it was
+      # loaded.
+      def materialize(
+        destination,
+        max_bytes: DEFAULT_MAX_MATERIALIZED_BYTES,
+        max_files: DEFAULT_MAX_MATERIALIZED_FILES
+      )
+        budget = {
+          max_bytes: positive_integer(max_bytes, :max_bytes),
+          max_files: positive_integer(max_files, :max_files),
+          bytes: 0,
+          files: 0
+        }
+        reject_overlapping_destination!(prospective_realpath(destination), destination)
         FileUtils.mkdir_p(destination, mode: 0o700)
         real_destination = File.realpath(destination)
+        reject_overlapping_destination!(real_destination, destination)
+        File.open(real_destination, File::RDONLY) do |lock|
+          lock.flock(File::LOCK_EX)
+          Dir.children(real_destination).each do |name|
+            remove_quietly(File.join(real_destination, name)) if name.start_with?(STAGING_PREFIX)
+          end
+          @skills.each_value { |skill| materialize_skill(skill, real_destination, budget) }
+        end
+        real_destination
+      rescue SystemCallError => error
+        raise ConfigurationError, "Skills could not be materialized into #{destination}: #{error.message}"
+      end
+
+      private
+
+      def prospective_realpath(path)
+        path = File.expand_path(path)
+        missing = []
+        until File.exist?(path) || File.symlink?(path)
+          parent = File.dirname(path)
+          break if parent == path
+
+          missing.unshift(File.basename(path))
+          path = parent
+        end
+        File.join(File.realpath(path), *missing)
+      end
+
+      def reject_overlapping_destination!(real_destination, destination)
         overlapping = @paths.any? do |root|
           next false unless Dir.exist?(root.path)
 
@@ -186,62 +246,120 @@ module LittleGhost
           inside_root?(real_destination, real_root) || inside_root?(real_root, real_destination)
         end
         raise ConfigurationError, "Skill destination overlaps a skill path: #{destination}" if overlapping
-
-        @skills.each_value { |skill| materialize_skill(skill, real_destination) }
-        real_destination
       end
 
-      private
-
-      def materialize_skill(skill, destination)
-        staging = Dir.mktmpdir(".#{skill.name}-", destination)
+      def materialize_skill(skill, destination, budget)
         source = File.dirname(skill.source_path)
-        copy_directory(source, staging)
+        source_stat = File.lstat(source)
+        staging = Dir.mktmpdir("#{STAGING_PREFIX}#{skill.name}-", destination)
+        copy_file(skill.source_path, File.join(staging, "SKILL.md"), File.lstat(skill.source_path), budget)
+        RESOURCE_DIRECTORIES.each do |name|
+          resource = File.join(source, name)
+          stat = File.lstat(resource)
+          copy_directory(resource, File.join(staging, name), stat, budget, depth: 1) if stat.directory?
+        rescue Errno::ENOENT
+          next
+        end
+        verify_unchanged!(source, source_stat)
         verify_materialized_manifest!(skill, File.join(staging, "SKILL.md"))
-        File.chmod((File.stat(source).mode & 0o755) | 0o700, staging)
-        target = File.join(destination, skill.name)
-        FileUtils.remove_entry_secure(target) if File.exist?(target) || File.symlink?(target)
-        File.rename(staging, target)
+        File.chmod((source_stat.mode & 0o755) | 0o700, staging)
+        replace_entry(staging, File.join(destination, skill.name))
+        staging = nil
+      rescue InvalidSkillError
+        raise ConfigurationError, "Skill changed before it could be materialized: #{skill.name}"
       ensure
-        FileUtils.remove_entry_secure(staging) if staging && File.exist?(staging)
+        remove_quietly(staging) if staging
       end
 
-      def copy_directory(source, target, depth: 0)
+      def copy_directory(source, target, expected_stat, budget, depth:)
+        if depth > MAX_RESOURCE_DEPTH
+          raise ConfigurationError, "Skill resources exceed #{MAX_RESOURCE_DEPTH} directory levels: #{source}"
+        end
+
+        Dir.mkdir(target, 0o700)
         Dir.children(source).sort.each do |name|
           source_path = File.join(source, name)
           target_path = File.join(target, name)
           stat = File.lstat(source_path)
           if stat.directory?
-            Dir.mkdir(target_path, 0o700)
-            copy_directory(source_path, target_path, depth: depth + 1)
-            File.chmod((stat.mode & 0o755) | 0o700, target_path)
+            copy_directory(source_path, target_path, stat, budget, depth: depth + 1)
           elsif stat.file?
-            manifest = depth.zero? && name == "SKILL.md"
-            copy_file(source_path, target_path, limit: manifest ? @max_file_bytes + 1 : nil)
+            copy_file(source_path, target_path, stat, budget)
           end
-        rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
-          next
         end
+        verify_unchanged!(source, expected_stat)
+        File.chmod((expected_stat.mode & 0o755) | 0o700, target)
       end
 
-      def copy_file(source, target, limit:)
-        File.open(source, File::RDONLY | File::NOFOLLOW) do |input|
-          stat = input.stat
-          next unless stat.file?
+      def copy_file(source, target, expected_stat, budget)
+        budget[:files] += 1
+        if budget[:files] > budget[:max_files]
+          raise ConfigurationError, "Skill materialization exceeds #{budget[:max_files]} files"
+        end
 
+        File.open(source, File::RDONLY | File::NOFOLLOW | File::NONBLOCK) do |input|
+          stat = input.stat
+          raise InvalidSkillError unless stat.file? && same_file?(stat, expected_stat)
+
+          remaining = budget[:max_bytes] - budget[:bytes]
           File.open(target, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |output|
-            IO.copy_stream(input, output, limit)
+            copied = IO.copy_stream(input, output, remaining + 1)
+            if copied > remaining
+              raise ConfigurationError, "Skill materialization exceeds #{budget[:max_bytes]} bytes"
+            end
+
+            budget[:bytes] += copied
             output.chmod(stat.mode & 0o755)
           end
         end
+      rescue Errno::ELOOP
+        raise InvalidSkillError
+      end
+
+      def verify_unchanged!(path, expected_stat)
+        raise InvalidSkillError unless same_file?(File.lstat(path), expected_stat)
+      rescue Errno::ENOENT
+        raise InvalidSkillError
+      end
+
+      def same_file?(stat, expected_stat)
+        stat.ftype == expected_stat.ftype && stat.dev == expected_stat.dev && stat.ino == expected_stat.ino
       end
 
       def verify_materialized_manifest!(skill, path)
-        unchanged = File.file?(path) && !File.symlink?(path) && File.size(path) <= @max_file_bytes &&
-          parse_manifest(File.read(path, encoding: "UTF-8"), path).fetch(:name) == skill.name
-        raise InvalidSkillError unless unchanged
-      rescue InvalidSkillError, Psych::Exception
-        raise ConfigurationError, "Skill changed before it could be materialized: #{skill.name}"
+        raise InvalidSkillError if File.size(path) > @max_file_bytes
+
+        manifest = parse_manifest(File.read(path, encoding: "UTF-8"), path)
+        loaded = skill.to_h.slice(:name, :description, :instructions, :allowed_tools, :compatibility)
+        raise InvalidSkillError unless manifest == loaded
+      end
+
+      def replace_entry(staging, target)
+        retired = "#{staging}-retired"
+        if File.exist?(target) || File.symlink?(target)
+          File.rename(target, retired)
+        else
+          retired = nil
+        end
+        begin
+          File.rename(staging, target)
+        rescue SystemCallError
+          restore_entry(retired, target) if retired
+          raise
+        end
+        remove_quietly(retired) if retired
+      end
+
+      def restore_entry(retired, target)
+        File.rename(retired, target)
+      rescue SystemCallError
+        nil
+      end
+
+      def remove_quietly(path)
+        FileUtils.remove_entry_secure(path) if File.exist?(path) || File.symlink?(path)
+      rescue SystemCallError, ArgumentError
+        nil
       end
 
       def load_skills
@@ -266,7 +384,11 @@ module LittleGhost
         paths.each_with_object({}) do |path, loaded|
           skill = begin
             parse(path)
-          rescue InvalidSkillError, SystemCallError
+          rescue InvalidSkillError => error
+            warn_skipped(path, error.reason)
+            next
+          rescue SystemCallError
+            warn_skipped(path, :unreadable)
             next
           end
           next if @only && !@only.include?(skill.name)
@@ -282,6 +404,13 @@ module LittleGhost
         end.freeze
       end
 
+      def warn_skipped(path, reason)
+        directory = File.basename(File.dirname(path))
+        return if @only && !@only.include?(directory)
+
+        Events.warn("little_ghost.skills.skill_skipped", skill: directory, reason:)
+      end
+
       def parse(path)
         real_path = File.realpath(path)
         root = @paths.find do |candidate|
@@ -292,14 +421,14 @@ module LittleGhost
         end
         raise ConfigurationError, "Skill path escapes its configured root: #{path}" unless root
         if File.symlink?(path) || File.symlink?(File.dirname(path))
-          raise InvalidSkillError, "Skill is a symbolic link: #{path}"
+          raise InvalidSkillError.new("Skill is a symbolic link: #{path}", reason: :symbolic_link)
         end
         root_path = File.realpath(root.path)
         raise ConfigurationError, "Skill exceeds #{@max_file_bytes} bytes: #{path}" if File.size(real_path) > @max_file_bytes
 
         manifest = parse_manifest(File.read(real_path, encoding: "UTF-8"), path)
         unless manifest.fetch(:name) == File.basename(File.dirname(path))
-          raise InvalidSkillError, "Skill name must match its directory: #{path}"
+          raise InvalidSkillError.new("Skill name must match its directory: #{path}", reason: :name_mismatch)
         end
 
         Skill.new(

@@ -90,11 +90,19 @@ catalog = LittleGhost::Skills::Catalog.new(paths: [shared_skills, "app/skills"])
 catalog.materialize(run_skills_directory)
 ```
 
-Each Skill lands in `run_skills_directory/<name>`, replacing an earlier copy
-with that name. Regular files and directories are copied without group or world
-write permission. Symbolic links and special files are skipped, so a copy never
-points outside its Skill. The destination must not overlap a configured skill
-root. Map it read-only into the Workspace as shown below.
+Each Skill lands in `run_skills_directory/<name>` with its `SKILL.md` and its
+`scripts/`, `references/`, and `assets/` directories. A complete copy replaces
+an earlier copy with that name by rename, and concurrent calls for one
+destination take turns. Regular files and directories are copied without group
+or world write permission. Symbolic links and special files are skipped, so a
+copy never points outside its Skill. The copy is bounded by `max_bytes:` and
+`max_files:`, resource directories may nest three levels, and an unreadable
+file, an exceeded limit, or a Skill that changed after loading raises
+`ConfigurationError`. The destination must not overlap a configured skill root.
+Map it read-only into the Workspace as shown below.
+
+A skipped skill emits a `little_ghost.skills.skill_skipped` warning through
+`LittleGhost::Events` with the directory name and the reason.
 
 ## Pair instructions with Tools
 
