@@ -1,0 +1,11 @@
+<%#
+# Key: tools/built_in/shell/feedback/execution_failed
+# Purpose: Shell Tool execution failure feedback.
+# Used: Returned to the model in the shell Tool result when the Sandbox reports an execution error.
+# Locals:
+# - error_class: Safe exception class name describing the failure, or nil when the Sandbox reported no exception.
+# Constraints:
+# - Must render non-blank.
+# - Must not include the error message, which may contain paths or other private detail.
+-%>
+The sandbox could not run the command<% if error_class %> (<%= error_class %>)<% end %>.

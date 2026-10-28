@@ -136,8 +136,10 @@ module LittleGhost
       end
 
       # Executes <tt>input["command"]</tt> and returns a JSON result containing
-      # standard output, standard error, exit status, success, and any sandbox
-      # execution error.
+      # standard output, standard error, exit status, and success. When the
+      # Sandbox reports an execution error, the result adds an +error+ message
+      # that names only the exception class; the error's own message stays out
+      # of model-visible output.
       def call(input)
         options = {
           timeout: timeout_for(input),
@@ -157,7 +159,7 @@ module LittleGhost
           exit_status: result.exit_code,
           success: result.success?
         }
-        output[:error] = result.error.to_s if result.error
+        output[:error] = execution_error(result.error) if result.error
         JSON.generate(output)
       end
 
@@ -169,10 +171,16 @@ module LittleGhost
       private
 
       def timeout_for(input)
-        requested = input["timeout_seconds"] if self.class.timeout_maximum_value
-        return self.class.timeout_default_value if requested.nil? || requested.zero?
+        maximum = self.class.timeout_maximum_value
+        requested = Integer(input["timeout_seconds"], exception: false) if maximum
+        return self.class.timeout_default_value unless requested&.positive?
 
-        [requested, self.class.timeout_maximum_value].min
+        [requested, maximum].min
+      end
+
+      def execution_error(error)
+        error_class = error.class.name if error.is_a?(Exception)
+        framework_prompt("tools/built_in/shell/feedback/execution_failed", error_class:)
       end
     end
   end

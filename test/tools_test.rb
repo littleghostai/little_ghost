@@ -145,14 +145,54 @@ class ToolsTest < Minitest::Test
     assert_empty sandbox.timeouts
   end
 
-  def test_sandbox_execution_errors_are_reported
-    sandbox = RecordingSandbox.new(error: "sandbox unavailable")
+  def test_sandbox_execution_errors_are_reported_without_their_detail
+    sandbox = RecordingSandbox.new(error: Errno::EACCES.new("/srv/private/token"))
     registry = shell_registry(LittleGhost::Tools::Shell, sandbox)
 
     output = JSON.parse(registry.fetch("shell").execute({"command" => ["true"]}).content)
 
-    assert_equal "sandbox unavailable", output.fetch("error")
+    assert_includes output.fetch("error"), "Errno::EACCES"
+    refute_includes output.fetch("error"), "/srv/private/token"
     refute output.fetch("success")
+  end
+
+  def test_string_mode_forwards_the_timeout_and_output_limit
+    tool_class = Class.new(LittleGhost::Tools::Shell) do
+      command_mode :string
+      timeout default: 120, maximum: 900
+      max_output_bytes 4096
+    end
+    sandbox = RecordingSandbox.new
+    registry = shell_registry(tool_class, sandbox)
+
+    registry.fetch("shell").execute({"command" => "ls | wc -l", "timeout_seconds" => 600})
+
+    assert_equal [{command: "ls | wc -l", timeout: 600, max_output_bytes: 4096}], sandbox.commands
+  end
+
+  def test_unvalidated_timeout_values_fall_back_to_the_default
+    tool_class = Class.new(LittleGhost::Tools::Shell) do
+      timeout default: 120, maximum: 900
+      self.validate_input_schema_value = false
+    end
+    sandbox = RecordingSandbox.new
+    registry = shell_registry(tool_class, sandbox)
+
+    ["soon", -5, 2.5, 5000].each do |requested|
+      registry.fetch("shell").execute({"command" => ["true"], "timeout_seconds" => requested})
+    end
+
+    assert_equal [120, 120, 2, 900], sandbox.timeouts
+  end
+
+  def test_an_empty_command_is_rejected_before_it_reaches_the_sandbox
+    sandbox = RecordingSandbox.new
+    registry = shell_registry(LittleGhost::Tools::Shell, sandbox)
+
+    result = registry.fetch("shell").execute({"command" => []})
+
+    assert result.error?
+    assert_empty sandbox.timeouts
   end
 
   def test_invalid_shell_configuration_is_rejected
@@ -175,15 +215,27 @@ class ToolsTest < Minitest::Test
   private
 
   class RecordingSandbox
-    attr_reader :timeouts
+    attr_reader :timeouts, :commands
 
     def initialize(error: nil)
       @error = error
       @timeouts = []
+      @commands = []
+    end
+
+    def execute(command, timeout:, max_output_bytes:, **)
+      @commands << {command:, timeout:, max_output_bytes:}
+      execution
     end
 
     def execute_program(_command, timeout:, **)
       @timeouts << timeout
+      execution
+    end
+
+    private
+
+    def execution
       LittleGhost::Sandbox::Execution.new(stdout: "", stderr: "", exit_code: @error ? nil : 0, error: @error)
     end
   end
