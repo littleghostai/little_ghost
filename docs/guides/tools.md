@@ -139,7 +139,10 @@ Some Tools deliberately delegate a smaller operation to the Sandbox:
 - `LittleGhost::Tools::Filesystem` reads and changes paths through the bound
   Sandbox. It exposes mutation Tools only when that Sandbox is writable.
 - `LittleGhost::Tools::Shell` runs one argument vector through the bound
-  Sandbox. It does not interpret shell syntax.
+  Sandbox. It does not interpret shell syntax. A subclass can accept a shell
+  command string with `command_mode :string`, which runs it with
+  `/bin/sh -c` inside the Sandbox, and can let the model choose a bounded
+  timeout with `timeout default: 120, maximum: 900`.
 - An application Tool can send work through its bound `sandbox` when it needs
   the same file and process restrictions. Its bound `workspace` names paths but
   does not restrict access to them. Do not pass model-selected paths from

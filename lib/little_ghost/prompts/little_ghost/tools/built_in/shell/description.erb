@@ -3,8 +3,19 @@
 # Purpose: Shell Tool description.
 # Used: Included in a Tool or Tool-input specification shown to the model as the shell Tool description.
 # Locals:
-# - None.
+# - command_mode: :argv or :string.
+# - timeout_default: Integer seconds used when the model does not choose a timeout.
+# - timeout_maximum: Integer seconds the model may request, or nil when the timeout is fixed.
 # Constraints:
 # - Must render non-blank.
 -%>
+<% if command_mode == :string -%>
+Run one shell command with /bin/sh -c in the configured workspace. Shell state such as variables and the working directory does not persist between calls.
+<% else -%>
 Run one executable with arguments in the configured workspace. Shell syntax is not interpreted.
+<% end -%>
+<% if timeout_maximum -%>
+Commands stop after timeout_seconds, up to <%= timeout_maximum %> seconds; the default is <%= timeout_default %> seconds.
+<% else -%>
+Commands stop after <%= timeout_default %> seconds.
+<% end -%>

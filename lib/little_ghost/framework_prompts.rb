@@ -166,7 +166,7 @@ module LittleGhost
       Entry.new(key: "tools/built_in/list_files/description", summary: "List-files Tool description", required: true),
       Entry.new(key: "tools/built_in/write_file/description", summary: "Write-file Tool description", required: true),
       Entry.new(key: "tools/built_in/replace_in_file/description", summary: "Replace-in-file Tool description", required: true),
-      Entry.new(key: "tools/built_in/shell/description", summary: "Shell Tool description", required: true),
+      Entry.new(key: "tools/built_in/shell/description", summary: "Shell Tool description", locals: %i[command_mode timeout_default timeout_maximum], required: true),
       Entry.new(key: "tools/built_in/write_todos/description", summary: "Todo-planning Tool description", required: true),
       Entry.new(key: "tools/built_in/write_todos/feedback/single_progress", summary: "Todo progress validation feedback", required: true),
       Entry.new(key: "tools/built_in/write_todos/feedback/unique_ids", summary: "Todo identifier validation feedback", required: true),
