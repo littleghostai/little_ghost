@@ -527,6 +527,182 @@ class TracingOpenTelemetryTest < Minitest::Test
     assert_equal "safe", attributes.fetch("little_ghost.detail")
   end
 
+  def test_enrich_adds_application_attributes_for_each_phase
+    tracer = Tracer.new
+    calls = []
+    enrich = lambda do |phase, name, attributes|
+      calls << [phase, name, attributes[:tool_name]]
+      {"openinference.span.kind" => "TOOL", :phase => phase} unless phase == :emit
+    end
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:, enrich:)
+
+    tracing.start(:tool, {operation_id: "tool", tool_name: "lookup"})
+    tracing.emit(:tool_loop, {operation_id: "tool", action: :warn})
+    tracing.finish(:tool, {operation_id: "tool", tool_name: "lookup"})
+
+    span = tracer.started.first.last
+    assert_equal [[:start, :tool, "lookup"], [:emit, :tool_loop, nil], [:finish, :tool, "lookup"]], calls
+    assert_equal "TOOL", span.attributes.fetch("openinference.span.kind")
+    assert_equal "finish", span.attributes.fetch("little_ghost.phase")
+    refute span.events.first.last.key?("little_ghost.phase")
+  ensure
+    tracing&.shutdown
+  end
+
+  def test_a_failing_enrich_still_starts_and_finishes_the_span
+    [->(*) { raise "enrich failed" }, ->(*) { "kind" }].each do |enrich|
+      tracer = Tracer.new
+      events = []
+      listener = Object.new
+      listener.define_singleton_method(:emit) { |event| events << event }
+      tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:, enrich:)
+
+      LittleGhost::Events.subscribed(listener) do
+        tracing.start(:tool, {operation_id: "tool", tool_name: "lookup"})
+        tracing.finish(:tool, {operation_id: "tool", tool_name: "lookup"})
+      end
+
+      span = tracer.started.first.last
+      assert span.finished?
+      assert_equal "lookup", span.attributes.fetch("gen_ai.tool.name")
+      assert_equal ["little_ghost.tracing.enrich_failed"] * 2, events.map { |event| event[:name] }
+      refute_includes events.join, "enrich failed"
+    end
+  end
+
+  def test_rejects_options_that_are_not_callable
+    assert_raises(ArgumentError) { LittleGhost::Tracing::OpenTelemetry.new(enrich: "kind") }
+    assert_raises(ArgumentError) { LittleGhost::Tracing::OpenTelemetry.new(payload_limiter: 1_024) }
+  end
+
+  def test_payload_limiter_bounds_start_and_finish_content_and_keeps_both_records
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(
+      tracer:,
+      payload_limiter: LittleGhost::Tracing::PayloadLimiter.new(max_bytes: 1_024)
+    )
+
+    tracing.start(
+      :model,
+      {
+        operation_id: "model",
+        model_id: "model",
+        diagnostic_input: JSON.generate([
+          {role: "user", content: [{type: "text", text: "old request " * 200}]},
+          {role: "user", content: [{type: "text", text: "current request"}]}
+        ])
+      }
+    )
+    tracing.finish(
+      :model,
+      {
+        operation_id: "model",
+        diagnostic_output: JSON.generate([{role: "assistant", content: [{type: "text", text: "answer " * 500}]}])
+      }
+    )
+
+    span = tracer.started.first.last
+    input = JSON.parse(span.attributes.fetch("gen_ai.input.messages"))
+    assert_equal ["current request"], input.map { |message| message.dig("parts", 0, "content") }
+    assert_operator span.attributes.fetch("gen_ai.output.messages").bytesize, :<=, 1_024
+    truncation = JSON.parse(span.attributes.fetch("metadata")).fetch("telemetry_truncation")
+    assert_equal(
+      %w[gen_ai.input.messages gen_ai.output.messages input.value output.value],
+      truncation.keys.sort
+    )
+    assert_equal 1, truncation.dig("gen_ai.input.messages", "omitted_messages")
+  ensure
+    tracing&.shutdown
+  end
+
+  def test_payload_limiter_keeps_truncation_records_on_a_fused_primary_agent_span
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(
+      tracer:,
+      payload_limiter: LittleGhost::Tracing::PayloadLimiter.new(max_bytes: 1_024)
+    )
+
+    tracing.start(:run, {operation_id: "run", agent_id: "main"})
+    tracing.start(
+      :agent,
+      {operation_id: "agent", parent_operation_id: "run", agent_id: "main", diagnostic_input: "question " * 500}
+    )
+    tracing.finish(:agent, {operation_id: "agent", diagnostic_output: "answer " * 500})
+    tracing.finish(:run, {operation_id: "run"})
+
+    span = tracer.started.first.last
+    truncation = JSON.parse(span.attributes.fetch("metadata")).fetch("telemetry_truncation")
+    assert_equal %w[input.value output.value], truncation.keys.sort
+    assert span.finished?
+  ensure
+    tracing&.shutdown
+  end
+
+  def test_payload_limiter_bounds_event_attributes
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(
+      tracer:,
+      payload_limiter: LittleGhost::Tracing::PayloadLimiter.new(max_bytes: 1_024)
+    )
+
+    tracing.start(:tool, {operation_id: "tool", tool_name: "lookup"})
+    tracing.emit(:lookup_progress, {operation_id: "tool", diagnostic_detail: "x" * 5_000})
+
+    _name, attributes = tracer.started.first.last.events.first
+    assert_operator attributes.fetch("little_ghost.diagnostic_detail").bytesize, :<=, 1_024
+    assert JSON.parse(attributes.fetch("metadata")).fetch("telemetry_truncation").key?("little_ghost.diagnostic_detail")
+  ensure
+    tracing&.shutdown
+  end
+
+  def test_a_failing_payload_limiter_still_finishes_the_span_and_omits_large_values
+    [->(_attributes) { raise "limiter failed" }, ->(_attributes) { "not a hash" }].each do |payload_limiter|
+      tracer = Tracer.new
+      events = []
+      listener = Object.new
+      listener.define_singleton_method(:emit) { |event| events << event }
+      tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:, payload_limiter:)
+
+      LittleGhost::Events.subscribed(listener) do
+        tracing.start(:tool, {operation_id: "tool", tool_name: "lookup", diagnostic_input: "x" * 5_000})
+        tracing.finish(:tool, {operation_id: "tool", diagnostic_output: "y" * 5_000})
+      end
+
+      span = tracer.started.first.last
+      assert span.finished?
+      assert_equal "lookup", span.attributes.fetch("gen_ai.tool.name")
+      refute span.attributes.key?("gen_ai.tool.call.arguments")
+      refute span.attributes.key?("gen_ai.tool.call.result")
+      assert_equal ["little_ghost.tracing.payload_limit_failed"] * 2, events.map { |event| event[:name] }
+    end
+  end
+
+  def test_payload_limiter_bounds_exception_events_and_with_span_attributes
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(
+      tracer:,
+      payload_limiter: LittleGhost::Tracing::PayloadLimiter.new(max_bytes: 1_024)
+    )
+
+    tracing.start(:tool, {operation_id: "tool", tool_name: "lookup"})
+    tracing.finish(
+      :tool,
+      {
+        operation_id: "tool",
+        error_type: "RuntimeError",
+        diagnostic_exception: JSON.generate(message: "failed", stacktrace: "frame\n" * 2_000)
+      }
+    )
+    tracing.with_span("storage", attributes: {"db.query.text" => "select " * 1_000}) {}
+
+    _name, exception = tracer.started.first.last.events.first
+    assert_operator exception.fetch("exception.stacktrace").bytesize, :<=, 1_024
+    assert JSON.parse(exception.fetch("metadata")).fetch("telemetry_truncation").key?("exception.stacktrace")
+    assert_operator tracer.started.last.last.attributes.fetch("db.query.text").bytesize, :<=, 1_024
+  ensure
+    tracing&.shutdown
+  end
+
   def test_attaches_custom_events_to_their_operation_span
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)

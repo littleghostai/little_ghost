@@ -2,6 +2,7 @@
 
 require "json"
 require "opentelemetry-api"
+require_relative "payload_limiter"
 
 module LittleGhost
   # Optional adapters for sending LittleGhost instrumentation to tracing tools.
@@ -22,6 +23,19 @@ module LittleGhost
     # Prompts, responses, messages, tool arguments, and exception content are
     # omitted by default. They appear only when Instrumentation has an explicit,
     # scrubbed Support::ContentCapture policy.
+    #
+    # === Adding attributes and limiting payloads
+    #
+    # +enrich+ adds application attributes, such as a span kind your tracing
+    # backend understands, to every lifecycle notification. +payload_limiter+
+    # shortens captured content that a backend would otherwise reject.
+    #
+    #   tracing = LittleGhost::Tracing::OpenTelemetry.new(
+    #     enrich: ->(phase, name, attributes) {
+    #       {"openinference.span.kind" => (name == :model) ? "LLM" : "CHAIN"}
+    #     },
+    #     payload_limiter: LittleGhost::Tracing::PayloadLimiter.new(max_bytes: 64_000)
+    #   )
     class OpenTelemetry < Instrumentation::Subscriber
       ATTRIBUTE_NAMES = {
         agent_id: "gen_ai.agent.id",
@@ -80,8 +94,36 @@ module LittleGhost
       MAX_ATTRIBUTE_LENGTH = 1_024 # :nodoc:
 
       # Uses +tracer+ or the global tracer provider.
-      def initialize(tracer: nil)
+      #
+      # +enrich+ is an optional callable that receives the phase (+:start+,
+      # +:finish+, or +:emit+), the notification name as a Symbol, and its
+      # attributes, and returns a Hash of attributes to add, or +nil+. A key
+      # containing a dot, such as <tt>"session.id"</tt>, is used as the
+      # attribute name; other keys follow the same mapping as LittleGhost's own
+      # attributes. Returned values are normalized like other attributes, so
+      # strings are capped at 1,024 characters. If +enrich+ raises or returns
+      # anything other than a Hash or +nil+, a
+      # <tt>little_ghost.tracing.enrich_failed</tt> warning names the error
+      # class and the notification is recorded without the additions, so spans
+      # still start and finish.
+      #
+      # +payload_limiter+ is an optional callable, usually a PayloadLimiter,
+      # that receives each span's or event's OpenTelemetry attributes as a Hash
+      # and returns the Hash to record. It runs on the attributes set when a
+      # span starts, on those set when it finishes, on exception events, and
+      # on the attributes passed to #with_span. If it raises or returns
+      # something other than a Hash, String attributes longer than 1,024
+      # characters are omitted, a +little_ghost.tracing.payload_limit_failed+
+      # warning is emitted through Events, and the span still finishes.
+      def initialize(tracer: nil, enrich: nil, payload_limiter: nil)
+        raise ArgumentError, "enrich must respond to call" if enrich && !enrich.respond_to?(:call)
+        if payload_limiter && !payload_limiter.respond_to?(:call)
+          raise ArgumentError, "payload_limiter must respond to call"
+        end
+
         @tracer = tracer
+        @enrich = enrich
+        @payload_limiter = payload_limiter
         @entries = {}
         @mutex = Mutex.new
       end
@@ -122,7 +164,7 @@ module LittleGhost
       def with_span(name, attributes:, parent_operation_id: nil)
         parent = @mutex.synchronize { @entries[parent_operation_id] }
         parent_context = parent && ::OpenTelemetry::Trace.context_with_span(parent.fetch(:span))
-        options = {kind: :internal, attributes:}
+        options = {kind: :internal, attributes: limit_attributes(attributes)}
         options[:with_parent] = parent_context if parent_context
         span = tracer.start_span(name, **options)
         yield span
@@ -151,7 +193,31 @@ module LittleGhost
 
       private
 
-      def prepare_attributes(_phase, _name, attributes) = attributes
+      def prepare_attributes(phase, name, attributes)
+        return attributes unless @enrich
+
+        additions = @enrich.call(phase, name, attributes)
+        return attributes if additions.nil?
+        raise TypeError, "enrich must return a Hash or nil" unless additions.is_a?(Hash)
+
+        attributes.merge(additions)
+      rescue => error
+        Events.warn("little_ghost.tracing.enrich_failed", error_type: error.class.name, phase:)
+        attributes
+      end
+
+      def limit_attributes(attributes, metadata: nil)
+        return attributes unless @payload_limiter
+
+        input = (metadata && !attributes.key?("metadata")) ? attributes.merge("metadata" => metadata) : attributes
+        limited = @payload_limiter.call(input)
+        raise TypeError, "payload_limiter must return a Hash" unless limited.is_a?(Hash)
+
+        limited.equal?(input) ? attributes : limited
+      rescue => error
+        Events.warn("little_ghost.tracing.payload_limit_failed", error_type: error.class.name)
+        attributes.reject { |_name, value| value.is_a?(String) && value.length > MAX_ATTRIBUTE_LENGTH }
+      end
 
       def tracer
         @tracer || ::OpenTelemetry.tracer_provider.tracer("little_ghost", LittleGhost::VERSION)
@@ -177,8 +243,8 @@ module LittleGhost
         end
         options = {
           kind: span_kind(kind),
-          attributes: span_attributes(attributes, kind:).merge(
-            "gen_ai.operation.name" => OPERATIONS.fetch(kind, kind.to_s)
+          attributes: limit_attributes(
+            span_attributes(attributes, kind:).merge("gen_ai.operation.name" => OPERATIONS.fetch(kind, kind.to_s))
           )
         }
         links = trace_links(attributes[:trace_links])
@@ -195,22 +261,23 @@ module LittleGhost
             span:,
             kind:,
             alias: false,
-            agent_id: attributes[:agent_id]
+            agent_id: attributes[:agent_id],
+            metadata: options.fetch(:attributes)["metadata"],
+            metadata_lock: Mutex.new
           }
         end
       end
 
       def alias_primary_agent(attributes, parent)
         span = parent.fetch(:span)
-        span_attributes(attributes, kind: :agent).each do |key, value|
-          span.set_attribute(key, value)
-        end
+        set_limited_attributes(span, span_attributes(attributes, kind: :agent), parent)
         @mutex.synchronize do
           @entries[attributes.fetch(:operation_id)] = {
             span:,
             kind: :agent,
             alias: true,
-            agent_id: attributes[:agent_id]
+            agent_id: attributes[:agent_id],
+            parent:
           }
         end
       end
@@ -220,14 +287,21 @@ module LittleGhost
         return add_event(:orphan_finish, attributes.merge(instrumentation_name: name)) unless entry
 
         span = entry.fetch(:span)
-        finish_attributes = attributes.except(:diagnostic_input, :diagnostic_tool_definitions)
-        span_attributes(finish_attributes, kind: entry.fetch(:kind)).each do |key, value|
-          span.set_attribute(key, value)
+        begin
+          finish_attributes = attributes.except(:diagnostic_input, :diagnostic_tool_definitions)
+          set_limited_attributes(span, span_attributes(finish_attributes, kind: entry.fetch(:kind)), entry[:parent] || entry)
+          record_status(span, attributes, kind: entry.fetch(:kind)) unless entry.fetch(:alias)
+        ensure
+          span.finish unless entry.fetch(:alias)
         end
-        return if entry.fetch(:alias)
+      end
 
-        record_status(span, attributes, kind: entry.fetch(:kind))
-        span.finish
+      def set_limited_attributes(span, attributes, owner)
+        owner.fetch(:metadata_lock).synchronize do
+          limited = limit_attributes(attributes, metadata: owner[:metadata])
+          limited.each { |key, value| span.set_attribute(key, value) }
+          owner[:metadata] = limited["metadata"] if limited.key?("metadata")
+        end
       end
 
       def record_status(span, attributes, kind:)
@@ -247,7 +321,7 @@ module LittleGhost
         description = [error_type, event_attributes["exception.message"]].compact.join(": ")
         span.status = ::OpenTelemetry::Trace::Status.error(description)
         event_name = %i[model generation embedding].include?(kind) ? "gen_ai.client.operation.exception" : "exception"
-        span.add_event(event_name, attributes: event_attributes.compact)
+        span.add_event(event_name, attributes: limit_attributes(event_attributes.compact))
       end
 
       def add_event(name, attributes)
@@ -256,10 +330,11 @@ module LittleGhost
           owner_ids.filter_map { |owner_id| @entries.dig(owner_id, :span) }.first
         end
         kind = attributes[:event_kind]&.to_sym
+        event_attributes = limit_attributes(span_attributes(attributes, kind:))
         if span
-          span.add_event("little_ghost.#{name}", attributes: span_attributes(attributes, kind:))
+          span.add_event("little_ghost.#{name}", attributes: event_attributes)
         else
-          tracer.in_span("little_ghost.#{name}", attributes: span_attributes(attributes, kind:)) {}
+          tracer.in_span("little_ghost.#{name}", attributes: event_attributes) {}
         end
       end
 

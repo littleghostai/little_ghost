@@ -365,13 +365,15 @@ module LittleGhost
           providers = resolved_providers
           credential_resolver = configuration_values[:provider_credentials] || providers&.method(:credentials)
           configured = configuration_values[:model_resolver]
+          refresh = configuration_values.slice(:catalog_refresh_interval)
           if configured
             validate_model_resolver_configuration!
             configured.new(
               providers:,
               provider_adapters: configuration_values[:provider_adapters],
               catalog_sources: configuration_values[:catalog_sources],
-              credential_resolver:
+              credential_resolver:,
+              **refresh
             )
           else
             profiles, file_default = resolved_models
@@ -381,7 +383,8 @@ module LittleGhost
               default_model: configuration_values.fetch(:default_model, file_default),
               provider_adapters: configuration_values[:provider_adapters],
               catalog_sources: configuration_values[:catalog_sources],
-              credential_resolver:
+              credential_resolver:,
+              **refresh
             )
           end
         end
@@ -411,8 +414,32 @@ module LittleGhost
       implementation
     end
 
-    # Adds an explicit catalog source. Sources refresh only when callers invoke
-    # ModelResolver#refresh!.
+    # Seconds between automatic model detail refreshes, passed to the resolver
+    # as +catalog_refresh_interval+. Unset, details refresh only when callers
+    # invoke ModelResolver#refresh!.
+    def catalog_refresh_interval(value = :__read__)
+      return configuration_values[:catalog_refresh_interval] if value == :__read__
+      valid = value.nil? || (value.is_a?(Numeric) && value.positive?)
+      raise ArgumentError, "catalog_refresh_interval must be a positive number of seconds" unless valid
+
+      change_configuration do
+        if value.nil?
+          configuration_values.delete(:catalog_refresh_interval)
+        else
+          configuration_values[:catalog_refresh_interval] = value
+        end
+        reset_model_resolver
+      end
+      value
+    end
+
+    # Replaces the automatic model detail refresh interval for new runtimes.
+    def catalog_refresh_interval=(value)
+      catalog_refresh_interval(value)
+    end
+
+    # Adds an explicit catalog source. Sources refresh when callers invoke
+    # ModelResolver#refresh! or when a +catalog_refresh_interval+ is set.
     def catalog_source(source)
       ensure_configuration_open!
       raise ArgumentError, "catalog source must be a Models::Catalog::Source" unless source.is_a?(Models::Catalog::Source)
