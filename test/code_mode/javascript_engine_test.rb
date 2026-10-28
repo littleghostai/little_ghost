@@ -114,6 +114,17 @@ class CodeModeEngineTest < Minitest::Test
     assert_includes instructions, "Promise<unknown>"
   end
 
+  def test_typescript_parenthesizes_intersections_inside_unions
+    schema = {"anyOf" => [
+      {"allOf" => [{"properties" => {"team" => {"type" => "string"}}}, {"properties" => {"role" => {"type" => "string"}}}]},
+      {"type" => "null"}
+    ]}
+
+    rendered = LittleGhost::CodeMode::Javascript::Catalog::TypeScript.render(schema)
+
+    assert_match(/\A\(\{.*team\?: string;.*\} & \{.*role\?: string;.*\}\) \| null\z/m, rendered)
+  end
+
   def test_rejects_unsupported_limits
     error = assert_raises(ArgumentError) do
       LittleGhost::CodeMode::JavascriptEngine.new.open_session(

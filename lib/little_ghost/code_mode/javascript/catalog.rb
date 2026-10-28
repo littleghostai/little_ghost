@@ -46,7 +46,12 @@ module LittleGhost
           return schema.fetch("enum").map { |value| JSON.generate(value) }.join(" | ") if schema["enum"]
 
           alternatives = schema["anyOf"] || schema["oneOf"]
-          return alternatives.map { |child| render(child) }.join(" | ") if alternatives
+          if alternatives
+            return alternatives.map do |child|
+              value = render(child)
+              value.include?(" & ") ? "(#{value})" : value
+            end.join(" | ")
+          end
           if schema["allOf"]
             return schema.fetch("allOf").map do |child|
               value = render(child)
