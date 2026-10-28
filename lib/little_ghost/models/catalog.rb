@@ -7,7 +7,9 @@ module LittleGhost
   # Immutable model identities, metadata, configuration readers, and catalogs.
   module Models
     # Resolves model facts from refreshed data and the snapshot packaged with
-    # LittleGhost. Refresh is always explicit.
+    # LittleGhost. The catalog refreshes only when #refresh! is called, either
+    # by the application or by a ModelResolver configured with a
+    # +catalog_refresh_interval+.
     class Catalog
       ARRAY_ATTRIBUTES = %i[input_modalities output_modalities supported_parameters].freeze # :nodoc:
 

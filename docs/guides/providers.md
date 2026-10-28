@@ -303,7 +303,8 @@ newer. LittleGhost reads the list; it does not load, unload, or download models.
 ## Discover current model details
 
 Call `refresh!` when you need current availability, loaded state, or
-capabilities. Ordinary model requests do not make discovery calls.
+capabilities. Unless you set a refresh interval, as shown below, ordinary model
+requests do not make discovery calls.
 
 ```ruby
 resolver = LittleGhost.model_resolver
@@ -329,9 +330,13 @@ LittleGhost.configure do |config|
 end
 ```
 
-The resolver then refreshes a target the first time its details are needed and
-again once the interval has passed. That first use waits for the discovery
-call, and a failed refresh keeps the previous details until the next interval.
+The resolver then refreshes every configured source in one background call
+the first time details are needed, and again once the interval has passed. The
+first request waits up to ten seconds for that call, or less when its Run is
+cancelled or reaches its deadline. Later refreshes never delay a request; it
+uses the current details while the new ones load. A failed refresh keeps the
+previous details, emits a `little_ghost.models.catalog_refresh_failed` warning
+event with the error class, and is retried after the next interval.
 
 Hosted adapters can combine models.dev data with their provider's model API.
 LM Studio reads its native model list. The generic compatible adapter and
