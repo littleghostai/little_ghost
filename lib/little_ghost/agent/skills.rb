@@ -59,7 +59,8 @@ module LittleGhost
         #
         # Enables skill discovery for this agent. +paths+ may be paths or a
         # callable resolved for each run. When omitted, the runtime's configured
-        # skill paths are used.
+        # skill paths are used. Other options, such as +only:+ and
+        # +precedence:+, are passed to LittleGhost::Skills::Catalog.
         #
         def skills(*values, **options)
           configured_paths = if options.key?(:paths)

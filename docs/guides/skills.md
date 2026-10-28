@@ -26,8 +26,9 @@ compatibility: Requires the refunds help-center collection.
 ```
 
 Each immediate child of a configured skill root may contain one `SKILL.md`.
-Front matter requires a single-line `name` and `description`. Names contain
-only letters, numbers, underscores, and hyphens. `allowed-tools` and
+Front matter requires a single-line `name` and `description`. The name matches
+the directory name and contains only letters, numbers, underscores, and
+hyphens. `allowed-tools` and
 `compatibility` are optional information shown to the model.
 
 A Skill may also include supporting files in `references/`, `scripts/`, or
@@ -62,6 +63,38 @@ end
 
 Paths may also come from a callable resolved for each Run. Build the path from
 application configuration, not from a path supplied by the model or request.
+
+## Layer skill roots
+
+Several roots can contribute skills, such as a shared library, a project's own
+skills, and the application's overrides. When two roots define the same name,
+`precedence:` decides which one the Agent sees:
+
+```ruby
+class CustomerSupportAgent < LittleGhost::Agent
+  skills paths: [shared_skills, team_skills, "app/skills"], precedence: :last
+end
+```
+
+`:last` is the default and lets a later root override an earlier one. `:first`
+keeps the earliest definition, and `:error` raises `ConfigurationError` so a
+collision can't go unnoticed. Put the root you trust most where it wins.
+LittleGhost skips a skill whose name differs from its directory, so a skill in
+`notes/` can't claim the `refund_guide` name.
+
+When model-authored code needs the resulting set as files, copy it into one
+directory before the Run starts:
+
+```ruby
+catalog = LittleGhost::Skills::Catalog.new(paths: [shared_skills, "app/skills"])
+catalog.materialize(run_skills_directory)
+```
+
+Each Skill lands in `run_skills_directory/<name>`, replacing an earlier copy
+with that name. Regular files and directories are copied without group or world
+write permission. Symbolic links and special files are skipped, so a copy never
+points outside its Skill. The destination must not overlap a configured skill
+root. Map it read-only into the Workspace as shown below.
 
 ## Pair instructions with Tools
 
