@@ -113,6 +113,13 @@ module LittleGhost
         sandbox.execute_program(command, scope: self, **options)
       end
 
+      # Starts an owned ProcessSession through the parent sandbox and this
+      # scope. The caller must close the returned session.
+      def start_program(command, **options)
+        require_capability!(:process_execute)
+        sandbox.start_program(command, scope: self, **options)
+      end
+
       # Produces another view that can only narrow this scope.
       def scope(**options) = self.class.new(sandbox:, parent_scope: self, **options)
       # Scopes own no resources; opening returns the same object.

@@ -64,7 +64,10 @@ module LittleGhost
       #
       # +peer_uids+ lists the user IDs allowed to connect; connections from any
       # other user are closed without a response. +nil+ accepts any peer that
-      # can open the socket.
+      # can open the socket. Peer IDs are read in the authorizer's own user
+      # namespace: when the authorizer runs inside a separate namespace, such as
+      # a Bubblewrap sandbox, unmapped peers appear as the overflow user, so rely
+      # on directory and group permissions instead.
       def initialize(socket_path:, authorizer:, run: nil, mode: 0o600, peer_uids: nil)
         @socket_path = socket_path
         @authorizer = authorizer

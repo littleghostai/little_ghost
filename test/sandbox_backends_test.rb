@@ -28,6 +28,33 @@ class SandboxBackendsTest < Minitest::Test
     assert_match(/unavailable/, result.fetch(:reason))
   end
 
+  def test_scope_starts_program_sessions_through_the_parent_sandbox
+    Dir.mktmpdir do |root|
+      workspace = LittleGhost::Workspace.new(root:).open
+      sandbox = LittleGhost::Sandboxes::Unrestricted.new(workspace:, policy: {files: {root: :read_write}})
+      received_scopes = []
+      original = sandbox.method(:start_program)
+      sandbox.define_singleton_method(:start_program) do |command, **options|
+        received_scopes << options[:scope]
+        original.call(command, **options)
+      end
+      scope = sandbox.scope(files: [:root])
+
+      session = scope.start_program([RbConfig.ruby, "-e", "print :scoped"])
+      output = +""
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+      while output.empty? && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+        output << session.read(timeout: 0.1).stdout
+      end
+
+      assert_equal "scoped", output
+      assert_same scope, received_scopes.first
+    ensure
+      session&.close
+      workspace&.close
+    end
+  end
+
   def test_unrestricted_rejects_claimed_subprocess_denial
     Dir.mktmpdir do |root|
       workspace = LittleGhost::Workspace.new(root:).open
