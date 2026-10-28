@@ -107,6 +107,25 @@ class TracingPayloadLimiterTest < Minitest::Test
     assert_includes captured.first.dig("parts", 0, "content"), "...[truncated]..."
   end
 
+  def test_truncates_multibyte_text_to_character_boundaries_at_any_budget
+    ["日", "😀", "é", "a日😀"].each do |unit|
+      [1_024, 1_025, 1_026, 1_027, 2_000, 4_099].each do |max_bytes|
+        value = unit * 3_000
+        limited = LittleGhost::Tracing::PayloadLimiter.new(max_bytes:)
+
+        transformed = Timeout.timeout(5) { limited.call("custom.big" => value) }
+
+        captured = transformed.fetch("custom.big")
+        assert_operator captured.bytesize, :<=, max_bytes, "#{unit.inspect} at #{max_bytes}"
+        assert_predicate captured, :valid_encoding?
+        refute_includes captured, "�"
+        head, tail = captured.split("...[truncated]...", 2)
+        assert value.start_with?(head), "#{unit.inspect} at #{max_bytes}"
+        assert value.end_with?(tail), "#{unit.inspect} at #{max_bytes}"
+      end
+    end
+  end
+
   def test_preserves_existing_metadata_when_recording_truncation
     metadata = JSON.generate("request_source" => "support")
     attributes = {
@@ -263,6 +282,76 @@ class TracingPayloadLimiterTest < Minitest::Test
 
     refute transformed.key?("gen_ai.input.messages")
     assert_equal ["little_ghost.tracing.payload_limit_failed"], events.map { |event| event[:name] }
+  end
+
+  def test_omits_only_the_attribute_that_cannot_be_shortened
+    attributes = {
+      "gen_ai.input.messages" => JSON.generate({"role" => "user"}) + (" " * 2_000),
+      "gen_ai.tool.call.result" => JSON.generate("result" => "x" * 5_000)
+    }
+
+    transformed = LittleGhost::Events.subscribed(Object.new.tap { |listener| def listener.emit(_) = nil }) do
+      limiter.call(attributes)
+    end
+
+    refute transformed.key?("gen_ai.input.messages")
+    assert_includes JSON.parse(transformed.fetch("gen_ai.tool.call.result")).fetch("result"), "...[truncated]..."
+    assert_equal true, truncation_details(transformed, "gen_ai.input.messages").fetch("omitted")
+    assert truncation_details(transformed, "gen_ai.tool.call.result").key?("captured_bytes")
+  end
+
+  def test_truncates_plain_text_tool_values_as_text
+    attributes = {
+      "gen_ai.tool.call.arguments" => "find " + ("x" * 5_000) + " end",
+      "gen_ai.tool.call.result" => "found " + ("y" * 5_000) + " done"
+    }
+
+    transformed = limiter.call(attributes)
+
+    arguments = transformed.fetch("gen_ai.tool.call.arguments")
+    result = transformed.fetch("gen_ai.tool.call.result")
+    assert_operator arguments.bytesize, :<=, 1_024
+    assert arguments.start_with?("find ")
+    assert arguments.end_with?(" end")
+    assert result.start_with?("found ")
+    assert result.end_with?(" done")
+  end
+
+  def test_records_omitted_messages_when_an_openinference_wrapper_cannot_keep_its_messages
+    wrapper = 200.times.to_h { |index| ["key#{index}", "short"] }
+    wrapper["messages"] = [canonical_message("user", "hello")]
+    attributes = {"input.value" => JSON.generate(wrapper)}
+
+    transformed = limiter.call(attributes)
+
+    assert_equal({"truncated" => true}, JSON.parse(transformed.fetch("input.value")))
+    assert_equal 1, truncation_details(transformed, "input.value").fetch("omitted_messages")
+  end
+
+  def test_keeps_the_longest_recent_suffix_that_fits
+    messages = 200.times.map { |index| canonical_message("user", "message #{index}") }
+    attributes = {"gen_ai.input.messages" => JSON.generate(messages)}
+
+    transformed = limiter.call(attributes)
+
+    serialized = transformed.fetch("gen_ai.input.messages")
+    captured = JSON.parse(serialized)
+    assert_equal messages.last(captured.length), captured
+    assert_operator serialized.bytesize, :<=, 1_024
+    assert_operator JSON.generate(messages.last(captured.length + 1)).bytesize, :>, 1_024
+  end
+
+  def test_keeps_the_longest_leading_output_prefix_that_fits
+    messages = 200.times.map { |index| canonical_message("assistant", "choice #{index}") }
+    attributes = {"gen_ai.output.messages" => JSON.generate(messages)}
+
+    transformed = limiter.call(attributes)
+
+    serialized = transformed.fetch("gen_ai.output.messages")
+    captured = JSON.parse(serialized)
+    assert_equal messages.first(captured.length), captured
+    assert_operator serialized.bytesize, :<=, 1_024
+    assert_operator JSON.generate(messages.first(captured.length + 1)).bytesize, :>, 1_024
   end
 
   private

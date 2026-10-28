@@ -642,6 +642,54 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
+  def test_a_failing_payload_limiter_still_finishes_the_span_and_omits_large_values
+    [->(_attributes) { raise "limiter failed" }, ->(_attributes) { "not a hash" }].each do |payload_limiter|
+      tracer = Tracer.new
+      events = []
+      listener = Object.new
+      listener.define_singleton_method(:emit) { |event| events << event }
+      tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:, payload_limiter:)
+
+      LittleGhost::Events.subscribed(listener) do
+        tracing.start(:tool, {operation_id: "tool", tool_name: "lookup", diagnostic_input: "x" * 5_000})
+        tracing.finish(:tool, {operation_id: "tool", diagnostic_output: "y" * 5_000})
+      end
+
+      span = tracer.started.first.last
+      assert span.finished?
+      assert_equal "lookup", span.attributes.fetch("gen_ai.tool.name")
+      refute span.attributes.key?("gen_ai.tool.call.arguments")
+      refute span.attributes.key?("gen_ai.tool.call.result")
+      assert_equal ["little_ghost.tracing.payload_limit_failed"] * 2, events.map { |event| event[:name] }
+    end
+  end
+
+  def test_payload_limiter_bounds_exception_events_and_with_span_attributes
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(
+      tracer:,
+      payload_limiter: LittleGhost::Tracing::PayloadLimiter.new(max_bytes: 1_024)
+    )
+
+    tracing.start(:tool, {operation_id: "tool", tool_name: "lookup"})
+    tracing.finish(
+      :tool,
+      {
+        operation_id: "tool",
+        error_type: "RuntimeError",
+        diagnostic_exception: JSON.generate(message: "failed", stacktrace: "frame\n" * 2_000)
+      }
+    )
+    tracing.with_span("storage", attributes: {"db.query.text" => "select " * 1_000}) {}
+
+    _name, exception = tracer.started.first.last.events.first
+    assert_operator exception.fetch("exception.stacktrace").bytesize, :<=, 1_024
+    assert JSON.parse(exception.fetch("metadata")).fetch("telemetry_truncation").key?("exception.stacktrace")
+    assert_operator tracer.started.last.last.attributes.fetch("db.query.text").bytesize, :<=, 1_024
+  ensure
+    tracing&.shutdown
+  end
+
   def test_attaches_custom_events_to_their_operation_span
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)

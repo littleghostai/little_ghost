@@ -66,29 +66,25 @@ module LittleGhost
 
       # Returns +attributes+ itself when every String fits, or a new Hash with
       # oversized values shortened and the +metadata+ attribute updated. If an
-      # attribute cannot be shortened, it is omitted and recorded as omitted,
-      # and a +little_ghost.tracing.payload_limit_failed+ warning is emitted
-      # through Events.
+      # attribute cannot be shortened, only that attribute is omitted and
+      # recorded as omitted, and a +little_ghost.tracing.payload_limit_failed+
+      # warning is emitted through Events.
       def call(attributes)
         return attributes unless attributes.is_a?(Hash)
 
         transformed = attributes.dup
         truncations = {}
-        transformed.each do |name, value|
+        attributes.each do |name, value|
           next if name == "metadata"
           next unless value.is_a?(String) && value.bytesize > @max_bytes
 
-          result = if MESSAGE_ATTRIBUTES.key?(name)
-            limit_messages(value, selection: MESSAGE_ATTRIBUTES.fetch(name))
-          elsif OPENINFERENCE_MESSAGE_ATTRIBUTES.key?(name)
-            limit_openinference_value(value, selection: OPENINFERENCE_MESSAGE_ATTRIBUTES.fetch(name))
-          elsif JSON_ATTRIBUTES.include?(name)
-            limit_json(value)
-          else
-            limit_text_or_json(value)
-          end
+          result = limit_attribute(name, value)
           transformed[name] = result.value
           truncations[name] = result.details
+        rescue => error
+          Events.warn("little_ghost.tracing.payload_limit_failed", error_type: error.class.name)
+          transformed.delete(name)
+          truncations[name] = {"omitted" => true, "error" => error.class.name}
         end
         if transformed["metadata"].is_a?(String) && transformed["metadata"].bytesize > @max_bytes
           result = limit_json(transformed.fetch("metadata"))
@@ -106,6 +102,16 @@ module LittleGhost
 
       private
 
+      def limit_attribute(name, value)
+        if MESSAGE_ATTRIBUTES.key?(name)
+          limit_messages(value, selection: MESSAGE_ATTRIBUTES.fetch(name))
+        elsif OPENINFERENCE_MESSAGE_ATTRIBUTES.key?(name)
+          limit_openinference_value(value, selection: OPENINFERENCE_MESSAGE_ATTRIBUTES.fetch(name))
+        else
+          limit_json(value)
+        end
+      end
+
       def limit_messages(serialized, selection:)
         messages = JSON.parse(serialized)
         raise JSON::ParserError, "messages must be an array" unless messages.is_a?(Array)
@@ -121,10 +127,10 @@ module LittleGhost
 
         encoded_messages, = encoded_message_preview(messages, selection:)
         encoded = wrapper ? fit_wrapped_messages(wrapper, JSON.parse(encoded_messages)) : encoded_messages
-        captured_count = openinference_messages(JSON.parse(encoded)).first&.length.to_i
+        captured_count = (openinference_messages(JSON.parse(encoded)).first || []).length
         message_truncation_result(serialized, encoded, messages.length, captured_count, selection)
       rescue JSON::ParserError
-        limit_text_or_json(serialized)
+        limit_json(serialized)
       end
 
       def encoded_message_preview(messages, selection:)
@@ -163,32 +169,33 @@ module LittleGhost
       def recent_message_preview(messages)
         groups = message_groups(messages)
         retained = []
-        preview = []
+        selected = []
+        selected_count = 0
+        selected_bytes = 0
 
         groups.reverse_each do |group|
-          indexes = group.map(&:first)
           values = group.map(&:last)
-          candidate = values + preview
-          if encoded_size(candidate) <= @max_bytes
-            preview = candidate
-            retained = indexes + retained
-          elsif preview.empty?
-            preview = fit_recent_group(values)
-            retained = indexes
-          else
-            break
+          group_bytes = values.sum { |message| encoded_size(message) }
+          if array_size(selected_bytes + group_bytes, selected_count + values.length) > @max_bytes
+            break unless selected_count.zero?
+
+            values = fit_recent_group(values)
+            group_bytes = values.sum { |message| encoded_size(message) }
           end
+          selected << values
+          selected_count += values.length
+          selected_bytes += group_bytes
+          retained.concat(group.map(&:first))
+        end
+        preview = selected.reverse.flatten(1)
+
+        if instruction_message?(messages.first) && !retained.include?(0) &&
+            array_size(encoded_size(preview) - 2 + encoded_size(messages.first), preview.length + 1) <= @max_bytes
+          preview.unshift(messages.first)
+          retained << 0
         end
 
-        if instruction_message?(messages.first) && !retained.include?(0)
-          candidate = [messages.first] + preview
-          if encoded_size(candidate) <= @max_bytes
-            preview = candidate
-            retained.unshift(0)
-          end
-        end
-
-        [preview, retained.uniq]
+        [preview, retained.uniq.sort]
       end
 
       def fit_recent_group(messages)
@@ -252,10 +259,12 @@ module LittleGhost
       def leading_message_preview(messages)
         preview = []
         retained = []
+        preview_bytes = 0
         messages.each_with_index do |message, index|
-          candidate = preview + [message]
-          if encoded_size(candidate) <= @max_bytes
-            preview = candidate
+          message_bytes = encoded_size(message)
+          if array_size(preview_bytes + message_bytes, preview.length + 1) <= @max_bytes
+            preview << message
+            preview_bytes += message_bytes
             retained << index
           elsif preview.empty?
             preview = JSON.parse(fit_json([message]))
@@ -316,15 +325,6 @@ module LittleGhost
           details["omitted_items"] = value.length - captured.length if captured.is_a?(Array)
         end
         Result.new(value: encoded, details:)
-      rescue JSON::ParserError
-        encoded = JSON.generate("truncated" => true)
-        Result.new(value: encoded, details: truncation_details(serialized, encoded))
-      end
-
-      def limit_text_or_json(serialized)
-        value = JSON.parse(serialized)
-        encoded = fit_json(value)
-        Result.new(value: encoded, details: truncation_details(serialized, encoded))
       rescue JSON::ParserError
         encoded = truncate_string(serialized, @max_bytes)
         Result.new(value: encoded, details: truncation_details(serialized, encoded))
@@ -391,15 +391,16 @@ module LittleGhost
         return TRUNCATION_MARKER.byteslice(0, target_bytes) if target_bytes <= TRUNCATION_MARKER.bytesize
 
         available = target_bytes - TRUNCATION_MARKER.bytesize
-        head = utf8_byteslice(value, 0, available / 2)
-        tail = utf8_byteslice(value, value.bytesize - (available - available / 2), available - available / 2)
-        result = "#{head}#{TRUNCATION_MARKER}#{tail}"
-        result = utf8_byteslice(result, 0, target_bytes) while result.bytesize > target_bytes
-        result
+        head_bytes = available / 2
+        tail_bytes = available - head_bytes
+        head = utf8_slice(value, 0, head_bytes)
+        tail = utf8_slice(value, value.bytesize - tail_bytes, tail_bytes)
+        "#{head}#{TRUNCATION_MARKER}#{tail}"
       end
 
-      def utf8_byteslice(value, start, length)
-        value.byteslice([start, 0].max, [length, 0].max).to_s.force_encoding(Encoding::UTF_8).scrub
+      # scrub("") drops the partial characters at a cut edge, so a slice never grows.
+      def utf8_slice(value, start, length)
+        value.byteslice(start, length).force_encoding(Encoding::UTF_8).scrub("")
       end
 
       def minimal_value(value)
@@ -494,6 +495,10 @@ module LittleGhost
 
       def encoded_size(value)
         JSON.generate(value).bytesize
+      end
+
+      def array_size(element_bytes, count)
+        2 + element_bytes + [count - 1, 0].max
       end
 
       def assign(parent, key, value)
