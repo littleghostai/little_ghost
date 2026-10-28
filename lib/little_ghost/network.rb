@@ -5,6 +5,11 @@ module LittleGhost
   # to processes launched through the sandbox, not to providers or Ruby Tools.
   # A proxy enforces policy only when the Sandbox blocks every direct socket path.
   module Network
+    # Header names treated as client credentials. Gateways never forward them
+    # to an authorizer and remove them from upstream requests unless the
+    # authorizer sets them.
+    CREDENTIAL_HEADERS = %w[authorization proxy-authorization cookie x-api-key api-key x-auth-token x-goog-api-key].freeze
+
     # Normalized, headers-only request metadata passed to a trusted authorizer.
     class Request < Data.define(:method, :scheme, :host, :port, :path, :headers)
       # Builds normalized request metadata without a body.
@@ -68,6 +73,80 @@ module LittleGhost
       end
     end
 
+    # A plaintext listener that forwards every request to one HTTPS host.
+    #
+    # A facade gives a client that honors a base URL, such as a command-line
+    # tool pointed at <tt>http://127.0.0.1:3130</tt>, a way to reach exactly one
+    # upstream without trusting a proxy certificate. The gateway originates TLS
+    # to +upstream+ and asks the policy's authorizer about every request before
+    # forwarding it, so the authorizer can restrict methods and paths and
+    # replace a placeholder credential with a real one. Responses stream back
+    # without buffering.
+    #
+    #   LittleGhost::Network::Facade.new(
+    #     name: :help_center,
+    #     upstream: "api.example.com",
+    #     port: 3130,
+    #     timeout: 0
+    #   )
+    #
+    # Exactly one of +port+ or +socket+ is required. +port+ listens on
+    # <tt>127.0.0.1</tt>; +socket+ is an absolute Unix socket path that the
+    # application makes reachable from the sandbox. +timeout+ bounds each
+    # request in seconds; +0+ disables the bound for streaming responses, and
+    # +nil+ uses the policy's timeout for the upstream host or no bound.
+    class Facade < Data.define(:name, :upstream, :port, :socket, :timeout)
+      NAME = /\A[a-z][a-z0-9_]{0,62}\z/ # :nodoc:
+
+      # Returns +value+ unchanged or builds a facade from a Hash.
+      def self.coerce(value)
+        return value if value.is_a?(self)
+        raise PolicyError, "network facades must be Hashes or LittleGhost::Network::Facade values" unless value.is_a?(Hash)
+
+        new(**value.transform_keys(&:to_sym))
+      end
+
+      # Builds a normalized facade declaration.
+      def initialize(name:, upstream:, port: nil, socket: nil, timeout: nil)
+        name = String(name)
+        raise PolicyError, "network facade names must be lowercase identifiers" unless NAME.match?(name)
+        raise PolicyError, "network facades require exactly one of port or socket" if port.nil? == socket.nil?
+
+        upstream = String(upstream)
+        upstream = "#{upstream}:443" unless upstream.match?(/:\d+\z/)
+        host, upstream_port = EnvoyConfig.parse_endpoint(upstream)
+        if !port.nil? && !(port.is_a?(Integer) && port.between?(1, 65_535))
+          raise PolicyError, "network facade ports must be integers between 1 and 65535"
+        end
+        unless socket.nil?
+          socket = String(socket)
+          raise PolicyError, "network facade sockets must be absolute paths" unless socket.start_with?("/")
+        end
+        super(
+          name: name.freeze,
+          upstream: "#{host}:#{upstream_port}".freeze,
+          port:,
+          socket: socket&.freeze,
+          timeout: timeout.nil? ? nil : Network.timeout_seconds(timeout)
+        )
+      end
+
+      # The upstream DNS name without its port.
+      def host = upstream.rpartition(":").first
+
+      # The upstream TLS port.
+      def upstream_port = Integer(upstream.rpartition(":").last)
+    end
+
+    def self.timeout_seconds(value) # :nodoc:
+      seconds = Float(value)
+      raise PolicyError, "network timeouts must be finite and non-negative" unless seconds.finite? && seconds >= 0
+
+      (seconds == seconds.floor) ? seconds.to_i : seconds
+    rescue ArgumentError, TypeError
+      raise PolicyError, "network timeouts must be numbers of seconds"
+    end
+
     # Lifecycle contract implemented by filtered-egress gateways. A Gateway is
     # one part of enforcement; the Sandbox must also prevent direct networking.
     class Gateway
@@ -94,3 +173,6 @@ module LittleGhost
     end
   end
 end
+
+require_relative "network/envoy_config"
+require_relative "network/host_policy"

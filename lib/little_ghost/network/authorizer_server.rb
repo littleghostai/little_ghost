@@ -3,38 +3,84 @@
 require "socket"
 require "timeout"
 require "uri"
+require_relative "../network"
 
 module LittleGhost
   module Network
-    # Serves Envoy's headers-only external authorization protocol over a private
-    # Unix socket. Application callbacks are trusted and execute in the host.
-    class AuthorizerServer # :nodoc:
-      MAX_HEADER_BYTES = 32_768
-      MAX_CLIENTS = 64
-      READ_TIMEOUT = 5
-      SHUTDOWN_TIMEOUT = 1
-      ALWAYS_REMOVE = %w[authorization proxy-authorization cookie x-forwarded-for x-forwarded-host x-forwarded-proto].freeze
+    # Answers Envoy's headers-only external authorization requests on a Unix
+    # socket by calling a trusted authorizer.
+    #
+    # EnvoyGateway starts one for each run that needs it. An application that
+    # supervises Envoy itself can run the server in a separate, less privileged
+    # process so credentials stay out of both the sandbox and Envoy:
+    #
+    #   hosts = LittleGhost::Network::HostPolicy.new do
+    #     host("api.example.com") { inject { {"x-api-key" => ENV.fetch("HELP_CENTER_API_KEY")} } }
+    #   end
+    #   server = LittleGhost::Network::AuthorizerServer.new(
+    #     socket_path: "/run/egress-private/authorizer.sock",
+    #     authorizer: hosts.authorizer,
+    #     mode: 0o660
+    #   )
+    #   stop_reader, stop_writer = IO.pipe
+    #   Signal.trap("TERM") { stop_writer.write_nonblock(".", exception: false) }
+    #   server.serve(stop_io: stop_reader)
+    #
+    # +authorizer+ receives <tt>request:</tt>, a Network::Request, and an
+    # optional <tt>run:</tt> keyword, and returns a Network::Decision. It may be
+    # called from several threads at once. An exception or any other return
+    # value denies the request with status 503; the response never includes
+    # the exception message.
+    #
+    # Every allowed request also loses its Network::CREDENTIAL_HEADERS and
+    # forwarding headers unless the decision sets them.
+    class AuthorizerServer
+      MAX_HEADER_BYTES = 32_768 # :nodoc:
+      MAX_CLIENTS = 64 # :nodoc:
+      READ_TIMEOUT = 5 # :nodoc:
+      SHUTDOWN_TIMEOUT = 1 # :nodoc:
+      POLL_INTERVAL = 0.2 # :nodoc:
+      ALWAYS_REMOVE = (
+        CREDENTIAL_HEADERS + %w[x-forwarded-for x-forwarded-host x-forwarded-proto] + [EnvoyConfig::FACADE_UPSTREAM_HEADER]
+      ).freeze # :nodoc:
 
-      def initialize(socket_path:, authorizer:, run: nil)
+      # Builds a server for +socket_path+. +mode+ sets the socket's permission
+      # bits so a separate Envoy user can connect.
+      def initialize(socket_path:, authorizer:, run: nil, mode: 0o600)
         @socket_path = socket_path
         @authorizer = authorizer
         @run = run
+        @mode = Integer(mode)
         @mutex = Mutex.new
         @clients = []
         @workers = []
         @stopping = false
       end
 
+      # Filesystem path of the listening socket.
       attr_reader :socket_path
 
+      # Binds the socket and serves requests on a background thread. Returns
+      # +self+; call #close to stop.
       def start
-        File.unlink(socket_path) if File.exist?(socket_path)
-        @server = UNIXServer.new(socket_path)
-        File.chmod(0o600, socket_path)
-        @thread = Thread.new { serve }
+        bind
+        @thread = Thread.new { accept_loop }
         self
       end
 
+      # Binds the socket when needed and serves requests on the calling thread
+      # until +stop_io+ becomes readable or #close is called, then closes the
+      # server. Use it as the main loop of a standalone authorizer process.
+      def serve(stop_io: nil)
+        bind unless @server
+        accept_loop(stop_io:)
+        nil
+      ensure
+        close
+      end
+
+      # Stops accepting, closes open connections, waits briefly for in-flight
+      # requests, and removes the socket. Calling +close+ more than once is safe.
       def close
         @stopping = true
         @server&.close unless @server&.closed?
@@ -53,8 +99,22 @@ module LittleGhost
 
       private
 
-      def serve
+      def bind
+        File.unlink(socket_path) if File.exist?(socket_path)
+        @server = UNIXServer.new(socket_path)
+        @server.listen(128)
+        File.chmod(@mode, socket_path)
+      end
+
+      def accept_loop(stop_io: nil)
         loop do
+          break if @stopping
+
+          if stop_io
+            ready, = IO.select([@server, stop_io], nil, nil, POLL_INTERVAL)
+            next unless ready
+            break if ready.include?(stop_io)
+          end
           client = @server.accept
           accepted = @mutex.synchronize do
             next false if @clients.length >= MAX_CLIENTS
@@ -76,7 +136,8 @@ module LittleGhost
 
       def handle(client)
         method, path, headers = read_request(client)
-        host, port = authority(headers.fetch("host", ""))
+        upstream = headers.delete(EnvoyConfig::FACADE_UPSTREAM_HEADER)
+        host, port = authority(upstream || headers.fetch("host", ""))
         request = Request.new(
           method:,
           scheme: "https",
@@ -150,7 +211,7 @@ module LittleGhost
         status = decision.allowed ? 200 : decision.status
         reason = {200 => "OK", 400 => "Bad Request", 403 => "Forbidden", 429 => "Too Many Requests", 503 => "Service Unavailable"}.fetch(status, "Forbidden")
         client.write("HTTP/1.0 #{status} #{reason}\r\n")
-        removals = (ALWAYS_REMOVE + decision.remove_headers).uniq
+        removals = (ALWAYS_REMOVE + decision.remove_headers).uniq - decision.set_headers.keys
         client.write("x-envoy-auth-headers-to-remove: #{removals.join(", ")}\r\n") unless removals.empty?
         decision.set_headers.each { |name, value| client.write("#{name}: #{value}\r\n") }
         client.write("content-length: 0\r\n\r\n")
