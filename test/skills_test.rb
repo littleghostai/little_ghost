@@ -634,7 +634,194 @@ class SkillsTest < Minitest::Test
 
         assert_equal "Skill destination overlaps a skill path: #{destination}", error.message
       end
-      refute Dir.exist?(File.join(root, "materialized", "review"))
+      refute Dir.exist?(File.join(root, "materialized"))
+    end
+  end
+
+  def test_materialize_rejects_changed_descriptions_and_instructions
+    [
+      ["---\nname: review\ndescription: Changed\n---\nInstructions", "description"],
+      ["---\nname: review\ndescription: review\n---\nChanged instructions", "instructions"]
+    ].each do |manifest, field|
+      Dir.mktmpdir do |root|
+        Dir.mktmpdir do |destination|
+          write_skill(root, "review")
+          catalog = LittleGhost::Skills::Catalog.new(paths: root)
+          File.write(File.join(root, "review", "SKILL.md"), manifest)
+
+          error = assert_raises(LittleGhost::ConfigurationError, field) { catalog.materialize(destination) }
+
+          assert_equal "Skill changed before it could be materialized: review", error.message
+          assert_empty Dir.children(destination)
+        end
+      end
+    end
+  end
+
+  def test_materialize_copies_only_the_manifest_and_resource_directories
+    Dir.mktmpdir do |root|
+      Dir.mktmpdir do |destination|
+        write_skill(root, "review")
+        File.write(File.join(root, "review", "notes.md"), "Notes")
+        FileUtils.mkdir_p(File.join(root, "review", "build"))
+        FileUtils.mkdir_p(File.join(root, "review", "references"))
+        File.write(File.join(root, "review", "references", "guide.md"), "Guide")
+
+        LittleGhost::Skills::Catalog.new(paths: root).materialize(destination)
+
+        assert_equal %w[SKILL.md references], Dir.children(File.join(destination, "review")).sort
+      end
+    end
+  end
+
+  def test_materialize_enforces_byte_file_and_depth_limits
+    Dir.mktmpdir do |root|
+      write_skill(root, "review")
+      FileUtils.mkdir_p(File.join(root, "review", "assets"))
+      File.write(File.join(root, "review", "assets", "large.bin"), "x" * 5_000)
+      catalog = LittleGhost::Skills::Catalog.new(paths: root)
+
+      {
+        {max_bytes: 1_000} => "Skill materialization exceeds 1000 bytes",
+        {max_files: 1} => "Skill materialization exceeds 1 files"
+      }.each do |limits, message|
+        Dir.mktmpdir do |destination|
+          error = assert_raises(LittleGhost::ConfigurationError) { catalog.materialize(destination, **limits) }
+
+          assert_equal message, error.message
+          assert_empty Dir.children(destination)
+        end
+      end
+
+      deep = File.join(root, "review", "scripts", "a", "b", "c")
+      FileUtils.mkdir_p(deep)
+      File.write(File.join(deep, "run.sh"), "exit 0")
+      Dir.mktmpdir do |destination|
+        error = assert_raises(LittleGhost::ConfigurationError) { catalog.materialize(destination) }
+
+        assert_includes error.message, "Skill resources exceed 3 directory levels"
+      end
+    end
+  end
+
+  def test_materialize_keeps_the_previous_copy_when_a_replacement_fails
+    Dir.mktmpdir do |root|
+      Dir.mktmpdir do |destination|
+        write_skill(root, "review", body: "Current instructions")
+        write_skill(destination, "review", body: "Previous instructions")
+        FileUtils.mkdir_p(File.join(root, "review", "assets"))
+        File.write(File.join(root, "review", "assets", "large.bin"), "x" * 5_000)
+
+        assert_raises(LittleGhost::ConfigurationError) do
+          LittleGhost::Skills::Catalog.new(paths: root).materialize(destination, max_bytes: 1_000)
+        end
+
+        assert_equal ["review"], Dir.children(destination)
+        assert_includes File.read(File.join(destination, "review", "SKILL.md")), "Previous instructions"
+      end
+    end
+  end
+
+  def test_materialize_fails_on_unreadable_resources
+    skip "root can read any file" if Process.uid.zero?
+
+    Dir.mktmpdir do |root|
+      Dir.mktmpdir do |destination|
+        write_skill(root, "review")
+        FileUtils.mkdir_p(File.join(root, "review", "references"))
+        unreadable = File.join(root, "review", "references", "private.md")
+        File.write(unreadable, "Private")
+        File.chmod(0o000, unreadable)
+
+        error = assert_raises(LittleGhost::ConfigurationError) do
+          LittleGhost::Skills::Catalog.new(paths: root).materialize(destination)
+        end
+
+        assert_includes error.message, "Skills could not be materialized into #{destination}"
+        assert_empty Dir.children(destination)
+      ensure
+        File.chmod(0o600, unreadable) if unreadable
+      end
+    end
+  end
+
+  def test_materialize_skips_named_pipes_without_blocking
+    Dir.mktmpdir do |root|
+      Dir.mktmpdir do |destination|
+        write_skill(root, "review")
+        FileUtils.mkdir_p(File.join(root, "review", "scripts"))
+        File.mkfifo(File.join(root, "review", "scripts", "pipe"))
+
+        Timeout.timeout(5) { LittleGhost::Skills::Catalog.new(paths: root).materialize(destination) }
+
+        assert_empty Dir.children(File.join(destination, "review", "scripts"))
+      end
+    end
+  end
+
+  def test_materialize_wraps_file_system_errors
+    Dir.mktmpdir do |root|
+      Dir.mktmpdir do |parent|
+        write_skill(root, "review")
+        destination = File.join(parent, "file")
+        File.write(destination, "Not a directory")
+
+        error = assert_raises(LittleGhost::ConfigurationError) do
+          LittleGhost::Skills::Catalog.new(paths: root).materialize(destination)
+        end
+
+        assert_includes error.message, "Skills could not be materialized into #{destination}"
+      end
+    end
+  end
+
+  def test_concurrent_materializations_of_one_destination_succeed
+    Dir.mktmpdir do |root|
+      Dir.mktmpdir do |destination|
+        write_skill(root, "review")
+        write_skill(root, "deploy")
+        FileUtils.mkdir_p(File.join(root, "review", "references"))
+        20.times { |index| File.write(File.join(root, "review", "references", "guide-#{index}.md"), "Guide") }
+        catalog = LittleGhost::Skills::Catalog.new(paths: root)
+
+        threads = 4.times.map { Thread.new { 5.times { catalog.materialize(destination) } } }
+        Timeout.timeout(30) { threads.each(&:join) }
+
+        assert_equal %w[deploy review], Dir.children(destination).sort
+        assert_equal 20, Dir.children(File.join(destination, "review", "references")).length
+      end
+    end
+  end
+
+  def test_materialize_removes_staging_entries_left_by_an_interrupted_call
+    Dir.mktmpdir do |root|
+      Dir.mktmpdir do |destination|
+        write_skill(root, "review")
+        FileUtils.mkdir_p(File.join(destination, ".little_ghost-staging-review-stale", "references"))
+
+        LittleGhost::Skills::Catalog.new(paths: root).materialize(destination)
+
+        assert_equal ["review"], Dir.children(destination)
+      end
+    end
+  end
+
+  def test_warns_when_a_skill_is_skipped
+    Dir.mktmpdir do |directory|
+      write_skill(directory, "review")
+      File.symlink(File.join(directory, "review"), File.join(directory, "linked"))
+      write_skill(directory, "notes", name: "review")
+      events = []
+      listener = Object.new
+      listener.define_singleton_method(:emit) { |event| events << event }
+
+      LittleGhost::Events.subscribed(listener) { LittleGhost::Skills::Catalog.new(paths: directory) }
+
+      skipped = events.select { |event| event[:name] == "little_ghost.skills.skill_skipped" }
+      assert_equal(
+        [["linked", "symbolic_link"], ["notes", "name_mismatch"]],
+        skipped.map { |event| [event.dig(:payload, :skill), event.dig(:payload, :reason).to_s] }.sort
+      )
     end
   end
 
