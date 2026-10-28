@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "fileutils"
+require "tmpdir"
 require "yaml"
 require_relative "resource_root"
 
@@ -15,9 +17,27 @@ module LittleGhost
     #   catalog.tool # a LittleGhost::Tool that loads full instructions on demand
     #
     # Each immediate child directory may contain one +SKILL.md+ with YAML front
-    # matter. Symbolic-link escapes, unsafe names, oversized files, and invalid
-    # YAML are rejected or skipped before instructions reach a model. Optional
-    # resource listings are limited by count and depth.
+    # matter whose +name+ matches the directory name. A symbolic link that
+    # escapes its root or an oversized file raises ConfigurationError. Linked
+    # skill directories and manifests, unsafe or mismatched names, and invalid
+    # UTF-8 or YAML are skipped before instructions reach a model. Optional resource listings
+    # are limited by count and depth.
+    #
+    # === Layering skill roots
+    #
+    # When several roots define the same skill name, +precedence+ decides the
+    # result: +:last+ (the default) lets a later root override an earlier one,
+    # +:first+ keeps the earliest definition, and +:error+ raises
+    # ConfigurationError. List roots so the one you trust most wins.
+    #
+    #   catalog = LittleGhost::Skills::Catalog.new(
+    #     paths: [shared_skills, repository_skills, "app/skills"],
+    #     precedence: :last
+    #   )
+    #   catalog.materialize("/srv/run/skills") # => "/srv/run/skills"
+    #
+    # #materialize copies the resolved skills into one directory, so a Sandbox
+    # can expose a single read-only path instead of every source root.
     #
     # === Choosing skill sources
     #
@@ -41,14 +61,17 @@ module LittleGhost
       MAX_RESOURCE_DEPTH = 3 # :nodoc:
       RESOURCE_DIRECTORIES = %w[scripts references assets].freeze # :nodoc:
       SAFE_NAME_PATTERN = /\A[a-zA-Z0-9_-]+\z/ # :nodoc:
+      PRECEDENCES = %i[last first error].freeze # :nodoc:
 
       # Loads valid skills immediately using the supplied safety limits.
       # +resource_root+ may be an absolute process-visible path. A
       # <tt>workspace://name</tt> reference also requires +workspace+ and
       # +sandbox+; it must resolve to every configured skill root through a
-      # read-only file-tool grant.
+      # read-only file-tool grant. +precedence+ is +:last+, +:first+, or
+      # +:error+ and decides which root wins when several define one name.
       def initialize(
         paths:,
+        precedence: :last,
         max_skills: DEFAULT_MAX_SKILLS,
         max_file_bytes: DEFAULT_MAX_FILE_BYTES,
         max_resource_files: DEFAULT_MAX_RESOURCE_FILES,
@@ -59,6 +82,10 @@ module LittleGhost
         prompt_renderer: nil
       )
         @paths = PathSet.new(paths)
+        @precedence = precedence
+        unless PRECEDENCES.include?(@precedence)
+          raise ArgumentError, "precedence must be one of: #{PRECEDENCES.join(", ")}"
+        end
         @max_skills = positive_integer(max_skills, :max_skills)
         @max_file_bytes = positive_integer(max_file_bytes, :max_file_bytes)
         @max_resource_files = positive_integer(max_resource_files, :max_resource_files)
@@ -138,7 +165,84 @@ module LittleGhost
         )
       end
 
+      # Copies each Skill directory in the catalog into +destination+ and
+      # returns the destination's real path. Each Skill lands in
+      # <tt>destination/name</tt>, replacing an entry with that name; other
+      # entries are left in place. Regular files and directories are copied
+      # with group and world write permission removed. Symbolic links and
+      # special files are skipped, so a copied Skill never points outside
+      # its directory.
+      #
+      # The destination must not overlap a configured skill root. A
+      # ConfigurationError is raised when it does, or when a +SKILL.md+ no
+      # longer matches the Skill that was loaded.
+      def materialize(destination)
+        FileUtils.mkdir_p(destination, mode: 0o700)
+        real_destination = File.realpath(destination)
+        overlapping = @paths.any? do |root|
+          next false unless Dir.exist?(root.path)
+
+          real_root = File.realpath(root.path)
+          inside_root?(real_destination, real_root) || inside_root?(real_root, real_destination)
+        end
+        raise ConfigurationError, "Skill destination overlaps a skill path: #{destination}" if overlapping
+
+        @skills.each_value { |skill| materialize_skill(skill, real_destination) }
+        real_destination
+      end
+
       private
+
+      def materialize_skill(skill, destination)
+        staging = Dir.mktmpdir(".#{skill.name}-", destination)
+        source = File.dirname(skill.source_path)
+        copy_directory(source, staging)
+        verify_materialized_manifest!(skill, File.join(staging, "SKILL.md"))
+        File.chmod((File.stat(source).mode & 0o755) | 0o700, staging)
+        target = File.join(destination, skill.name)
+        FileUtils.remove_entry_secure(target) if File.exist?(target) || File.symlink?(target)
+        File.rename(staging, target)
+      ensure
+        FileUtils.remove_entry_secure(staging) if staging && File.exist?(staging)
+      end
+
+      def copy_directory(source, target, depth: 0)
+        Dir.children(source).sort.each do |name|
+          source_path = File.join(source, name)
+          target_path = File.join(target, name)
+          stat = File.lstat(source_path)
+          if stat.directory?
+            Dir.mkdir(target_path, 0o700)
+            copy_directory(source_path, target_path, depth: depth + 1)
+            File.chmod((stat.mode & 0o755) | 0o700, target_path)
+          elsif stat.file?
+            manifest = depth.zero? && name == "SKILL.md"
+            copy_file(source_path, target_path, limit: manifest ? @max_file_bytes + 1 : nil)
+          end
+        rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
+          next
+        end
+      end
+
+      def copy_file(source, target, limit:)
+        File.open(source, File::RDONLY | File::NOFOLLOW) do |input|
+          stat = input.stat
+          next unless stat.file?
+
+          File.open(target, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |output|
+            IO.copy_stream(input, output, limit)
+            output.chmod(stat.mode & 0o755)
+          end
+        end
+      end
+
+      def verify_materialized_manifest!(skill, path)
+        unchanged = File.file?(path) && !File.symlink?(path) && File.size(path) <= @max_file_bytes &&
+          parse_manifest(File.read(path, encoding: "UTF-8"), path).fetch(:name) == skill.name
+        raise InvalidSkillError unless unchanged
+      rescue InvalidSkillError, Psych::Exception
+        raise ConfigurationError, "Skill changed before it could be materialized: #{skill.name}"
+      end
 
       def load_skills
         missing_root = @paths.find { |root| !Dir.exist?(root.path) && !root.boundary }
@@ -167,6 +271,13 @@ module LittleGhost
           end
           next if @only && !@only.include?(skill.name)
 
+          existing = loaded[skill.name]
+          next if existing && @precedence == :first
+          if existing && @precedence == :error
+            raise ConfigurationError,
+              "Skill #{skill.name} is defined more than once: #{existing.source_path}, #{skill.source_path}"
+          end
+
           loaded[skill.name] = skill
         end.freeze
       end
@@ -180,10 +291,24 @@ module LittleGhost
           inside_root?(real_path, real_root) && boundary_allows?(real_root, candidate.boundary)
         end
         raise ConfigurationError, "Skill path escapes its configured root: #{path}" unless root
+        if File.symlink?(path) || File.symlink?(File.dirname(path))
+          raise InvalidSkillError, "Skill is a symbolic link: #{path}"
+        end
         root_path = File.realpath(root.path)
         raise ConfigurationError, "Skill exceeds #{@max_file_bytes} bytes: #{path}" if File.size(real_path) > @max_file_bytes
 
-        text = File.read(real_path, encoding: "UTF-8")
+        manifest = parse_manifest(File.read(real_path, encoding: "UTF-8"), path)
+        unless manifest.fetch(:name) == File.basename(File.dirname(path))
+          raise InvalidSkillError, "Skill name must match its directory: #{path}"
+        end
+
+        Skill.new(
+          **manifest,
+          path: agent_path(real_path, root_path), source_path: real_path
+        )
+      end
+
+      def parse_manifest(text, path)
         raise InvalidSkillError, "Skill is not valid UTF-8: #{path}" unless text.valid_encoding?
 
         match = text.match(/\A---\s*\n(.*?)\n---\s*\n(.*)\z/m)
@@ -203,11 +328,7 @@ module LittleGhost
         allowed_tools = allowed_tools.split if allowed_tools.is_a?(String)
         allowed_tools = Array(allowed_tools).map(&:to_s).freeze
         compatibility = metadata["compatibility"]&.to_s
-        Skill.new(
-          name:, description:, instructions: match[2].strip,
-          path: agent_path(real_path, root_path), source_path: real_path,
-          allowed_tools:, compatibility:
-        )
+        {name:, description:, instructions: match[2].strip, allowed_tools:, compatibility:}
       rescue Psych::Exception => error
         raise InvalidSkillError, "Invalid skill front matter in #{path}: #{error.message}"
       end
