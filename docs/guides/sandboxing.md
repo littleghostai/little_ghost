@@ -282,6 +282,14 @@ A Run closes the Workspace and Sandbox it creates after success, failure, a
 partial response, or cancellation. Application-supplied instances remain
 caller-owned.
 
+Trusted setup work, such as unpacking a cache into a new Workspace in a
+`setup` hook, does not need a Sandbox. `Sandbox::ProcessRunner.capture` runs
+one command in its own process group with a timeout, an output limit, and the
+Run's cancellation, and returns a result that reports the exit code, whether
+the command timed out, and whether either stream was truncated. It waits for
+every member of the process group, so a backgrounded child cannot outlive the
+result. It applies no isolation, so never pass it a command the model chose.
+
 ## Configure child-process networking separately
 
 Sandbox networking has three modes:
