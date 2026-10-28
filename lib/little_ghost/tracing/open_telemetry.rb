@@ -101,8 +101,11 @@ module LittleGhost
       # containing a dot, such as <tt>"session.id"</tt>, is used as the
       # attribute name; other keys follow the same mapping as LittleGhost's own
       # attributes. Returned values are normalized like other attributes, so
-      # strings are capped at 1,024 characters. If +enrich+ raises,
-      # Instrumentation reports the failure and skips that notification.
+      # strings are capped at 1,024 characters. If +enrich+ raises or returns
+      # anything other than a Hash or +nil+, a
+      # <tt>little_ghost.tracing.enrich_failed</tt> warning names the error
+      # class and the notification is recorded without the additions, so spans
+      # still start and finish.
       #
       # +payload_limiter+ is an optional callable, usually a PayloadLimiter,
       # that receives each span's or event's OpenTelemetry attributes as a Hash
@@ -198,6 +201,9 @@ module LittleGhost
         raise TypeError, "enrich must return a Hash or nil" unless additions.is_a?(Hash)
 
         attributes.merge(additions)
+      rescue => error
+        Events.warn("little_ghost.tracing.enrich_failed", error_type: error.class.name, phase:)
+        attributes
       end
 
       def limit_attributes(attributes, metadata: nil)

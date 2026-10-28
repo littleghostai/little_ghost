@@ -549,12 +549,25 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
-  def test_enrich_must_return_a_hash
-    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer: Tracer.new, enrich: ->(*) { "kind" })
+  def test_a_failing_enrich_still_starts_and_finishes_the_span
+    [->(*) { raise "enrich failed" }, ->(*) { "kind" }].each do |enrich|
+      tracer = Tracer.new
+      events = []
+      listener = Object.new
+      listener.define_singleton_method(:emit) { |event| events << event }
+      tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:, enrich:)
 
-    error = assert_raises(TypeError) { tracing.start(:tool, {operation_id: "tool", tool_name: "lookup"}) }
+      LittleGhost::Events.subscribed(listener) do
+        tracing.start(:tool, {operation_id: "tool", tool_name: "lookup"})
+        tracing.finish(:tool, {operation_id: "tool", tool_name: "lookup"})
+      end
 
-    assert_equal "enrich must return a Hash or nil", error.message
+      span = tracer.started.first.last
+      assert span.finished?
+      assert_equal "lookup", span.attributes.fetch("gen_ai.tool.name")
+      assert_equal ["little_ghost.tracing.enrich_failed"] * 2, events.map { |event| event[:name] }
+      refute_includes events.join, "enrich failed"
+    end
   end
 
   def test_rejects_options_that_are_not_callable
