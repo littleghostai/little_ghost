@@ -5,15 +5,16 @@ module LittleGhost
     # Lets an Agent delegate a coding task to an external coding-agent tool.
     #
     # The application chooses which harnesses are available, where each
-    # executable lives, its writable home, and placeholder settings. The model
-    # supplies only the task, the harness name, an optional session to resume,
-    # and a budget and timeout within the configured bounds.
+    # executable lives, where its home directory is created, and placeholder
+    # settings. The model supplies only the task, the harness name, an
+    # optional session to resume, and a budget and timeout within the
+    # configured bounds.
     #
     #   class DelegateCodingTask < LittleGhost::Harnesses::Tool
     #     tool_name "delegate_coding_task"
     #     harnesses claude_code: {
     #       executable: "/opt/harnesses/bin/claude",
-    #       home: "/home/agent",
+    #       home_root: :scratch,
     #       defaults: {base_url: "http://127.0.0.1:3130"}
     #     }
     #     budget default: 2, maximum: 10
@@ -24,17 +25,26 @@ module LittleGhost
     #     tools DelegateCodingTask
     #   end
     #
-    # The tool runs the harness in the Run's Sandbox and publishes each
-    # +:harness+ StreamEvent to the Run while the harness works. It returns a
-    # JSON object with the Result's status, final text, session, cost, turns,
-    # and usage, plus the end of standard error when the task did not
-    # complete. Calls are exclusive, so two harnesses never edit the same
-    # workspace at once.
+    # The tool runs the harness in the Run's Sandbox, or on the host in
+    # +:native_guards+ mode when the Tool has no Sandbox, and publishes each
+    # +:harness+ StreamEvent to the Run while the harness works; by default
+    # tool-call inputs and tool outputs are left out (see #harness_event_data).
+    # It returns a JSON object with the Result's status, final text (shortened
+    # to 16,000 characters), session, cost, turns, and usage, plus the end of
+    # standard error when the task did not complete. Calls are exclusive, so
+    # two harnesses never edit the same workspace at once.
+    #
+    # Each harness gets one private home directory per Run, created on first
+    # use beneath a Workspace path the Sandbox lets processes write and
+    # removed when the Run closes. The model may resume only sessions that an
+    # earlier call in the same Run started.
     #
     # Override #build_harness to choose settings per run, and #build_request
     # to add instructions, a working directory, or a turn limit.
     class Tool < LittleGhost::Tool
       DEFAULT_TIMEOUT = 600 # :nodoc:
+      RESULT_TEXT_LIMIT = 16_000 # :nodoc:
+      SETTINGS = %i[executable home home_root defaults mode].freeze # :nodoc:
 
       class_attribute :harness_settings_value, default: {}.freeze
       class_attribute :budget_default_value
@@ -52,14 +62,20 @@ module LittleGhost
         #
         # Declares the available harnesses. Each name must be registered with
         # Harnesses.register. +settings+ maps a name to a Hash with
-        # +:executable+, +:home+, and +:defaults+ for Base.new; a bare name
-        # uses the harness's default executable and requires #build_harness
-        # to supply a home.
+        # +:executable+, +:home_root+, +:defaults+, and +:mode+ for Base.new; a bare name uses the harness's default executable and
+        # the first writable runtime path for its home. +:home+ opts in to a
+        # persistent home shared by every Run, as described in Base.new.
         def harnesses(*names, **settings)
           return harness_settings_value.keys if names.empty? && settings.empty?
 
           values = names.flatten.to_h { |name| [name.to_sym, {}] }
-          settings.each { |name, options| values[name.to_sym] = options.to_h.transform_keys(&:to_sym).freeze }
+          settings.each do |name, options|
+            options = options.to_h.transform_keys(&:to_sym)
+            unknown = options.keys - SETTINGS
+            raise ArgumentError, "unknown harness settings: #{unknown.join(", ")}" unless unknown.empty?
+
+            values[name.to_sym] = options.freeze
+          end
           values.each_key { |name| Harnesses.resolve(name) }
           self.harness_settings_value = values.freeze
           harnesses
@@ -155,6 +171,11 @@ module LittleGhost
         end
       end
 
+      def initialize(...) # :nodoc:
+        super
+        @session_ledger = SessionLedger.new
+      end
+
       # Runs the selected harness and returns its result as a Hash.
       def call(input)
         name = selected_harness(input)
@@ -163,8 +184,15 @@ module LittleGhost
         rescue ArgumentError => error
           raise ToolError, error.message
         end
+        if request.session_id && !session_ledger.include?(name, request.session_id)
+          raise ToolError, "Only sessions started earlier in this run can be resumed."
+        end
         harness = build_harness(name)
-        result = harness.run(request, context:) { |event| publish_event(event.type, **event.data) }
+        result = harness.run(request, context:) do |event|
+          data = harness_event_data(event)
+          run&.publish(:harness, **data) if data
+        end
+        session_ledger.record(name, result.session_id)
         result_value(result)
       end
 
@@ -178,17 +206,32 @@ module LittleGhost
       # Builds the Harnesses::Base for +name+ from the declared settings and
       # the bound Sandbox. Override to choose settings per run.
       def build_harness(name) # :doc:
-        raise ConfigurationError, "#{self.class} requires a sandbox" unless sandbox
-
         settings = self.class.harness_settings(name)
-        harness = Harnesses.resolve(name)
-        home = settings.fetch(:home) { raise ConfigurationError, "#{self.class} has no home configured for #{name}" }
-        harness.new(
+        harness_class = Harnesses.resolve(name)
+        options = {
           sandbox:,
-          executable: settings.fetch(:executable, harness.default_executable),
-          home:,
-          defaults: settings.fetch(:defaults, {})
-        )
+          executable: settings.fetch(:executable, harness_class.default_executable),
+          home_root: settings[:home_root],
+          defaults: settings.fetch(:defaults, {}),
+          mode: settings[:mode]
+        }
+        harness = harness_class.new(**options)
+        home = settings[:home] || run_home(name, harness)
+        home ? harness_class.new(**options, home:) : harness
+      end
+
+      # Returns the data published to the Run for one +:harness+ StreamEvent,
+      # or nil to skip it. The default publishes tool calls with only their
+      # identifier and name, and tool results with only their identifier and
+      # error flag, because tool inputs and outputs can contain repository
+      # content and credentials. Override to publish more or to redact text.
+      def harness_event_data(event) # :doc:
+        activity = event.data.fetch(:event)
+        case activity[:kind]
+        when :tool_call then event.data.merge(event: activity.slice(:kind, :id, :name))
+        when :tool_result then event.data.merge(event: activity.slice(:kind, :id, :error))
+        else event.data
+        end
       end
 
       # Builds the Harnesses::Request for validated model +input+. Override to
@@ -206,9 +249,45 @@ module LittleGhost
       # Converts a Harnesses::Result into the value returned to the model.
       def result_value(result) # :doc:
         value = result.to_h.except(:stderr_tail)
+        if result.text && result.text.length > RESULT_TEXT_LIMIT
+          value[:text] = "#{result.text[0, RESULT_TEXT_LIMIT]}…"
+          value[:text_truncated] = true
+        end
         value[:stderr_tail] = result.stderr_tail unless result.completed? || result.stderr_tail.empty?
         value
       end
+
+      def run_home(name, harness)
+        return unless run.respond_to?(:shared_resource) && run.respond_to?(:register)
+
+        run.shared_resource([:little_ghost_harness_home, self.class, name]) do
+          paths = HomeDirectory.create(sandbox:, root: harness.home_root, host: !harness.isolated? && harness.home_root.nil?)
+          run.register { HomeDirectory.remove(paths) }
+          paths.fetch(:child)
+        end
+      end
+
+      def session_ledger
+        return @session_ledger unless run.respond_to?(:shared_resource)
+
+        run.shared_resource([:little_ghost_harness_sessions, self.class]) { SessionLedger.new }
+      end
+
+      class SessionLedger # :nodoc:
+        def initialize
+          @mutex = Mutex.new
+          @sessions = Hash.new { |hash, key| hash[key] = [] }
+        end
+
+        def include?(harness, session_id) = @mutex.synchronize { @sessions[harness].include?(session_id) }
+
+        def record(harness, session_id)
+          return unless session_id
+
+          @mutex.synchronize { @sessions[harness] |= [session_id] }
+        end
+      end
+      private_constant :SessionLedger
 
       def selected_harness(input)
         available = self.class.harnesses

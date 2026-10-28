@@ -12,6 +12,15 @@ class HarnessToolTest < Minitest::Test
 
     attr_reader :events
 
+    def run_scoped
+      @shared = {}
+      @closers = []
+      define_singleton_method(:shared_resource) { |key, &block| @shared.key?(key) ? @shared[key] : (@shared[key] = block.call) }
+      define_singleton_method(:register) { |&block| @closers << block }
+      define_singleton_method(:close) { @closers.reverse_each(&:call) }
+      self
+    end
+
     def publish(type, **data)
       event = LittleGhost::StreamEvent.build(type, **data)
       @events << event
@@ -20,11 +29,21 @@ class HarnessToolTest < Minitest::Test
   end
 
   class FixtureSandbox
-    attr_reader :command, :options
+    def initialize(workspace: nil)
+      @workspace = workspace
+      @homes = []
+    end
+
+    attr_reader :command, :options, :workspace, :homes
+
+    def capabilities = LittleGhost::Sandbox::Capabilities.new(features: [], network_modes: [:none], isolation: :namespace)
+
+    def effective_policy = LittleGhost::Sandbox::Policy.new(runtime_paths: {scratch: :read_write}, network: :none)
 
     def start_program(command, **options)
       @command = command
       @options = options
+      @homes << options.dig(:environment, "HOME")
       FixtureSession.new(File.read(FIXTURE))
     end
   end
@@ -74,6 +93,69 @@ class HarnessToolTest < Minitest::Test
     assert_equal ["--max-budget-usd", "2"], sandbox.command.each_cons(2).find { |flag, _| flag == "--max-budget-usd" }
     assert_equal %i[start text tool_call tool_result text usage stop], run.events.map { |event| event.data[:event][:kind] }
     assert(run.events.all? { |event| event.type == :harness })
+    tool_call, tool_result = run.events.map { |event| event.data[:event] }.values_at(2, 3)
+    assert_equal({kind: :tool_call, id: "toolu_01Example", name: "Bash"}, tool_call)
+    assert_equal({kind: :tool_result, id: "toolu_01Example", error: false}, tool_result)
+  end
+
+  def test_event_data_hook_can_publish_tool_inputs
+    verbose = Class.new(DelegateCodingTask) do
+      define_method(:harness_event_data) { |event| event.data }
+    end
+    tool, _, run = bound(verbose)
+
+    tool.execute({"task" => "Show the current commit."})
+
+    assert_includes run.events[2].data.dig(:event, :input), "git rev-parse"
+  end
+
+  def test_only_sessions_started_in_this_run_can_be_resumed
+    tool, sandbox, = bound(DelegateCodingTask)
+    session_id = "7f0c2b8e-4a1d-4b9e-9c35-2f6d1e8a9b10"
+
+    refused = tool.execute({"task" => "Continue.", "session_id" => session_id})
+    started = tool.execute({"task" => "Show the current commit."})
+    resumed = tool.execute({"task" => "Continue.", "session_id" => session_id})
+    other, = bound(DelegateCodingTask)
+
+    assert refused.error?
+    assert_includes refused.content, "Only sessions started earlier in this run"
+    assert started.success?
+    assert resumed.success?
+    assert_includes sandbox.command, session_id
+    assert other.execute({"task" => "Continue.", "session_id" => session_id}).error?
+  end
+
+  def test_each_harness_gets_one_private_home_per_run
+    scoped = Class.new(DelegateCodingTask) do
+      harnesses claude_code: {executable: "/opt/harnesses/bin/claude", home_root: :scratch}
+    end
+    Dir.mktmpdir do |directory|
+      workspace = LittleGhost::Workspace.new(root: directory, paths: {scratch: "scratch"}).open
+      sandbox = FixtureSandbox.new(workspace:)
+      run = RecordingRun.new.run_scoped
+      tool, = bound(scoped, sandbox:, run:)
+
+      tool.execute({"task" => "Show the current commit."})
+      tool.execute({"task" => "Show the current commit again."})
+      home = sandbox.homes.first
+
+      assert_equal [home, home], sandbox.homes
+      assert_equal File.join(directory, "scratch"), File.dirname(home)
+      assert_equal 0o700, File.stat(home).mode & 0o777
+      run.close
+      refute File.exist?(home)
+    end
+  end
+
+  def test_long_final_text_is_shortened_for_the_model
+    tool, = bound(DelegateCodingTask)
+    result = LittleGhost::Harnesses::Result.new(harness: :claude_code, status: :completed, text: "a" * 20_000)
+
+    value = tool.send(:result_value, result)
+
+    assert_equal 16_001, value.fetch(:text).length
+    assert value.fetch(:text_truncated)
   end
 
   def test_schema_and_description_follow_configuration
@@ -105,6 +187,7 @@ class HarnessToolTest < Minitest::Test
     assert_raises(LittleGhost::ConfigurationError) { Class.new(LittleGhost::Harnesses::Tool) { harnesses :unknown } }
     assert_raises(ArgumentError) { Class.new(LittleGhost::Harnesses::Tool) { budget default: 20, maximum: 10 } }
     assert_raises(ArgumentError) { Class.new(LittleGhost::Harnesses::Tool) { timeout default: 0, maximum: 10 } }
+    assert_raises(ArgumentError) { Class.new(LittleGhost::Harnesses::Tool) { harnesses claude_code: {homedir: "/home/agent"} } }
   end
 
   def test_publish_event_reaches_the_bound_run
@@ -124,7 +207,7 @@ class HarnessToolTest < Minitest::Test
     assert tool.execute({}).success?
     assert_equal [[:help_center_sync, {phase: "fetching", article_count: 12}]], run.events.map { |event| [event.type, event.data] }
     assert_nil tool_class.new.publish_event(:help_center_sync, phase: "idle")
-    %i[subagent run_cancel run_partial text_delta invocation_stop].each do |type|
+    %i[subagent run_cancel run_partial text_delta invocation_stop harness].each do |type|
       assert_raises(ArgumentError, type.inspect) { tool.publish_event(type) }
     end
     assert_raises(ArgumentError) { tool.publish_event(:assembly_step_start, step_id: "a") }

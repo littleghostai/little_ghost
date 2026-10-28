@@ -6,11 +6,20 @@ module LittleGhost
   module Harnesses
     # Runs Codex with <tt>codex exec --json</tt>.
     #
-    # Codex's own command sandbox is disabled (<tt>--sandbox
-    # danger-full-access</tt>) because it cannot nest inside an isolating
-    # Sandbox; the LittleGhost Sandbox that runs the harness is the boundary.
-    # Approval prompts are disabled, the update check is off, and
-    # configuration lives under +home+.
+    # In +:isolated+ mode Codex's own command sandbox is disabled
+    # (<tt>--sandbox danger-full-access</tt>) because it cannot nest inside an
+    # isolating Sandbox; the LittleGhost Sandbox that runs the harness is the
+    # boundary, and +OPENAI_API_KEY+ is the placeholder. In +:native_guards+
+    # mode Codex runs commands in its own sandbox (<tt>--sandbox
+    # workspace-write</tt>) without network access, and authenticates from the
+    # inherited environment, such as +OPENAI_API_KEY+ or +CODEX_API_KEY+.
+    #
+    # Approval prompts are disabled in both modes, so a command that needs
+    # more access than Codex's sandbox allows fails instead of asking. The
+    # update check is off, MCP servers and
+    # notification commands are cleared on the command line, and
+    # configuration lives under +home+. Other settings in a persistent home's
+    # <tt>config.toml</tt> still apply.
     #
     # +defaults+ accepts:
     #
@@ -39,9 +48,11 @@ module LittleGhost
         arguments = [
           executable, "exec", "--json",
           "-C", ".",
-          "--sandbox", "danger-full-access",
+          *sandbox_arguments,
           "-c", 'approval_policy="never"',
           "-c", "check_for_update_on_startup=false",
+          "-c", "mcp_servers={}",
+          "-c", "notify=[]",
           "--skip-git-repo-check",
           "-o", File.join(home, "last-message.md")
         ]
@@ -61,12 +72,12 @@ module LittleGhost
         arguments.concat(positional(prompt_with_instructions(request)))
       end
 
-      # Returns Codex's home, credential placeholder, and update settings.
+      # Returns Codex's home and, in +:isolated+ mode, its credential
+      # placeholder.
       def environment(request)
-        {
-          "CODEX_HOME" => File.join(home, ".codex"),
-          "OPENAI_API_KEY" => api_key
-        }
+        values = {"CODEX_HOME" => File.join(home, ".codex")}
+        values["OPENAI_API_KEY"] = api_key if isolated?
+        values
       end
 
       # Parses one <tt>exec --json</tt> event.
@@ -146,6 +157,12 @@ module LittleGhost
           cache_read_tokens: cached
         )
         [{kind: :usage, **state.usage.to_h}]
+      end
+
+      def sandbox_arguments
+        return ["--sandbox", "danger-full-access"] if isolated?
+
+        ["--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=false"]
       end
 
       def toml(value)

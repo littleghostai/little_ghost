@@ -94,7 +94,7 @@ module LittleGhost
       agent_stream subagent model_retry context_compaction agent_interjection_delivered trace_context
       run_start run_partial run_cancel run_stop run_error invocation_stop invocation_error
       message_start reasoning_delta text_delta message_stop tool_call_start tool_call_delta tool_call_stop
-      tool_stop usage
+      tool_stop usage harness
     ].freeze # :nodoc:
 
     # Supply run-scoped collaborators when tools are instantiated outside an agent.
@@ -439,7 +439,7 @@ module LittleGhost
     # Choose a type that describes your tool. Raises ArgumentError for types
     # the framework itself publishes: Run and invocation lifecycle events,
     # provider progress such as +:text_delta+, +:agent_stream+, +:subagent+,
-    # +:model_retry+, and +:assembly_+ events. +data+ is
+    # +:model_retry+, +:harness+, and +:assembly_+ events. +data+ is
     # delivered as given; keep credentials and data the audience should not
     # see out of it.
     def publish_event(type, **data)

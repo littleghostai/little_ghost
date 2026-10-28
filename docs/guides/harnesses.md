@@ -2,9 +2,10 @@
 
 A harness lets an Agent hand a self-contained coding task to an external
 coding-agent command-line tool, such as Claude Code, Codex, or OpenCode, and get
-back its answer, session, cost, and token usage. The tool runs as an ordinary
-Sandbox process, so the same filesystem, network, and process limits that apply
-to generated code apply to it.
+back its answer, session, cost, and token usage. In an isolating Sandbox the
+tool runs as an ordinary Sandbox process, so the same filesystem, network, and
+process limits that apply to generated code apply to it. Without one, it runs
+on the host with its own safeguards turned on; see [Choose a mode](#choose-a-mode).
 
 ## Delegate a task from an Agent
 
@@ -16,7 +17,7 @@ class DelegateCodingTask < LittleGhost::Harnesses::Tool
   tool_name "delegate_coding_task"
   harnesses claude_code: {
     executable: "/opt/harnesses/bin/claude",
-    home: "/home/agent",
+    home_root: :scratch,
     defaults: {base_url: "http://127.0.0.1:3130"}
   }
   budget default: 2, maximum: 10
@@ -37,8 +38,41 @@ publishes progress to the Run while it works, and returns a JSON object:
  "stop_reason": "success", "usage": {"input_tokens": 1800, "output_tokens": 950}}
 ```
 
-Passing `session_id` back continues the same tool session. The tool is
-`exclusive`, so two harnesses never edit the same workspace at once.
+Passing `session_id` back continues the same tool session. The model can
+resume only a session that an earlier call in the same Run started; any other
+`session_id` is a tool error. Final text longer than 16,000 characters is
+shortened and marked with `"text_truncated": true`. The tool is `exclusive`, so
+two harnesses never edit the same workspace at once.
+
+## Choose where the tool keeps its files
+
+Coding-agent tools write configuration, caches, and session history to their
+home directory, and the model controls what they write. By default each
+harness gets a private home that lasts for one Run: `Harnesses::Tool` creates
+it beneath a Workspace path that the Sandbox lets processes write, on the first
+call in the Run, and removes it when the Run closes. Calls in the same Run share
+it, so sessions can be resumed; nothing reaches a later Run.
+
+`home_root` names that Workspace path. Without it, the first writable runtime
+path in the Sandbox policy is used:
+
+```ruby
+config.workspace = {root: "./tmp/support-run", paths: {scratch: "scratch"}}
+config.sandbox = {
+  provider: :native,
+  files: {root: :read_write},
+  runtime_paths: {scratch: :read_write},
+  network: hosts.network_policy(facades: [answers_facade])
+}
+```
+
+A harness run directly, without a Tool, creates its home for each `run` and
+removes it afterwards.
+
+Setting `home:` instead opts in to a persistent home that the application owns.
+Everything a run writes there, including tool configuration such as MCP
+servers, hooks, or notification commands, applies to every later run that uses
+the same home. Use a persistent home only for runs that are equally trusted.
 
 ## Watch progress
 
@@ -55,8 +89,29 @@ SupportEngineerAgent.stream("Add a test for the refund policy lookup.") do |even
 end
 ```
 
-Long strings in events are shortened, and tool inputs become JSON strings. The
-final `:stop` event repeats the status, cost, and turns.
+Long strings in events are shortened, and tool inputs become JSON strings. A
+run emits at most 1,000 events; the final `:stop` event repeats the status,
+cost, and turns, and reports `dropped_events` when the limit was reached.
+
+Tool inputs and outputs can contain repository content and credentials the
+tool read, so `Harnesses::Tool` publishes tool calls with only their name and
+tool results with only their error flag. Override `harness_event_data` to
+publish more, or to redact text before it reaches the Run's stream:
+
+```ruby
+class DelegateCodingTask < LittleGhost::Harnesses::Tool
+  private
+
+  def harness_event_data(event)
+    activity = event.data.fetch(:event)
+    return super unless activity[:kind] == :tool_call
+
+    event.data.merge(event: activity.slice(:kind, :id, :name, :input))
+  end
+end
+```
+
+A block passed to `Harness#run` receives every event unfiltered.
 
 Any Tool can publish its own progress the same way with
 `publish_event(type, **data)`.
@@ -70,7 +125,7 @@ holds trusted settings; a `Harnesses::Request` holds the task and its limits:
 harness = LittleGhost::Harnesses.resolve(:codex).new(
   sandbox:,
   executable: "/opt/harnesses/bin/codex",
-  home: "/home/agent",
+  home_root: :scratch,
   defaults: {base_url: "http://127.0.0.1:3131/v1", model: "gpt-5.2-codex"}
 )
 request = LittleGhost::Harnesses::Request.new(
@@ -105,21 +160,73 @@ harness.probe # => {available: true, version: "0.52.0", supported: true, reason:
 | `:open_code` | `opencode run --format json --agent build` with every permission granted | budget and turns, by the harness | cost, usage |
 
 Every harness disables automatic updates, ignores project configuration where
-the tool allows it, and keeps its configuration under `home`. The harness stops
-the process when the request's timeout elapses or when reported cost or turns
-pass the request's limits.
+the tool allows it, and keeps its configuration under its home. Claude Code
+starts with an empty MCP server list, and Codex clears MCP servers and
+notification commands on its command line; OpenCode merges the harness's
+configuration over any configuration it finds in its home, so its MCP servers
+are cleared only by a fresh home. The harness stops the process when the
+request's timeout elapses or when reported cost or turns pass the request's
+limits.
 
-Codex's own command sandbox cannot run inside an isolating Sandbox, so it is
-off; the LittleGhost Sandbox is the boundary. OpenCode receives permission for
-every tool for the same reason.
+Cost and turns come from the tool's own output, which a misbehaving model or
+tool can understate. Treat `timeout` and limits enforced outside the sandbox,
+such as a network gateway or provider spending limits, as the bounds you rely
+on.
+
+## Choose a mode
+
+A harness runs in one of two modes, chosen from its Sandbox unless you pass
+`mode:` to `Base.new` or in a Tool's harness settings:
+
+| Mode | Selected when | Boundary | Credentials |
+| --- | --- | --- | --- |
+| `:isolated` | the Sandbox reports isolation and does not inherit the host network | the LittleGhost Sandbox; the tool's own prompts and command sandbox are off | a placeholder that a network gateway replaces |
+| `:native_guards` | there is no Sandbox, or it does not isolate, such as `:unrestricted` | the tool's own safeguards | the user's own, from the inherited environment |
+
+In `:isolated` mode Claude Code runs its allowed tools, including the shell,
+without prompting, Codex runs with `--sandbox danger-full-access`, and OpenCode
+grants every permission. Codex's command sandbox cannot nest inside an
+isolating Sandbox, and the Sandbox already limits files and network, so these
+safeguards add nothing there.
+
+In `:native_guards` mode the tool runs directly on the host, or in the given
+non-isolating Sandbox, and never with those bypasses. Claude Code uses
+`--permission-mode dontAsk` with file and search tools allowed and the shell
+and web tools denied. Codex runs commands in its own sandbox with
+`--sandbox workspace-write` and no network access; approvals stay off, so a
+command that needs more access fails rather than asking. OpenCode may read and
+edit files in the working directory and is denied everything else. Timeouts,
+output limits, cancellation, and stopping the whole process group apply in
+both modes.
+
+```ruby
+harness = LittleGhost::Harnesses.resolve(:claude_code).new(executable: "/usr/local/bin/claude")
+harness.mode # => :native_guards
+harness.run(LittleGhost::Harnesses::Request.new(prompt: "Summarize TODO.md.", cwd: "/path/to/project"))
+```
+
+Without a Sandbox, `cwd` is a host directory. The child inherits the Ruby
+process's environment, so the tool authenticates the way it would for the user,
+for example with `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. LittleGhost never
+reads, stores, or forwards those credentials. Because each run gets a fresh
+home, a login the tool stored under the user's home directory is not visible;
+set `home:` to that directory to use it, which also lets runs change the
+user's tool configuration. Whether a subscription or account allows automated
+use is between the user and the tool's provider.
+
+Asking for `mode: :isolated` with a Sandbox that does not isolate raises
+`ConfigurationError`; a harness never falls back from `:isolated` to running
+without a Sandbox.
 
 ## Keep credentials out of the sandbox
 
-A harness passes a placeholder API key and a base URL to the tool. Point the
+In `:isolated` mode a harness passes a placeholder API key and a base URL to
+the tool. Point the
 base URL at a `Network::Facade` whose host policy replaces the placeholder with
 the real key, as described in
 [Workspaces and Sandboxes](sandboxing.md). The real key then exists only in the
-gateway process, never in the tool's environment or files.
+gateway process, never in the tool's environment or files. A harness rejects an
+`api_key` default that does not begin with `little-ghost-placeholder`.
 
 > **Safety note:** A harness runs a model that can execute commands, edit
 > files, and read the working directory, including instructions such as

@@ -8,21 +8,31 @@ module LittleGhost
     # <tt>--output-format stream-json</tt>.
     #
     # The command uses <tt>--bare</tt>, so the tool ignores hooks, skills, and
-    # settings found in the working directory, starts with no MCP servers, and
-    # never prompts for permission. Automatic updates and nonessential traffic
-    # are disabled, and configuration lives under +home+.
+    # settings found in the working directory, and
+    # <tt>--strict-mcp-config</tt> with an empty server list, so it starts
+    # with no MCP servers. Automatic updates and nonessential traffic are
+    # disabled, and configuration lives under +home+.
+    #
+    # In +:isolated+ mode the allowed tools run without permission prompts
+    # and +ANTHROPIC_API_KEY+ is the placeholder. In +:native_guards+ mode the
+    # command uses <tt>--permission-mode dontAsk</tt>, so only the allowed
+    # tools run and everything else is denied; the default list allows file
+    # and search tools and denies shell and web access. Claude Code then
+    # authenticates from the inherited environment, such as
+    # +ANTHROPIC_API_KEY+.
     #
     # +defaults+ accepts:
     #
     # [+:base_url+]
     #   Sets +ANTHROPIC_BASE_URL+, for example a Network::Facade address.
     # [+:api_key+]
-    #   Placeholder sent as +ANTHROPIC_API_KEY+. A gateway replaces it.
+    #   Placeholder sent as +ANTHROPIC_API_KEY+ in +:isolated+ mode. A
+    #   gateway replaces it.
     # [+:model+]
     #   Model used when the request does not name one.
     # [+:allowed_tools+, +:disallowed_tools+]
-    #   Claude Code tool names. The defaults allow file, search, shell, and
-    #   subagent tools and disallow web access.
+    #   Claude Code tool names. In +:isolated+ mode the defaults allow file,
+    #   search, shell, and subagent tools and disallow web access.
     #
     # Claude Code enforces +budget_usd+ and +max_turns+ itself and reports
     # cost, turns, and token usage in its final result.
@@ -33,6 +43,8 @@ module LittleGhost
 
       ALLOWED_TOOLS = %w[Bash Read Edit Write Glob Grep Agent].freeze # :nodoc:
       DISALLOWED_TOOLS = %w[WebFetch WebSearch].freeze # :nodoc:
+      NATIVE_ALLOWED_TOOLS = %w[Read Edit Write Glob Grep].freeze # :nodoc:
+      NATIVE_DISALLOWED_TOOLS = %w[Bash WebFetch WebSearch].freeze # :nodoc:
       RESULT_STATUSES = {
         "error_max_turns" => :turns_exceeded,
         "error_max_budget_usd" => :budget_exceeded
@@ -42,9 +54,9 @@ module LittleGhost
       def command(request)
         arguments = [
           executable, "-p", "--bare",
-          "--allowedTools", Array(defaults.fetch(:allowed_tools, ALLOWED_TOOLS)).join(","),
-          "--disallowedTools", Array(defaults.fetch(:disallowed_tools, DISALLOWED_TOOLS)).join(","),
-          "--permission-prompts", "none",
+          "--allowedTools", Array(defaults.fetch(:allowed_tools, isolated? ? ALLOWED_TOOLS : NATIVE_ALLOWED_TOOLS)).join(","),
+          "--disallowedTools", Array(defaults.fetch(:disallowed_tools, isolated? ? DISALLOWED_TOOLS : NATIVE_DISALLOWED_TOOLS)).join(","),
+          *(isolated? ? ["--permission-prompts", "none"] : ["--permission-mode", "dontAsk"]),
           "--strict-mcp-config", "--mcp-config", JSON.generate({mcpServers: {}})
         ]
         arguments.push("--max-budget-usd", request.budget_usd.to_s) if request.budget_usd
@@ -58,15 +70,15 @@ module LittleGhost
         arguments.concat(positional(request.prompt))
       end
 
-      # Returns Claude Code's configuration, credential placeholder, and update
-      # settings.
+      # Returns Claude Code's configuration and update settings, and in
+      # +:isolated+ mode its credential placeholder.
       def environment(request)
         values = {
-          "ANTHROPIC_API_KEY" => api_key,
           "CLAUDE_CONFIG_DIR" => File.join(home, ".claude"),
           "DISABLE_AUTOUPDATER" => "1",
           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" => "1"
         }
+        values["ANTHROPIC_API_KEY"] = api_key if isolated?
         values["ANTHROPIC_BASE_URL"] = defaults[:base_url].to_s if defaults[:base_url]
         values
       end

@@ -8,9 +8,15 @@ module LittleGhost
     # turns its JSON-lines output into StreamEvent values and a Result.
     #
     # A harness instance holds trusted settings: the Sandbox (or Sandbox::Scope)
-    # that runs the tool, the executable path, a writable +home+ directory as
-    # the child sees it, and harness-specific +defaults+. Requests carry the
-    # task and its limits.
+    # that runs the tool, the executable path, where the tool's home directory
+    # lives, and harness-specific +defaults+. Requests carry the task and its
+    # limits.
+    #
+    # By default each #run gets a new private home directory beneath a
+    # Workspace path that the Sandbox lets processes write, and the directory
+    # is removed when the run ends, so nothing one run writes there, such as
+    # tool configuration, reaches a later run. Passing +home+ opts in to a
+    # persistent home that the application owns; see #initialize.
     #
     # A subclass implements #command and #parse_line, usually #environment, and
     # may override #finalize:
@@ -45,8 +51,14 @@ module LittleGhost
     # #run stops the process when the request's +timeout+ elapses, when the
     # reported cost exceeds +budget_usd+, or when reported turns exceed
     # +max_turns+, even if the tool does not enforce those limits itself.
-    # Cancellation and run deadlines from +context+ raise after the process is
-    # stopped. The process is always closed before #run returns.
+    # Cost and turns are reported by the tool, which the model controls, so
+    # +timeout+ and limits enforced by a network gateway are the bounds to
+    # rely on. Cancellation and run deadlines from +context+ raise after the
+    # process is stopped. The process is always closed before #run returns.
+    #
+    # Each run emits at most 1,000 events before its +:stop+ event, which
+    # reports how many were dropped. Session identifiers that are not short
+    # tokens are discarded.
     #
     # Placeholder credentials and base URLs come from +defaults+ or the
     # request's +environment+. Real provider keys belong in a network gateway
@@ -55,7 +67,9 @@ module LittleGhost
       PLACEHOLDER_API_KEY = "little-ghost-placeholder" # :nodoc:
       EVENT_TEXT_LIMIT = 4_000 # :nodoc:
       STDERR_TAIL_BYTES = 4_096 # :nodoc:
-      DEFAULT_OUTPUT_BYTES = 64 * 1024 * 1024 # :nodoc:
+      DEFAULT_OUTPUT_BYTES = 16 * 1024 * 1024 # :nodoc:
+      MAX_EVENTS = 1_000 # :nodoc:
+      STOP_REASON_LIMIT = 200 # :nodoc:
       POLL_INTERVAL = 0.1 # :nodoc:
       EXIT_WAIT = 5 # :nodoc:
       EVENT_KINDS = %i[start text tool_call tool_result usage].freeze # :nodoc:
@@ -102,35 +116,78 @@ module LittleGhost
       end
 
       # Builds a harness. +sandbox+ is a Sandbox or Sandbox::Scope that runs the
-      # tool. +home+ is the tool's writable home directory as the child sees
-      # it. +defaults+ holds harness-specific settings such as +:base_url+,
-      # +:api_key+, +:model+, +:environment+, and +:output_bytes+.
-      def initialize(sandbox:, home:, executable: self.class.default_executable, defaults: {})
+      # tool, or nil to run it directly on the host. +defaults+ holds
+      # harness-specific settings such as +:base_url+, +:api_key+, +:model+,
+      # +:environment+, and +:output_bytes+. An +:api_key+ must be a
+      # placeholder that begins with <tt>little-ghost-placeholder</tt>.
+      #
+      # +mode+ decides which safeguards apply:
+      #
+      # [+:isolated+]
+      #   The Sandbox is the boundary, so the tool's own approval prompts and
+      #   command sandbox are turned off and it receives the placeholder key.
+      #   Requires a Sandbox that reports isolation and does not inherit the
+      #   host network; any other Sandbox raises ConfigurationError.
+      # [+:native_guards+]
+      #   The tool keeps its own safeguards: a restricted tool and permission
+      #   set, and its own command sandbox where it has one. The child inherits
+      #   the environment, so the tool authenticates with the user's own
+      #   credentials; LittleGhost never reads, stores, or forwards them.
+      #
+      # Without +mode+, an isolating Sandbox selects +:isolated+ and nil or
+      # any other Sandbox selects +:native_guards+.
+      #
+      # Without +home+, each #run creates a private home beneath +home_root+,
+      # the name of a Workspace path the Sandbox lets processes write
+      # (+:root+ for the Workspace root), and removes it afterwards. When
+      # +home_root+ is nil the first writable runtime path in the Sandbox
+      # policy is used, or a host temporary directory when the Sandbox does
+      # not isolate. +home+ instead names a persistent home directory as the
+      # child sees it; the tool can change files there, including its own
+      # configuration, and those changes affect every later run that uses the
+      # same home.
+      def initialize(sandbox: nil, home: nil, executable: self.class.default_executable, defaults: {}, home_root: nil,
+        mode: nil)
         raise ArgumentError, "harness executable is required" if executable.nil? || String(executable).empty?
-        raise ArgumentError, "harness home must be an absolute path" unless String(home).start_with?("/")
+        raise ArgumentError, "harness home must be an absolute path" unless home.nil? || String(home).start_with?("/")
 
         @sandbox = sandbox
         @executable = String(executable).dup.freeze
-        @home = String(home).dup.freeze
+        @home = home && String(home).dup.freeze
+        @home_root = home_root&.to_sym
+        @mode = resolve_mode(mode)
         @defaults = defaults.to_h.transform_keys(&:to_sym).freeze
+        if @defaults.key?(:api_key) && !String(@defaults[:api_key]).start_with?(PLACEHOLDER_API_KEY)
+          raise ConfigurationError, "harness api_key must be a placeholder beginning with #{PLACEHOLDER_API_KEY}"
+        end
       end
 
-      # Sandbox or Sandbox::Scope that runs the tool.
+      # Sandbox or Sandbox::Scope that runs the tool, or nil for the host.
       attr_reader :sandbox
+      # +:isolated+ or +:native_guards+.
+      attr_reader :mode
       # Executable path or command name.
       attr_reader :executable
-      # Writable home directory as the child sees it.
+      # Home directory as the child sees it: the persistent home, the run's
+      # temporary home while #run or #probe works, or nil.
       attr_reader :home
+      # Workspace path name for temporary homes, or nil.
+      attr_reader :home_root
       # Frozen harness-specific settings.
       attr_reader :defaults
 
       # Identifier used in events and results.
       def harness_id = self.class.harness_id
 
+      # Whether the Sandbox is the boundary and the tool's own safeguards are off.
+      def isolated? = mode == :isolated
+
       # Runs <tt>executable --version</tt> in the sandbox and returns a Hash
       # with +:available+, +:version+, +:supported+, and +:reason+.
       def probe(context: nil, timeout: 30)
-        result = sandbox.execute_program(
+        return with_temporary_home { |harness| harness.probe(context:, timeout:) } unless home
+
+        result = runner.execute_program(
           [executable, "--version"],
           timeout:,
           context:,
@@ -160,13 +217,16 @@ module LittleGhost
       def run(request, context: nil, &block)
         raise ArgumentError, "harness request must be a LittleGhost::Harnesses::Request" unless request.is_a?(Request)
 
+        return with_temporary_home { |harness| harness.run(request, context:, &block) } unless home
+
         state = State.new
         timeout = context ? context.remaining_time(request.timeout) : request.timeout
         deadline = monotonic_time + timeout
-        session = sandbox.start_program(
+        session = runner.start_program(
           command(request),
           context:,
           environment: process_environment(request),
+          inherit_environment: !isolated?,
           cwd: request.cwd,
           output_bytes: defaults.fetch(:output_bytes, DEFAULT_OUTPUT_BYTES)
         )
@@ -174,14 +234,16 @@ module LittleGhost
         outcome, stderr_tail = consume(session, request, state, deadline, context, block)
         exit_code = session.wait(timeout: EXIT_WAIT)&.exitstatus
         result = finalize(state, exit_code:, stderr_tail:, outcome:)
-        emit(block, state, {
+        stop = {
           kind: :stop,
           status: result.status,
           stop_reason: result.stop_reason,
           cost_usd: result.cost_usd,
           turns: result.turns,
           exit_code:
-        })
+        }
+        stop[:dropped_events] = state.values[:dropped_events] if state.values[:dropped_events]
+        emit(block, state, stop)
         result
       ensure
         session&.close
@@ -216,12 +278,47 @@ module LittleGhost
           usage: state.usage,
           turns: state.turns,
           exit_code:,
-          stop_reason: state.stop_reason,
+          stop_reason: state.stop_reason&.to_s&.[](0, STOP_REASON_LIMIT),
           stderr_tail:
         )
       end
 
       private
+
+      MODES = %i[isolated native_guards].freeze # :nodoc:
+
+      def resolve_mode(requested)
+        isolating = isolating_sandbox?
+        return isolating ? :isolated : :native_guards if requested.nil?
+
+        requested = requested.to_sym
+        raise ConfigurationError, "harness mode must be :isolated or :native_guards" unless MODES.include?(requested)
+        if requested == :isolated && !isolating
+          raise ConfigurationError,
+            "harness mode :isolated requires a Sandbox that reports isolation and does not inherit the host network"
+        end
+
+        requested
+      end
+
+      def isolating_sandbox?
+        return false unless sandbox.respond_to?(:capabilities)
+
+        network = sandbox.network if sandbox.respond_to?(:network)
+        network ||= sandbox.effective_policy.network if sandbox.respond_to?(:effective_policy)
+        sandbox.capabilities.isolation != :none && !network.nil? && !network.inherit?
+      end
+
+      def runner = sandbox || HostRunner.new
+
+      def with_temporary_home
+        paths = HomeDirectory.create(sandbox:, root: home_root, host: !isolated? && home_root.nil?)
+        harness = dup
+        harness.instance_variable_set(:@home, paths.fetch(:child))
+        yield harness
+      ensure
+        HomeDirectory.remove(paths) if paths
+      end
 
       def consume(session, request, state, deadline, context, block)
         pending = String.new(encoding: Encoding::BINARY)
@@ -282,7 +379,17 @@ module LittleGhost
           state.malformed_lines += 1
           []
         end
-        Array(events).each { |event| emit(block, state, event) }
+        state.session_id = nil unless state.session_id.nil? || Request::IDENTIFIER.match?(state.session_id.to_s)
+        Array(events).each do |event|
+          emitted = state.values.fetch(:emitted_events, 0)
+          if emitted >= MAX_EVENTS
+            state.values[:dropped_events] = state.values.fetch(:dropped_events, 0) + 1
+            next
+          end
+
+          state.values[:emitted_events] = emitted + 1
+          emit(block, state, event)
+        end
       end
 
       def limit_outcome(request, state)

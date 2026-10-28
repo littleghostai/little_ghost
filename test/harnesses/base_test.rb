@@ -52,15 +52,23 @@ class HarnessBaseTest < Minitest::Test
   end
 
   class FakeSandbox
-    def initialize(session)
+    def initialize(session, workspace: nil, network: :none, isolation: :namespace, runtime_paths: {})
       @session = session
+      @workspace = workspace
+      @policy = LittleGhost::Sandbox::Policy.new(runtime_paths:, network:)
+      @capabilities = LittleGhost::Sandbox::Capabilities.new(features: [], network_modes: [network], isolation:)
+      @homes = []
     end
 
-    attr_reader :command, :options
+    attr_reader :command, :options, :workspace, :capabilities, :homes
+
+    def effective_policy = @policy
 
     def start_program(command, **options)
       @command = command
       @options = options
+      home = options.dig(:environment, "HOME")
+      @homes << [home, File.directory?(home) && (File.stat(home).mode & 0o777)] if home
       @session
     end
   end
@@ -215,16 +223,19 @@ class HarnessBaseTest < Minitest::Test
     assert session.terminated
   end
 
-  def test_runs_a_real_process_through_an_unrestricted_sandbox
+  def test_runs_a_real_process_through_an_unrestricted_sandbox_only_when_allowed
     fixture = File.join(FIXTURES, "open_code/success.jsonl")
     harness_class = Class.new(LittleGhost::Harnesses::OpenCode) do
       define_method(:command) { |_request| ["/bin/cat", fixture] }
     end
     Dir.mktmpdir do |directory|
       sandbox = LittleGhost::Sandboxes::Unrestricted.new(workspace: LittleGhost::Workspace.new(root: directory))
-      harness = harness_class.new(sandbox:, home: directory)
 
+      assert_raises(LittleGhost::ConfigurationError) { harness_class.new(sandbox:, home: directory, mode: :isolated) }
+
+      harness = harness_class.new(sandbox:, home: directory)
       result = harness.run(request)
+      assert_equal :native_guards, harness.mode
 
       assert_equal :completed, result.status
       assert_equal "The current commit is 3f9c2ab.", result.text
@@ -251,7 +262,7 @@ class HarnessBaseTest < Minitest::Test
 
   def test_claude_code_command_line
     harness = LittleGhost::Harnesses::ClaudeCode.new(
-      sandbox: Object.new,
+      sandbox: FakeSandbox.new(nil),
       executable: "/opt/harnesses/bin/claude",
       home: "/home/agent",
       defaults: {base_url: "http://127.0.0.1:3130"}
@@ -288,7 +299,7 @@ class HarnessBaseTest < Minitest::Test
 
   def test_codex_command_line
     harness = LittleGhost::Harnesses::Codex.new(
-      sandbox: Object.new,
+      sandbox: FakeSandbox.new(nil),
       home: "/home/agent",
       defaults: {base_url: "http://127.0.0.1:3131/v1", model: "gpt-5.2-codex"}
     )
@@ -296,6 +307,7 @@ class HarnessBaseTest < Minitest::Test
     assert_equal [
       "codex", "exec", "--json", "-C", ".", "--sandbox", "danger-full-access",
       "-c", 'approval_policy="never"', "-c", "check_for_update_on_startup=false",
+      "-c", "mcp_servers={}", "-c", "notify=[]",
       "--skip-git-repo-check", "-o", "/home/agent/last-message.md",
       "-c", 'model_provider="little_ghost"',
       "-c", 'model_providers.little_ghost.name="LittleGhost"',
@@ -312,7 +324,7 @@ class HarnessBaseTest < Minitest::Test
 
   def test_open_code_command_line_and_configuration
     harness = LittleGhost::Harnesses::OpenCode.new(
-      sandbox: Object.new,
+      sandbox: FakeSandbox.new(nil),
       home: "/home/agent",
       defaults: {provider: "openrouter", base_url: "http://127.0.0.1:3132/api/v1", config: {"model" => "openrouter/example/coder"}}
     )
@@ -340,6 +352,145 @@ class HarnessBaseTest < Minitest::Test
     assert_raises(ArgumentError) { request(max_turns: 1.5) }
     assert_raises(ArgumentError) { request(timeout: -1) }
     assert_raises(ArgumentError) { LittleGhost::Harnesses::Request.new(prompt: " ") }
+  end
+
+  def test_mode_follows_the_sandbox_and_isolated_mode_requires_isolation
+    harness = LittleGhost::Harnesses::ClaudeCode
+    inherited = FakeSandbox.new(nil, network: :inherit)
+    unisolated = FakeSandbox.new(nil, isolation: :none)
+
+    assert_equal :isolated, harness.new(sandbox: FakeSandbox.new(nil)).mode
+    assert_equal :native_guards, harness.new(sandbox: inherited).mode
+    assert_equal :native_guards, harness.new(sandbox: unisolated).mode
+    assert_equal :native_guards, harness.new.mode
+    assert_equal :native_guards, harness.new(sandbox: FakeSandbox.new(nil), mode: :native_guards).mode
+    [inherited, unisolated, nil].each do |sandbox|
+      assert_raises(LittleGhost::ConfigurationError) { harness.new(sandbox:, mode: :isolated) }
+    end
+    assert_raises(LittleGhost::ConfigurationError) { harness.new(mode: :unsafe) }
+  end
+
+  def test_native_guards_command_lines_keep_each_tools_safeguards
+    request = request(session_id: "ses_6a1f2b3c4d5eExample")
+    claude = LittleGhost::Harnesses::ClaudeCode.new(home: "/home/agent", defaults: {api_key: "little-ghost-placeholder"})
+    codex = LittleGhost::Harnesses::Codex.new(home: "/home/agent")
+    open_code = LittleGhost::Harnesses::OpenCode.new(
+      home: "/home/agent", defaults: {provider: "openrouter", base_url: "http://127.0.0.1:3132/api/v1", api_key: "little-ghost-placeholder"}
+    )
+    claude_command = claude.command(request)
+    codex_command = codex.command(request)
+    open_code_environment = open_code.environment(request)
+
+    assert_equal ["--allowedTools", "Read,Edit,Write,Glob,Grep"], claude_command[3, 2]
+    assert_equal ["--disallowedTools", "Bash,WebFetch,WebSearch"], claude_command[5, 2]
+    assert_equal ["--permission-mode", "dontAsk"], claude_command[7, 2]
+    refute_includes claude_command, "--permission-prompts"
+    refute claude.environment(request).key?("ANTHROPIC_API_KEY")
+    assert_equal ["--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=false"], codex_command[5, 4]
+    refute_includes codex_command, "danger-full-access"
+    refute codex.environment(request).key?("OPENAI_API_KEY")
+    permissions = JSON.parse(open_code_environment.fetch("OPENCODE_PERMISSION"))
+    assert_equal "deny", permissions.fetch("*")
+    assert_equal "allow", permissions.fetch("edit")
+    assert_equal %w[deny deny deny], permissions.values_at("bash", "webfetch", "external_directory")
+    assert_equal({"baseURL" => "http://127.0.0.1:3132/api/v1"},
+      JSON.parse(open_code_environment.fetch("OPENCODE_CONFIG_CONTENT")).dig("provider", "openrouter", "options"))
+  end
+
+  def test_runs_on_the_host_without_a_sandbox_and_inherits_the_environment
+    fixture = File.join(FIXTURES, "open_code/success.jsonl")
+    script = %(cat "$1"; echo "home=$HOME" >&2; test "$LITTLE_GHOST_HARNESS_TEST" = inherited)
+    harness_class = Class.new(LittleGhost::Harnesses::OpenCode) do
+      define_method(:command) { |_request| ["/bin/sh", "-c", script, "harness", fixture] }
+    end
+    ENV["LITTLE_GHOST_HARNESS_TEST"] = "inherited"
+
+    result = harness_class.new.run(request)
+    home = result.stderr_tail[/home=(.*)$/, 1]
+
+    assert_equal :completed, result.status
+    assert_equal 0, result.exit_code
+    assert_includes File.basename(home), "little-ghost-harness-home"
+    refute File.exist?(home)
+  ensure
+    ENV.delete("LITTLE_GHOST_HARNESS_TEST")
+  end
+
+  def test_probe_runs_on_the_host_without_a_sandbox
+    Dir.mktmpdir do |directory|
+      executable = File.join(directory, "claude")
+      File.write(executable, "#!/bin/sh\necho '2.1.4 (Claude Code)'\n")
+      File.chmod(0o755, executable)
+
+      assert_equal({available: true, version: "2.1.4", supported: true, reason: nil},
+        LittleGhost::Harnesses::ClaudeCode.new(executable:).probe)
+      refute LittleGhost::Harnesses::ClaudeCode.new(executable: File.join(directory, "missing")).probe[:available]
+    end
+  end
+
+  def test_each_run_gets_a_private_home_that_is_removed_afterwards
+    Dir.mktmpdir do |directory|
+      workspace = LittleGhost::Workspace.new(root: directory, paths: {scratch: "scratch"}).open
+      sandbox = FakeSandbox.new(FakeSession.new(chunks: []), workspace:, runtime_paths: {scratch: :read_write})
+      def sandbox.start_program(command, **options)
+        super
+        File.write(File.join(options.dig(:environment, "HOME"), "planted.toml"), "notify = []")
+        HarnessBaseTest::FakeSession.new(chunks: [File.read(File.join(HarnessBaseTest::FIXTURES, "codex/success.jsonl"))])
+      end
+      harness = LittleGhost::Harnesses::Codex.new(sandbox:)
+
+      harness.run(request)
+      harness.run(request)
+      homes = sandbox.homes.map(&:first)
+
+      assert_equal 2, homes.uniq.length
+      assert(homes.all? { |home| File.dirname(home) == File.join(directory, "scratch") })
+      assert_equal [0o700, 0o700], sandbox.homes.map(&:last)
+      assert_equal [], Dir.children(File.join(directory, "scratch"))
+      assert_nil harness.home
+      assert_includes sandbox.command, File.join(homes.last, "last-message.md")
+    end
+  end
+
+  def test_temporary_homes_need_a_writable_workspace_path
+    Dir.mktmpdir do |directory|
+      workspace = LittleGhost::Workspace.new(root: directory, paths: {scratch: "scratch"}).open
+      read_only = FakeSandbox.new(FakeSession.new(chunks: []), workspace:, runtime_paths: {scratch: :read_only})
+      writable = FakeSandbox.new(FakeSession.new(chunks: []), workspace:, runtime_paths: {scratch: :read_write})
+
+      assert_raises(LittleGhost::ConfigurationError) { LittleGhost::Harnesses::Codex.new(sandbox: read_only).run(request) }
+      assert_raises(LittleGhost::ConfigurationError) { LittleGhost::Harnesses::Codex.new(sandbox: writable, home_root: :root).run(request) }
+      assert_raises(LittleGhost::ConfigurationError) { LittleGhost::Harnesses::Codex.new(sandbox: writable, home_root: :missing).run(request) }
+      assert_equal :completed, LittleGhost::Harnesses::Codex.new(sandbox: writable, home_root: :scratch).run(request).status
+    end
+  end
+
+  def test_reported_values_and_event_counts_are_bounded
+    lines = ['{"type":"step_start","sessionID":"--resume\\nother"}'] +
+      Array.new(1_005) { |index| %({"type":"text","part":{"text":"line #{index}"}}) } +
+      [%({"type":"error","error":{"name":"#{"x" * 500}"}})]
+    session = FakeSession.new(chunks: ["#{lines.join("\n")}\n"])
+    sandbox = FakeSandbox.new(session)
+    harness = LittleGhost::Harnesses::OpenCode.new(sandbox:, home: "/home/agent")
+    events = []
+
+    result = harness.run(request) { |event| events << event }
+
+    assert_nil result.session_id
+    assert(events.all? { |event| event.data[:session_id].nil? })
+    assert_equal 1_001, events.length
+    assert_equal 6, events.last.data.dig(:event, :dropped_events)
+    assert_equal 200, result.stop_reason.length
+    assert_equal 16 * 1024 * 1024, sandbox.options[:output_bytes]
+  end
+
+  def test_api_keys_must_be_placeholders
+    assert_raises(LittleGhost::ConfigurationError) do
+      LittleGhost::Harnesses::ClaudeCode.new(sandbox: Object.new, home: "/home/agent", defaults: {api_key: "sk-ant-real"})
+    end
+    harness = LittleGhost::Harnesses::ClaudeCode.new(sandbox: FakeSandbox.new(nil), home: "/home/agent", defaults: {api_key: "little-ghost-placeholder-claude"})
+
+    assert_equal "little-ghost-placeholder-claude", harness.environment(request).fetch("ANTHROPIC_API_KEY")
   end
 
   def test_registry

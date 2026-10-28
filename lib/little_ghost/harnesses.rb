@@ -2,7 +2,8 @@
 
 module LittleGhost
   # Harnesses run external coding-agent command-line tools, such as Claude
-  # Code, Codex, and OpenCode, as bounded subprocesses inside a Sandbox.
+  # Code, Codex, and OpenCode, as bounded subprocesses: inside an isolating
+  # Sandbox with the tool's own safeguards off, or on the host with them on.
   #
   # Each harness builds the tool's non-interactive command line, reads its JSON
   # event stream, and returns one Harnesses::Result. Progress arrives as
@@ -11,7 +12,7 @@ module LittleGhost
   #   harness = LittleGhost::Harnesses.resolve(:claude_code).new(
   #     sandbox: run.sandbox,
   #     executable: "/opt/harnesses/bin/claude",
-  #     home: "/home/agent",
+  #     home_root: :scratch,
   #     defaults: {base_url: "http://127.0.0.1:3130"}
   #   )
   #   request = LittleGhost::Harnesses::Request.new(
@@ -60,6 +61,8 @@ end
 require_relative "harnesses/request"
 require_relative "harnesses/result"
 require_relative "harnesses/state"
+require_relative "harnesses/home_directory"
+require_relative "harnesses/host_runner"
 require_relative "harnesses/base"
 require_relative "harnesses/claude_code"
 require_relative "harnesses/codex"

@@ -6,10 +6,17 @@ module LittleGhost
   module Harnesses
     # Runs OpenCode with <tt>opencode run --format json --agent build</tt>.
     #
-    # Every tool permission is granted without prompting, project
+    # In +:isolated+ mode every tool permission is granted without prompting
+    # and the provider's API key is the placeholder. In +:native_guards+ mode
+    # OpenCode may read and edit files in the working directory, every other
+    # permission, including shell commands, web access, and directories
+    # outside the working directory, is denied, and OpenCode authenticates
+    # from the inherited environment. Project
     # configuration in the working directory is ignored, automatic updates and
-    # sharing are disabled, no MCP servers are configured, and OpenCode's XDG
-    # directories live under +home+.
+    # sharing are disabled, the harness adds no MCP servers, and OpenCode's XDG
+    # directories live under +home+. OpenCode merges this configuration over
+    # its global configuration, so MCP servers or other settings in a
+    # persistent home still apply.
     #
     # +defaults+ accepts:
     #
@@ -19,7 +26,8 @@ module LittleGhost
     # [+:base_url+]
     #   Base URL for that provider, for example a Network::Facade address.
     # [+:api_key+]
-    #   Placeholder API key for that provider. A gateway replaces it.
+    #   Placeholder API key for that provider in +:isolated+ mode. A gateway
+    #   replaces it.
     # [+:model+]
     #   Model used when the request does not name one.
     # [+:config+]
@@ -34,6 +42,18 @@ module LittleGhost
       default_executable "opencode"
       supported_versions ">= 1.0"
 
+      NATIVE_PERMISSIONS = {
+        "*" => "deny",
+        "read" => "allow",
+        "list" => "allow",
+        "glob" => "allow",
+        "grep" => "allow",
+        "edit" => "allow",
+        "bash" => "deny",
+        "webfetch" => "deny",
+        "external_directory" => "deny"
+      }.freeze # :nodoc:
+
       # Returns the OpenCode command line for +request+.
       def command(request)
         arguments = [executable, "run", "--format", "json", "--agent", "build"]
@@ -46,7 +66,7 @@ module LittleGhost
       # Returns OpenCode's permission, configuration, and directory settings.
       def environment(request)
         {
-          "OPENCODE_PERMISSION" => JSON.generate({"*" => "allow"}),
+          "OPENCODE_PERMISSION" => JSON.generate(isolated? ? {"*" => "allow"} : NATIVE_PERMISSIONS),
           "OPENCODE_DISABLE_PROJECT_CONFIG" => "1",
           "OPENCODE_DISABLE_AUTOUPDATE" => "1",
           "OPENCODE_CONFIG_CONTENT" => JSON.generate(configuration(request)),
@@ -90,8 +110,9 @@ module LittleGhost
           "mcp" => {}
         }
         provider = defaults[:provider]
-        if provider && (defaults[:base_url] || defaults.key?(:api_key))
-          options = {"apiKey" => api_key}
+        if provider && (defaults[:base_url] || (isolated? && defaults.key?(:api_key)))
+          options = {}
+          options["apiKey"] = api_key if isolated?
           options["baseURL"] = defaults[:base_url].to_s if defaults[:base_url]
           config["provider"] = {provider.to_s => {"options" => options}}
         end
