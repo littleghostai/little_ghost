@@ -4,10 +4,12 @@ require "ipaddr"
 
 module LittleGhost
   module Network
-    # Builds Envoy v3 configuration for exact-destination CONNECT filtering and
-    # optional TLS-intercepted external authorization.
+    # Builds Envoy v3 configuration for exact-destination CONNECT filtering,
+    # optional TLS-intercepted external authorization, and facade listeners.
     module EnvoyConfig # :nodoc:
       TYPE_URL = "type.googleapis.com/"
+      INSPECTED_AUTHORIZATION_PREFIX = "/little-ghost/inspected"
+      FACADE_AUTHORIZATION_PREFIX = "/little-ghost/facade/"
       DOMAIN = /\A(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\z/
       BLOCKED_DESTINATIONS = [
         ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
@@ -21,13 +23,15 @@ module LittleGhost
 
       module_function
 
-      def build(policy:, listener:, paths: {})
-        endpoints = endpoints(policy.allow)
-        if policy.inspection == :http
+      def build(policy:, listener:, paths: {}, socket_mode: 0o600)
+        endpoints = (policy.allow.empty? && !policy.facades.empty?) ? [] : endpoints(policy.allow)
+        config = if policy.inspection == :http && !endpoints.empty?
           build_http(policy:, endpoints:, listener:, paths:)
         else
           build_connect(endpoints:, listener:, access_log: paths[:access_log])
         end
+        add_facades(config, policy:, paths:, socket_mode:) unless policy.facades.empty?
+        config
       end
 
       def endpoints(values)
@@ -67,7 +71,7 @@ module LittleGhost
         end
         routes << {"match" => {"connect_matcher" => {}}, "direct_response" => {"status" => 403}}
         routes << {"match" => {"prefix" => "/"}, "direct_response" => {"status" => 403}}
-        filters = [dynamic_forward_proxy_filter, router_filter]
+        filters = [strip_envoy_headers_filter, dynamic_forward_proxy_filter, router_filter]
         {
           "static_resources" => {
             "listeners" => [http_listener(
@@ -113,7 +117,7 @@ module LittleGhost
             "domains" => [host, "#{host}:#{port}"],
             "routes" => [{
               "match" => {"prefix" => "/"},
-              "route" => {"cluster" => "little_ghost_egress", "timeout" => "0s"},
+              "route" => {"cluster" => "little_ghost_egress", "timeout" => duration(policy.timeouts.fetch(host, 0))},
               "typed_per_filter_config" => {
                 "envoy.filters.http.dynamic_forward_proxy" => typed(
                   "envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig",
@@ -148,7 +152,7 @@ module LittleGhost
                   "name" => "little_ghost_upstream_routes",
                   "virtual_hosts" => inner_virtual_hosts
                 },
-                filters: [authorizer_filter(policy.forward_headers, policy.mutation_headers), dynamic_forward_proxy_filter, router_filter],
+                filters: [strip_envoy_headers_filter, authorizer_filter(policy), dynamic_forward_proxy_filter, router_filter],
                 access_log: paths[:access_log]
               )
             }]
@@ -161,7 +165,7 @@ module LittleGhost
                 name: "little_ghost_explicit_proxy",
                 address: listener,
                 route_config: route_config("little_ghost_connect", outer_routes),
-                filters: [router_filter],
+                filters: [strip_envoy_headers_filter, router_filter],
                 connect: true
               ),
               interceptor_listener
@@ -190,9 +194,9 @@ module LittleGhost
         }
       end
 
-      def dynamic_forward_proxy_cluster(tls:, trusted_ca: nil)
+      def dynamic_forward_proxy_cluster(tls:, trusted_ca: nil, name: "little_ghost_egress")
         cluster = {
-          "name" => "little_ghost_egress",
+          "name" => name,
           "connect_timeout" => "15s",
           "lb_policy" => "CLUSTER_PROVIDED",
           "circuit_breakers" => {
@@ -213,6 +217,14 @@ module LittleGhost
           }
         }
         if tls
+          # Upstream TLS takes SNI and the expected SAN from the rewritten Host, which the route fixes per host.
+          cluster["typed_extension_protocol_options"] = {
+            "envoy.extensions.upstreams.http.v3.HttpProtocolOptions" => typed(
+              "envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+              upstream_http_protocol_options: {"auto_sni" => true, "auto_san_validation" => true},
+              explicit_http_config: {"http_protocol_options" => {}}
+            )
+          }
           cluster["transport_socket"] = {
             "name" => "envoy.transport_sockets.tls",
             "typed_config" => typed(
@@ -270,9 +282,77 @@ module LittleGhost
         config
       end
 
-      def authorizer_filter(forward_headers, mutation_headers)
-        patterns = Array(forward_headers).map { |name| {"exact" => name} }
-        authorization_request = patterns.empty? ? {} : {"allowed_headers" => {"patterns" => patterns}}
+      def add_facades(config, policy:, paths:, socket_mode:)
+        missing = %i[authorizer_socket trusted_ca].reject { |name| paths[name] }
+        raise PolicyError, "network facades are missing #{missing.join(", ")}" unless missing.empty?
+        raise PolicyError, "network facades require an authorizer" unless policy.authorizer
+
+        resources = config.fetch("static_resources")
+        policy.facades.each do |facade|
+          resources.fetch("listeners") << facade_listener(facade, policy:, access_log: paths[:access_log], socket_mode:)
+        end
+        clusters = resources.fetch("clusters")
+        unless clusters.any? { |cluster| cluster["name"] == "little_ghost_authorizer" }
+          clusters << unix_cluster("little_ghost_authorizer", paths.fetch(:authorizer_socket))
+        end
+        clusters << dynamic_forward_proxy_cluster(tls: true, trusted_ca: paths.fetch(:trusted_ca), name: "little_ghost_facade_egress")
+        config
+      end
+
+      def facade_listener(facade, policy:, access_log:, socket_mode:)
+        address = facade.socket ? pipe_address(facade.socket, socket_mode) : socket_address("127.0.0.1", facade.port)
+        rewrite = (facade.upstream_port == 443) ? facade.host : facade.upstream
+        timeout = facade.timeout || policy.timeouts.fetch(facade.host, 0)
+        route_config = {
+          "name" => "little_ghost_facade_#{facade.name}",
+          "virtual_hosts" => [{
+            "name" => "little_ghost_facade_#{facade.name}",
+            "domains" => ["*"],
+            "routes" => [{
+              "match" => {"prefix" => "/"},
+              "route" => {"cluster" => "little_ghost_facade_egress", "timeout" => duration(timeout)},
+              "typed_per_filter_config" => {
+                "envoy.filters.http.dynamic_forward_proxy" => typed(
+                  "envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig",
+                  host_rewrite_literal: rewrite
+                )
+              },
+              "response_headers_to_remove" => ["set-cookie", "set-cookie2"]
+            }]
+          }]
+        }
+        {
+          "name" => "little_ghost_facade_#{facade.name}",
+          "address" => address,
+          "filter_chains" => [{"filters" => [{
+            "name" => "envoy.filters.network.http_connection_manager",
+            "typed_config" => hcm(
+              route_config:,
+              filters: [strip_envoy_headers_filter, authorizer_filter(policy, facade:), dynamic_forward_proxy_filter, router_filter],
+              access_log:
+            ).merge(
+              "normalize_path" => true,
+              "merge_slashes" => true,
+              "path_with_escaped_slashes_action" => "REJECT_REQUEST"
+            )
+          }]}]
+        }
+      end
+
+      def duration(seconds)
+        (seconds.is_a?(Integer) || seconds == seconds.floor) ? "#{seconds.to_i}s" : format("%.3fs", seconds)
+      end
+
+      def authorizer_filter(policy, facade: nil)
+        forward_headers = policy.forward_headers
+        mutation_headers = policy.mutation_headers
+        patterns = if forward_headers == :all
+          [{"safe_regex" => {"regex" => ".*"}}]
+        else
+          Array(forward_headers).map { |name| {"exact" => name} }
+        end
+        # The authorizer reads the listener's origin from this prefix; a client controls only the path after it.
+        path_prefix = facade ? "#{FACADE_AUTHORIZATION_PREFIX}#{facade.upstream}" : INSPECTED_AUTHORIZATION_PREFIX
         authorization_response = {
           "allowed_client_headers" => {"patterns" => [{"exact" => "content-type"}]}
         }
@@ -281,24 +361,40 @@ module LittleGhost
             "patterns" => mutation_headers.map { |name| {"exact" => name} }
           }
         end
+        settings = {
+          failure_mode_allow: false,
+          status_on_error: {code: "ServiceUnavailable"},
+          validate_mutations: true,
+          disallowed_headers: {
+            "patterns" => CREDENTIAL_HEADERS.map { |name| {"exact" => name} }
+          }
+        }
+        settings[:allowed_headers] = {"patterns" => patterns} unless patterns.empty?
         {
           "name" => "envoy.filters.http.ext_authz",
           "typed_config" => typed(
             "envoy.extensions.filters.http.ext_authz.v3.ExtAuthz",
-            failure_mode_allow: false,
-            status_on_error: {code: "ServiceUnavailable"},
-            validate_mutations: true,
-            disallowed_headers: {
-              "patterns" => %w[authorization proxy-authorization cookie].map { |name| {"exact" => name} }
-            },
+            **settings,
             http_service: {
               "server_uri" => {
                 "uri" => "http://little-ghost-authorizer",
                 "cluster" => "little_ghost_authorizer",
                 "timeout" => "5s"
               },
-              "authorization_request" => authorization_request,
+              "path_prefix" => path_prefix,
               "authorization_response" => authorization_response
+            }
+          )
+        }
+      end
+
+      def strip_envoy_headers_filter
+        {
+          "name" => "envoy.filters.http.header_mutation",
+          "typed_config" => typed(
+            "envoy.extensions.filters.http.header_mutation.v3.HeaderMutation",
+            mutations: {
+              "request_mutations" => [{"remove_on_match" => {"key_matcher" => {"prefix" => "x-envoy-"}}}]
             }
           )
         }

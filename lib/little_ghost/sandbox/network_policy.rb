@@ -20,15 +20,25 @@ module LittleGhost
 
       # Builds an outbound policy. Enforcement remains the configured gateway's
       # responsibility.
-      def initialize(mode:, allow: [], inspection: :connect, gateway: nil, authorizer: nil, forward_headers: [], mutation_headers: [])
+      #
+      # +forward_headers+ names the client headers an HTTP authorizer receives,
+      # or +:all+ to send every header except credentials. +timeouts+ maps exact
+      # host names to per-request timeouts in seconds for inspected requests.
+      # +facades+ lists Network::Facade declarations or Hashes; every facade
+      # request is authorized by +authorizer+. Network::HostPolicy#network_policy
+      # derives these values from one host policy.
+      def initialize(mode:, allow: [], inspection: :connect, gateway: nil, authorizer: nil, forward_headers: [],
+        mutation_headers: [], timeouts: {}, facades: [])
         mode = mode.to_sym
         inspection = inspection.to_sym
+        facades = Array(facades).map { |facade| Network::Facade.coerce(facade) }
         raise PolicyError, "network mode must be :inherit, :none, or :allowlist" unless MODES.include?(mode)
         unless INSPECTION_MODES.include?(inspection)
           raise PolicyError, "network inspection must be :connect or :http"
         end
-        if mode != :allowlist && (!Array(allow).empty? || gateway || authorizer || !Array(forward_headers).empty? || !Array(mutation_headers).empty?)
-          raise PolicyError, "network allow, gateway, authorizer, and header policy require mode :allowlist"
+        if mode != :allowlist && (!Array(allow).empty? || gateway || authorizer || !Array(forward_headers).empty? ||
+            !Array(mutation_headers).empty? || !timeouts.empty? || !facades.empty?)
+          raise PolicyError, "network allow, gateway, authorizer, header, timeout, and facade policy require mode :allowlist"
         end
         if inspection == :http && mode != :allowlist
           raise PolicyError, "HTTP inspection requires mode :allowlist"
@@ -36,8 +46,15 @@ module LittleGhost
         if inspection == :http && !authorizer
           raise PolicyError, "HTTP inspection requires an authorizer"
         end
-        if mode == :allowlist && Array(allow).empty?
-          raise PolicyError, "network mode :allowlist requires at least one exact destination"
+        if mode == :allowlist && Array(allow).empty? && facades.empty?
+          raise PolicyError, "network mode :allowlist requires at least one exact destination or facade"
+        end
+        raise PolicyError, "network facades require an authorizer" if !facades.empty? && !authorizer
+        if facades.map(&:name).uniq.length != facades.length
+          raise PolicyError, "network facade names must be unique"
+        end
+        if facades.map { |facade| facade.port || facade.socket }.uniq.length != facades.length
+          raise PolicyError, "network facade listeners must be unique"
         end
 
         @mode = mode
@@ -45,8 +62,16 @@ module LittleGhost
         @inspection = inspection
         @gateway = gateway
         @authorizer = authorizer
-        @forward_headers = Array(forward_headers).map { |name| normalize_header_name(name) }.uniq.freeze
+        @forward_headers = if forward_headers == :all
+          :all
+        else
+          Array(forward_headers).map { |name| normalize_header_name(name) }.uniq.freeze
+        end
         @mutation_headers = Array(mutation_headers).map { |name| normalize_header_name(name) }.uniq.freeze
+        @timeouts = timeouts.to_h do |host, seconds|
+          [String(host).downcase.freeze, Network.timeout_seconds(seconds)]
+        end.freeze
+        @facades = facades.freeze
         freeze
       end
 
@@ -60,10 +85,14 @@ module LittleGhost
       attr_reader :gateway
       # Trusted request authorizer used by HTTP inspection, when supplied.
       attr_reader :authorizer
-      # Header names the gateway may pass to an HTTP authorizer.
+      # Header names the gateway may pass to an HTTP authorizer, or +:all+.
       attr_reader :forward_headers
       # Header names an HTTP authorizer may set on an upstream request.
       attr_reader :mutation_headers
+      # Per-host request timeouts in seconds for inspected requests.
+      attr_reader :timeouts
+      # Network::Facade listeners that forward to one upstream each.
+      attr_reader :facades
 
       # Indicates unrestricted backend-provided connectivity.
       def inherit? = mode == :inherit
@@ -75,15 +104,15 @@ module LittleGhost
       # Policies compare by their normalized enforcement declaration.
       def ==(other)
         other.is_a?(self.class) &&
-          [mode, allow, inspection, gateway, authorizer, forward_headers, mutation_headers] ==
+          [mode, allow, inspection, gateway, authorizer, forward_headers, mutation_headers, timeouts, facades] ==
             [other.mode, other.allow, other.inspection, other.gateway, other.authorizer,
-              other.forward_headers, other.mutation_headers]
+              other.forward_headers, other.mutation_headers, other.timeouts, other.facades]
       end
 
       alias_method :eql?, :==
 
       # Hashes the normalized enforcement declaration.
-      def hash = [mode, allow, inspection, gateway, authorizer, forward_headers, mutation_headers].hash
+      def hash = [mode, allow, inspection, gateway, authorizer, forward_headers, mutation_headers, timeouts, facades].hash
 
       private
 

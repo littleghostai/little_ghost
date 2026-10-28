@@ -316,6 +316,106 @@ These settings reach only processes launched through the Sandbox. Providers,
 callbacks, and application Tool code still use the Ruby process's network
 access.
 
+### Decide what each host accepts
+
+An allowlist decides which hosts a child can reach. A
+`Network::HostPolicy` decides which requests those hosts accept, and it can
+add a credential the child never sees:
+
+```ruby
+hosts = LittleGhost::Network::HostPolicy.new do
+  host "api.example.com" do
+    methods :post
+    paths "/v1/answers", "/v1/answers/*"
+    inject { |request| {"x-api-key" => ENV.fetch("HELP_CENTER_API_KEY")} }
+  end
+
+  default do
+    methods :get, :head
+  end
+end
+
+config.sandbox = {
+  provider: :native,
+  network: hosts.network_policy(allow: ["api.example.com:443", "rubygems.org:443"])
+}
+```
+
+`network_policy` turns on HTTP inspection for the allowed hosts. The gateway
+decrypts each request with a run-scoped certificate authority, asks the host
+policy about the method, path, and headers, and then re-encrypts the request to
+the real host. Client credential headers such as `authorization` and
+`x-api-key` are removed unless the policy injects them. Requests to a host
+without a rule, or that fail a rule, receive a 403 response. Use
+`pass_headers` to forward only named headers, `deny_paths` to carve out
+exceptions, `require` to check application state for each request, and
+`timeout` to bound slow hosts.
+
+Paths are decoded before they are matched, and a path that cannot be matched
+safely, for example one with an encoded line break or `..` segment, receives
+a 400 response. Anchor Regexp patterns with `\A` and `\z`. A rule that
+declares `methods` also rejects method overrides such as
+`x-http-method-override` headers and `_method` query parameters. The gateway
+removes client `x-envoy-*` headers before it routes a request, and it verifies
+that every upstream certificate matches the host it connects to, sending that
+host as the TLS server name.
+
+The `inject` and `require` blocks run in the Ruby process for every request,
+so they can read a credential that rotates. Keep the credential out of
+exception messages: the gateway answers a failing block with a 503 response
+and does not log its message.
+
+### Give a command a fixed upstream
+
+Some clients accept a base URL but not a proxy certificate. A
+`Network::Facade` gives them a plaintext listener that forwards every request to
+one HTTPS host:
+
+```ruby
+policy = hosts.network_policy(
+  facades: [{name: :answers, upstream: "api.example.com", socket: "/run/egress/answers.sock", timeout: 0}]
+)
+```
+
+A child configured with the facade's address as its base URL and a placeholder
+key reaches `api.example.com` only through the host policy, which replaces the
+placeholder. A host can be reachable through a facade without appearing in
+`allow`. A `timeout` of `0` lets streaming responses run as long as the
+upstream keeps the connection open; responses are not buffered.
+
+Facades listen on a fixed port or socket, so they need an Envoy that the
+application supervises rather than the run-scoped gateway.
+`Network::EnvoyGateway.write_configuration` writes that configuration, and
+`Network::AuthorizerServer#serve` runs the host policy as the main loop of a
+separate process:
+
+```ruby
+LittleGhost::Network::EnvoyGateway.write_configuration(
+  path: "/run/egress/envoy.json",
+  policy:,
+  listener: "/run/egress/proxy.sock",
+  paths: {authorizer_socket: "/run/egress-private/authorizer.sock", trusted_ca: "/etc/ssl/certs/ca-certificates.crt"},
+  socket_mode: 0o660
+)
+
+LittleGhost::Network::AuthorizerServer.new(
+  socket_path: "/run/egress-private/authorizer.sock",
+  authorizer: hosts.authorizer,
+  mode: 0o660,
+  peer_uids: [Etc.getpwnam("envoy").uid]
+).serve(stop_io: stop_reader)
+```
+
+Running the authorizer as its own user keeps credentials out of both Envoy and
+the sandbox. `peer_uids` closes connections from any other user, and
+`socket_mode` sets the permission bits of the proxy and facade sockets Envoy
+creates; it never grants access to other users, so give the sandbox user
+Envoy's group or run it as Envoy's user with `0o600`. The authorizer answers
+only requests from listeners in this configuration: Envoy tells it whether a
+request came from an inspected host or from a facade, and a client cannot
+change which upstream the authorizer sees. Relay the facade socket into the sandbox as a runtime path, and
+expose the explicit proxy through an external gateway as described above.
+
 Test the deployed kernel and filesystem, not only the configuration object.
 Exercise denied reads and writes, runtime paths, child creation, direct sockets,
 cancellation, limits, and cleanup before depending on the Sandbox to isolate
