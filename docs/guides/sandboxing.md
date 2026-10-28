@@ -288,7 +288,9 @@ one command in its own process group with a timeout, an output limit, and the
 Run's cancellation, and returns a result that reports the exit code, whether
 the command timed out, and whether either stream was truncated. It waits for
 every member of the process group, so a backgrounded child cannot outlive the
-result. It applies no isolation, so never pass it a command the model chose.
+result; pass `wait_for_group: false` to return once the command itself exits.
+The command is an Array of arguments and never runs through a shell. It applies
+no isolation, so never pass it a command the model chose.
 
 ## Configure child-process networking separately
 
