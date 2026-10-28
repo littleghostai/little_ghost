@@ -130,6 +130,8 @@ module LittleGhost
       Entry.new(key: "artifacts/batch/feedback/item_too_large", summary: "Artifact size-limit feedback", locals: %i[maximum], required: true),
       Entry.new(key: "artifacts/batch/feedback/batch_too_large", summary: "Artifact batch-size limit feedback", locals: %i[maximum], required: true),
       Entry.new(key: "output/truncation/marker", summary: "Middle-truncation marker", locals: %i[removed_tokens], required: true),
+      Entry.new(key: "output/format/tool_call", summary: "Plain-text tool-call transcript", locals: %i[name id input], required: true),
+      Entry.new(key: "output/format/tool_result", summary: "Plain-text tool-result transcript", locals: %i[name id error output], required: true),
       Entry.new(key: "mcp/tools/fallback/description", summary: "MCP Tool fallback description", locals: %i[server_name], required: true),
       Entry.new(key: "mcp/errors/request_failed", summary: "MCP request failure feedback", required: true),
       Entry.new(key: "mcp/errors/transformation_unserializable", summary: "MCP transformation serialization feedback", required: true),

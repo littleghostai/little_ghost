@@ -5,6 +5,7 @@ require "json"
 require_relative "../support/http_client"
 require_relative "../support/sse_parser"
 require_relative "anthropic/catalog_source"
+require_relative "tool_transcript"
 
 module LittleGhost
   module Providers
@@ -16,6 +17,11 @@ module LittleGhost
     # LittleGhost StreamEvents. HTTP and response-shape failures become
     # ProviderError subclasses. It uses the built-in HTTP client and does not
     # require Anthropic's SDK.
+    #
+    # The Messages API rejects tool-call history in a request without tools, so
+    # such a request, like a context summary, sends each ToolUse and ToolResult
+    # as a plain-text transcript of the tool name, JSON input, output, and error
+    # status.
     class Anthropic < Base
       # Request policy supported by the Anthropic HTTP client.
       def self.request_options = %i[max_response_bytes open_timeout read_timeout].freeze
@@ -78,6 +84,7 @@ module LittleGhost
 
       def request_body(request)
         system, messages = request.messages.partition { |message| message.role == :system }
+        messages = ToolTranscript.rewrite(messages) { false } if request.tools.empty?
         body = {
           model:,
           stream: true,

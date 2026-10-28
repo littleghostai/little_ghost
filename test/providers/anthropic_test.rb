@@ -39,4 +39,43 @@ class AnthropicTest < Minitest::Test
     assert_equal "claude", body.fetch("model")
     assert_equal "secret", transport.arguments.dig(:headers, "x-api-key")
   end
+
+  def test_sends_tool_history_as_text_only_when_the_request_declares_no_tools
+    history = [
+      LittleGhost::Message.new(role: :user, content: "Where is order A1?"),
+      LittleGhost::Message.new(role: :assistant, content: LittleGhost::Content::ToolUse.new(id: "call-1", name: "lookup_order", input: {order_id: "A1"})),
+      LittleGhost::Message.new(role: :tool, content: LittleGhost::Content::ToolResult.new(tool_use_id: "call-1", content: "Lookup timed out", status: :error))
+    ]
+    lookup = {name: "lookup_order", description: "Look up an order", input_schema: {type: "object"}}
+    without_tools = Transport.new(completed_frames)
+    with_tools = Transport.new(completed_frames)
+
+    LittleGhost::Providers::Anthropic.new(api_key: "secret", model: "claude", transport: without_tools)
+      .stream(LittleGhost::ModelRequest.new(messages: history)).to_a
+    LittleGhost::Providers::Anthropic.new(api_key: "secret", model: "claude", transport: with_tools)
+      .stream(LittleGhost::ModelRequest.new(messages: history, tools: [lookup])).to_a
+
+    text_body = JSON.parse(without_tools.arguments.fetch(:body))
+    refute text_body.key?("tools")
+    assert_equal [%w[text], %w[text], %w[text]], text_body.fetch("messages").map { |message| message.fetch("content").map { |block| block.fetch("type") } }
+    call = text_body.dig("messages", 1, "content", 0, "text")
+    result = text_body.dig("messages", 2, "content", 0, "text")
+    assert_includes call, "lookup_order"
+    assert_includes call, JSON.generate({"order_id" => "A1"})
+    assert_includes result, "Lookup timed out"
+    assert_includes result, "error"
+    native_body = JSON.parse(with_tools.arguments.fetch(:body))
+    assert_equal "tool_use", native_body.dig("messages", 1, "content", 0, "type")
+    assert_equal "tool_result", native_body.dig("messages", 2, "content", 0, "type")
+  end
+
+  private
+
+  def completed_frames
+    [
+      {type: "message_start", message: {id: "message-1", model: "claude", usage: {input_tokens: 5}}},
+      {type: "message_delta", delta: {stop_reason: "end_turn"}, usage: {output_tokens: 1}},
+      {type: "message_stop"}
+    ]
+  end
 end

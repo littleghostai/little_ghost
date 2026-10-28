@@ -155,6 +155,11 @@ config.providers = {
 Use a target such as `anthropic:claude-sonnet-4-6`. The adapter uses the
 Messages API. LittleGhost does not provide Anthropic embeddings.
 
+The Messages API rejects earlier tool calls in a request that offers no
+tools, such as a context-compaction summary. Such a request sends each earlier
+tool call and result as a plain-text transcript of the tool name, JSON input,
+output, and error status.
+
 ### Gemini
 
 ```ruby
@@ -202,6 +207,11 @@ config.providers = {
 Use a model available in the region, such as
 `bedrock:us.anthropic.claude-sonnet-4-6-v1:0`. The adapter resolves AWS
 credentials and signs requests without an AWS SDK.
+
+Converse rejects earlier tool calls for tools the request does not declare. A
+call to an undeclared tool, including every call in a request that offers no
+tools, is sent with its result as a plain-text transcript of the tool name,
+JSON input, output, and error status. Calls to declared tools stay native.
 
 Bedrock embeddings support `amazon.titan-embed-text-v2:0`. Its `dimensions`
 setting accepts 256, 512, or 1024, and `normalize` defaults to `true`.

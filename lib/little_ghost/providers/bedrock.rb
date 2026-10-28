@@ -5,6 +5,7 @@ require_relative "bedrock/credential_resolver"
 require_relative "bedrock/aws_protocol"
 require_relative "bedrock/http_client"
 require_relative "bedrock/catalog_source"
+require_relative "tool_transcript"
 
 module LittleGhost
   # Provider adapters translate model APIs into LittleGhost's shared streaming
@@ -22,6 +23,12 @@ module LittleGhost
     #
     # The default client uses LittleGhost's standard-library SigV4 and AWS
     # EventStream implementations. Applications may inject +client+ instead.
+    #
+    # Converse rejects tool-call history for tools the request does not
+    # declare. A ToolUse naming an undeclared tool, including every ToolUse in
+    # a request without tools, is therefore sent with its ToolResult as a
+    # plain-text transcript of the tool name, JSON input, output, and error
+    # status. Calls to declared tools stay native.
     #
     # Transient service and stream failures retry with exponential backoff. Each
     # retry emits +:model_retry+ and reports whether partial text was already
@@ -232,13 +239,16 @@ module LittleGhost
         end
 
         system, messages = request.messages.partition { |message| message.role == :system }
+        tools = request.tools.map { |tool| bedrock_tool(tool) }
+        declared = tools.map { |tool| tool.dig(:tool_spec, :name).to_s }
+        messages = ToolTranscript.rewrite(messages) { |tool_use| declared.include?(tool_use.name) }
         parameters = {
           model_id: model,
           messages: messages.filter_map { |message| bedrock_message(message) }
         }
         parameters[:system] = system.flat_map { |message| message.content.grep(Content::Text).map { |block| {text: block.text} } }
-        unless request.tools.empty?
-          parameters[:tool_config] = {tools: request.tools.map { |tool| bedrock_tool(tool) }}
+        unless tools.empty?
+          parameters[:tool_config] = {tools:}
           parameters[:tool_config][:tool_choice] = bedrock_tool_choice(request.tool_choice) if request.tool_choice
         end
         parameters[:output_config] = bedrock_output_config(request.output_schema) if request.output_schema

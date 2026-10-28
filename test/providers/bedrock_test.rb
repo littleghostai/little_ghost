@@ -22,6 +22,33 @@ class BedrockTest < Minitest::Test
     end
   end
 
+  class ConverseValidatingClient
+    attr_reader :requests
+
+    def initialize
+      @requests = []
+    end
+
+    def converse_stream(**parameters)
+      @requests << parameters
+      declared = Array(parameters.dig(:tool_config, :tools)).map { |tool| tool.dig(:tool_spec, :name) }
+      parameters.fetch(:messages).flat_map { |message| message.fetch(:content) }.each do |block|
+        if block[:tool_use] && !declared.include?(block.dig(:tool_use, :name))
+          raise LittleGhost::ProviderError, "ValidationException: toolConfig must declare #{block.dig(:tool_use, :name)}"
+        end
+        if block[:tool_result] && declared.empty?
+          raise LittleGhost::ProviderError, "ValidationException: toolConfig is required with toolResult blocks"
+        end
+      end
+      text = (@requests.length == 1) ? "Summary" : "Done"
+      FakeResponse.new(stream: [
+        {message_start: {role: "assistant"}},
+        {content_block_delta: {content_block_index: 0, delta: {text:}}},
+        {message_stop: {stop_reason: "end_turn"}}
+      ])
+    end
+  end
+
   class FakeEmbeddingClient
     attr_reader :parameters
 
@@ -766,6 +793,99 @@ class BedrockTest < Minitest::Test
     content = client.parameters.dig(:messages, 0, :content)
     assert_equal "jpeg", content[0].dig(:image, :format)
     assert_equal "md", content[1].dig(:document, :format)
+  end
+
+  def test_sends_tool_history_as_text_when_the_request_declares_no_tools
+    client = ConverseValidatingClient.new
+    provider = LittleGhost::Providers::Bedrock.new(model: "anthropic.test", client:)
+
+    provider.stream(request(messages: [
+      {role: :user, content: "Where is order A1?"},
+      {role: :assistant, content: [
+        LittleGhost::Content::Text.new(text: "Checking."),
+        LittleGhost::Content::ToolUse.new(id: "call-1", name: "lookup_order", input: {order_id: "A1"})
+      ]},
+      {role: :tool, content: [LittleGhost::Content::ToolResult.new(tool_use_id: "call-1", content: "Order A1 shipped", status: :success)]},
+      {role: :assistant, content: "It shipped."}
+    ])).to_a
+
+    parameters = client.requests.fetch(0)
+    refute parameters.key?(:tool_config)
+    assert_equal 4, parameters[:messages].length
+    assert_equal({text: "Checking."}, parameters.dig(:messages, 1, :content, 0))
+    call = parameters.dig(:messages, 1, :content, 1, :text)
+    result = parameters.dig(:messages, 2, :content, 0, :text)
+    assert_includes call, "lookup_order"
+    assert_includes call, "call-1"
+    assert_includes call, JSON.generate({"order_id" => "A1"})
+    assert_includes result, "lookup_order"
+    assert_includes result, "call-1"
+    assert_includes result, "Order A1 shipped"
+    refute_includes result, "error"
+  end
+
+  def test_sends_calls_to_undeclared_tools_as_text_and_keeps_declared_calls_native
+    client = ConverseValidatingClient.new
+    provider = LittleGhost::Providers::Bedrock.new(model: "anthropic.test", client:)
+    lookup = {name: "lookup_order", description: "Look up an order", input_schema: {type: "object"}}
+
+    provider.stream(LittleGhost::ModelRequest.new(
+      messages: [
+        {role: :user, content: "Check order A1 and the shipping log."},
+        {role: :assistant, content: [
+          LittleGhost::Content::ToolUse.new(id: "call-1", name: "lookup_order", input: {order_id: "A1"}),
+          LittleGhost::Content::ToolUse.new(id: "call-2", name: "tools.bash", input: {command: "tail shipping.log"})
+        ]},
+        {role: :tool, content: [
+          LittleGhost::Content::ToolResult.new(tool_use_id: "call-1", content: "Order A1 shipped", status: :success),
+          LittleGhost::Content::ToolResult.new(tool_use_id: "call-2", content: "Unknown Tool: tools.bash", status: :error)
+        ]}
+      ],
+      tools: [lookup]
+    )).to_a
+
+    parameters = client.requests.fetch(0)
+    assert_equal ["lookup_order"], parameters.dig(:tool_config, :tools).map { |tool| tool.dig(:tool_spec, :name) }
+    assert_equal({tool_use_id: "call-1", name: "lookup_order", input: {"order_id" => "A1"}}, parameters.dig(:messages, 1, :content, 0, :tool_use))
+    assert_equal "call-1", parameters.dig(:messages, 2, :content, 0, :tool_result, :tool_use_id)
+    call = parameters.dig(:messages, 1, :content, 1, :text)
+    result = parameters.dig(:messages, 2, :content, 1, :text)
+    assert_includes call, "tools.bash"
+    assert_includes call, JSON.generate({"command" => "tail shipping.log"})
+    assert_includes result, "tools.bash"
+    assert_includes result, "Unknown Tool: tools.bash"
+    assert_includes result, "error"
+  end
+
+  def test_context_compaction_summarizes_a_tool_using_history
+    client = ConverseValidatingClient.new
+    provider = LittleGhost::Providers::Bedrock.new(model: "anthropic.test", client:)
+    model = LittleGhost::Model.new(provider:, target: "bedrock:anthropic.test")
+    lookup_order = LittleGhost::Tool.define(name: "lookup_order", description: "Look up an order") { "unused" }.new
+    agent_class = Class.new(LittleGhost::Agent) do
+      manage_context context_window_tokens: 80, compression_threshold: 0.1,
+        summary_ratio: 0.5, preserve_recent_messages: 2
+    end
+    history = [
+      LittleGhost::Message.new(role: :user, content: "Where is order A1?"),
+      LittleGhost::Message.new(role: :assistant, content: LittleGhost::Content::ToolUse.new(id: "call-1", name: "lookup_order", input: {order_id: "A1"})),
+      LittleGhost::Message.new(role: :tool, content: LittleGhost::Content::ToolResult.new(tool_use_id: "call-1", content: "Order A1 shipped", status: :success)),
+      LittleGhost::Message.new(role: :assistant, content: "Order A1 shipped."),
+      LittleGhost::Message.new(role: :user, content: "Thanks")
+    ]
+    outcomes = []
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new
+    instrumentation.subscribe(TestTelemetryRecorder.new(outcomes))
+
+    agent_class.new(model:, tools: [lookup_order]).call("Anything else?", history:)
+
+    summary, final = client.requests
+    refute summary.key?(:tool_config)
+    assert_includes summary[:messages].map { |message| message[:content].map { |block| block[:text] }.join }.join, "Order A1 shipped"
+    assert_equal 2, client.requests.length
+    assert_equal "Summary", final.dig(:messages, 0, :content, 0, :text)
+    refute outcomes.any? { |name, attributes| name == :context_compaction && attributes[:outcome] == :error }
+    assert outcomes.any? { |name, attributes| name == :context_compaction && attributes[:removed_messages].to_i.positive? }
   end
 
   private

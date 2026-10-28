@@ -448,7 +448,7 @@ class CLITest < Minitest::Test
     lines = stdout.string.lines
     assert_equal lines.sort, lines
     assert_includes lines, "agent/\tDefault Agent instructions and interjection prompts\t2 templates\n"
-    assert_includes lines, "output/\tShared model-visible output formatting\t1 template\n"
+    assert_includes lines, "output/\tShared model-visible output formatting\t3 templates\n"
     assert_empty stderr.string
 
     stdout = StringIO.new

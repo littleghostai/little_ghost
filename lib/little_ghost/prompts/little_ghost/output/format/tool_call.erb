@@ -1,0 +1,16 @@
+<%#
+# Key: output/format/tool_call
+# Purpose: Plain-text tool-call transcript.
+# Used: Sent in place of a native tool-call block when a provider request cannot carry it natively, such as a
+#   context summary request without tools or a call to a Tool the request does not declare.
+# Locals:
+# - name: Name of the Tool the model called.
+# - id: Provider call identifier that the matching tool-result transcript repeats.
+# - input: JSON-encoded Tool input.
+# Constraints:
+# - Must render non-blank.
+# - This output is embedded inside a larger model-visible message.
+# - Keep the wording consistent with output/format/tool_result so calls and results pair up.
+-%>
+[Tool call <%= name %> (id: <%= id %>)]
+Input: <%= input %>
