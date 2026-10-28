@@ -24,7 +24,9 @@ module LittleGhost
     #   Model used when the request does not name one.
     #
     # Codex reports token usage but not cost, so +budget_usd+ cannot stop it.
-    # Each completed turn counts toward +max_turns+.
+    # One <tt>exec</tt> usually completes a single turn that contains every
+    # command and edit, so +max_turns+ does not bound its work either; rely on
+    # +timeout+.
     class Codex < Base
       harness_id :codex
       default_executable "codex"

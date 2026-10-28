@@ -96,7 +96,7 @@ module LittleGhost
       end
 
       def assistant_events(data)
-        content = data.dig("message", "content")
+        content = message_content(data)
         return [] unless content.is_a?(Array)
 
         content.filter_map do |block|
@@ -110,7 +110,7 @@ module LittleGhost
       end
 
       def tool_result_events(data)
-        content = data.dig("message", "content")
+        content = message_content(data)
         return [] unless content.is_a?(Array)
 
         content.filter_map do |block|
@@ -140,6 +140,11 @@ module LittleGhost
           )
         end
         [{kind: :usage, **state.usage.to_h, cost_usd: state.cost_usd}]
+      end
+
+      def message_content(data)
+        message = data["message"]
+        message["content"] if message.is_a?(Hash)
       end
 
       def text_content(content)

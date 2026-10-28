@@ -43,6 +43,8 @@ class HarnessToolTest < Minitest::Test
 
     def terminate = nil
 
+    def close_write = nil
+
     def close = nil
   end
 
@@ -122,7 +124,9 @@ class HarnessToolTest < Minitest::Test
     assert tool.execute({}).success?
     assert_equal [[:help_center_sync, {phase: "fetching", article_count: 12}]], run.events.map { |event| [event.type, event.data] }
     assert_nil tool_class.new.publish_event(:help_center_sync, phase: "idle")
-    assert_raises(ArgumentError) { tool.publish_event(:subagent, event: nil) }
+    %i[subagent run_cancel run_partial text_delta invocation_stop].each do |type|
+      assert_raises(ArgumentError, type.inspect) { tool.publish_event(type) }
+    end
     assert_raises(ArgumentError) { tool.publish_event(:assembly_step_start, step_id: "a") }
   end
 end

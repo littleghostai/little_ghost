@@ -17,7 +17,11 @@ class HarnessBaseTest < Minitest::Test
       @closed = false
     end
 
-    attr_reader :terminated, :closed
+    attr_reader :terminated, :closed, :stdin_closed
+
+    def close_write
+      @stdin_closed = true
+    end
 
     def read(timeout: 0)
       if @terminated || (@chunks.empty? && !@hang)
@@ -90,6 +94,7 @@ class HarnessBaseTest < Minitest::Test
     assert_equal "repository", sandbox.options[:cwd]
     assert_equal "http://127.0.0.1:3130", sandbox.options[:environment]["ANTHROPIC_BASE_URL"]
     assert_equal "test", sandbox.options[:environment]["SUPPORT_PORTAL_ENV"]
+    assert session.stdin_closed
     assert session.closed
   end
 
@@ -160,6 +165,42 @@ class HarnessBaseTest < Minitest::Test
     assert_equal :failed, result.status
     assert_equal 1, result.exit_code
     assert_equal "turn_failed", result.stop_reason
+  end
+
+  def test_a_reported_result_ends_the_run_when_descendants_keep_the_group_alive
+    session = FakeSession.new(chunks: fixture_chunks("claude_code/success.jsonl", 4096))
+    def session.read(timeout: 0)
+      return super unless @chunks.empty?
+
+      LittleGhost::Sandbox::ProcessSession::Chunk.new(stdout: "", stderr: "", eof: false)
+    end
+    harness = LittleGhost::Harnesses::ClaudeCode.new(sandbox: FakeSandbox.new(session), home: "/home/agent")
+
+    result = harness.run(request(timeout: 5))
+
+    assert_equal :completed, result.status
+    assert session.terminated
+  end
+
+  def test_successful_result_over_budget_keeps_the_reported_status
+    session = FakeSession.new(chunks: fixture_chunks("claude_code/success.jsonl", 4096))
+    harness = LittleGhost::Harnesses::ClaudeCode.new(sandbox: FakeSandbox.new(session), home: "/home/agent")
+
+    result = harness.run(request(budget_usd: 0.01))
+
+    assert_equal :completed, result.status
+    refute session.terminated
+  end
+
+  def test_unexpected_message_shapes_are_ignored
+    claude = LittleGhost::Harnesses::ClaudeCode.new(sandbox: Object.new, home: "/home/agent")
+    open_code = LittleGhost::Harnesses::OpenCode.new(sandbox: Object.new, home: "/home/agent")
+    state = LittleGhost::Harnesses::State.new
+
+    assert_empty claude.parse_line('{"type":"assistant","message":"text"}', state)
+    assert_empty claude.parse_line('{"type":"user","message":["text"]}', state)
+    assert_empty open_code.parse_line('{"type":"error","error":"boom"}', state)
+    assert_equal "error", state.stop_reason
   end
 
   def test_output_limit_fails_the_run

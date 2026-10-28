@@ -12,7 +12,8 @@ module LittleGhost
     # the child sees it, and harness-specific +defaults+. Requests carry the
     # task and its limits.
     #
-    # A subclass implements four hooks:
+    # A subclass implements #command and #parse_line, usually #environment, and
+    # may override #finalize:
     #
     #   class SupportAgentHarness < LittleGhost::Harnesses::Base
     #     harness_id :support_agent
@@ -169,6 +170,7 @@ module LittleGhost
           cwd: request.cwd,
           output_bytes: defaults.fetch(:output_bytes, DEFAULT_OUTPUT_BYTES)
         )
+        session.close_write
         outcome, stderr_tail = consume(session, request, state, deadline, context, block)
         exit_code = session.wait(timeout: EXIT_WAIT)&.exitstatus
         result = finalize(state, exit_code:, stderr_tail:, outcome:)
@@ -225,6 +227,7 @@ module LittleGhost
         pending = String.new(encoding: Encoding::BINARY)
         stderr = String.new(encoding: Encoding::BINARY)
         outcome = nil
+        settled = false
         loop do
           context&.check!
           remaining = deadline - monotonic_time
@@ -233,12 +236,23 @@ module LittleGhost
             break
           end
 
+          started = monotonic_time
           begin
             chunk = session.read(timeout: [remaining, POLL_INTERVAL].min)
           rescue ToolError
+            session.alive? if session.respond_to?(:alive?)
             state.stop_reason ||= "output_limit"
             outcome = :failed
             break
+          end
+          idle = POLL_INTERVAL - (monotonic_time - started)
+          if chunk.stdout.empty? && chunk.stderr.empty? && !chunk.eof && idle > POLL_INTERVAL / 2
+            # Output pipes are closed but a descendant keeps the process group alive.
+            if state.status
+              settled = true
+              break
+            end
+            sleep([idle, remaining].min)
           end
           stderr = tail(stderr + chunk.stderr.b)
           pending << chunk.stdout.b
@@ -250,7 +264,8 @@ module LittleGhost
           break if outcome || chunk.eof
         end
         handle_line(pending, state, block) if outcome.nil? && !pending.strip.empty?
-        session.terminate if outcome
+        session.terminate if outcome || settled
+        context&.check! if outcome == :timed_out
         [outcome, stderr.force_encoding(Encoding::UTF_8).scrub]
       rescue
         session.terminate
@@ -271,6 +286,7 @@ module LittleGhost
       end
 
       def limit_outcome(request, state)
+        return if state.status
         return :budget_exceeded if request.budget_usd && state.cost_usd && state.cost_usd > request.budget_usd
         return :turns_exceeded if request.max_turns && state.turns && state.turns > request.max_turns
 

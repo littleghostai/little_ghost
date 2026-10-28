@@ -90,7 +90,12 @@ module LittleGhost
   # delegation, concurrency, and code mode.
   class Tool
     UNSET_RESULT_VALUE = Object.new.freeze # :nodoc:
-    RESERVED_EVENT_TYPES = %i[agent_stream subagent model_retry context_compaction run_start run_stop run_error trace_context].freeze # :nodoc:
+    RESERVED_EVENT_TYPES = %i[
+      agent_stream subagent model_retry context_compaction agent_interjection_delivered trace_context
+      run_start run_partial run_cancel run_stop run_error invocation_stop invocation_error
+      message_start reasoning_delta text_delta message_stop tool_call_start tool_call_delta tool_call_stop
+      tool_stop usage
+    ].freeze # :nodoc:
 
     # Supply run-scoped collaborators when tools are instantiated outside an agent.
     # A binding can be copied with selected collaborators replaced.
@@ -432,8 +437,9 @@ module LittleGhost
     #   end
     #
     # Choose a type that describes your tool. Raises ArgumentError for types
-    # the framework itself publishes, such as +:agent_stream+, +:subagent+,
-    # +:model_retry+, Run lifecycle, and +:assembly_+ events. +data+ is
+    # the framework itself publishes: Run and invocation lifecycle events,
+    # provider progress such as +:text_delta+, +:agent_stream+, +:subagent+,
+    # +:model_retry+, and +:assembly_+ events. +data+ is
     # delivered as given; keep credentials and data the audience should not
     # see out of it.
     def publish_event(type, **data)

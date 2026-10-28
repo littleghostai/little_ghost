@@ -101,7 +101,7 @@ harness.probe # => {available: true, version: "0.52.0", supported: true, reason:
 | Harness | Command | Limits it enforces | Reports |
 | --- | --- | --- | --- |
 | `:claude_code` | `claude -p --bare --output-format stream-json` with fixed tool lists and no MCP servers | budget and turns | cost, turns, usage |
-| `:codex` | `codex exec --json` with approvals off and its own sandbox disabled | turns, by the harness | usage |
+| `:codex` | `codex exec --json` with approvals off and its own sandbox disabled | timeout only | usage |
 | `:open_code` | `opencode run --format json --agent build` with every permission granted | budget and turns, by the harness | cost, usage |
 
 Every harness disables automatic updates, ignores project configuration where

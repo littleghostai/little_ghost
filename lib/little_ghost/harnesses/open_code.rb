@@ -73,7 +73,8 @@ module LittleGhost
         when "step_finish" then step_finish(part, state)
         when "error"
           state.status = :failed
-          state.stop_reason = data.dig("error", "name") || "error"
+          error = data["error"]
+          state.stop_reason = (error.is_a?(Hash) && error["name"].is_a?(String)) ? error["name"] : "error"
           []
         else []
         end
