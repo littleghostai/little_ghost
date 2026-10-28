@@ -214,12 +214,13 @@ class NetworkTest < Minitest::Test
       server = LittleGhost::Network::AuthorizerServer.new(socket_path:, authorizer:).start
 
       client = UNIXSocket.new(socket_path)
-      client.write("POST /v1/items?secret=no HTTP/1.1\r\nHost: API.EXAMPLE.COM:443\r\nX-Untrusted: value\r\n\r\n")
+      client.write("POST /little-ghost/inspected/v1/items?secret=no HTTP/1.1\r\nHost: API.EXAMPLE.COM:443\r\nX-Untrusted: value\r\n\r\n")
       response = client.read
       request = received.pop
 
       assert_equal "POST", request.method
       assert_equal "api.example.com", request.host
+      assert_equal "/v1/items?secret=no", request.path
       assert_equal 443, request.port
       assert_includes response, "HTTP/1.0 200 OK"
       assert_includes response, "authorization: Bearer trusted"
@@ -240,7 +241,7 @@ class NetworkTest < Minitest::Test
       ).start
 
       client = UNIXSocket.new(socket_path)
-      client.write("GET / HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+      client.write("GET /little-ghost/inspected/ HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
 
       assert_includes client.read, "HTTP/1.0 503 Service Unavailable"
     ensure
@@ -285,7 +286,7 @@ class NetworkTest < Minitest::Test
       answers_manager = answers.dig("filter_chains", 0, "filters", 0, "typed_config")
       answers_route = answers_manager.dig("route_config", "virtual_hosts", 0, "routes", 0)
       search_route = search.dig("filter_chains", 0, "filters", 0, "typed_config", "route_config", "virtual_hosts", 0, "routes", 0)
-      authorizer = answers_manager.fetch("http_filters").first.fetch("typed_config")
+      authorizer = answers_manager.fetch("http_filters").find { |filter| filter.fetch("name") == "envoy.filters.http.ext_authz" }.fetch("typed_config")
 
       assert_equal({"socket_address" => {"address" => "127.0.0.1", "port_value" => 3130}}, answers.fetch("address"))
       assert_equal File.join(root, "search.sock"), search.dig("address", "pipe", "path")
@@ -293,7 +294,7 @@ class NetworkTest < Minitest::Test
       assert answers_manager.fetch("normalize_path")
       assert answers_manager.fetch("merge_slashes")
       assert_equal "REJECT_REQUEST", answers_manager.fetch("path_with_escaped_slashes_action")
-      assert_equal %w[envoy.filters.http.ext_authz envoy.filters.http.dynamic_forward_proxy envoy.filters.http.router],
+      assert_equal %w[envoy.filters.http.header_mutation envoy.filters.http.ext_authz envoy.filters.http.dynamic_forward_proxy envoy.filters.http.router],
         answers_manager.fetch("http_filters").map { |filter| filter.fetch("name") }
       assert_equal({"cluster" => "little_ghost_facade_egress", "timeout" => "0s"}, answers_route.fetch("route"))
       assert_equal "1.500s", search_route.dig("route", "timeout")
@@ -301,9 +302,7 @@ class NetworkTest < Minitest::Test
         answers_route.dig("typed_per_filter_config", "envoy.filters.http.dynamic_forward_proxy", "host_rewrite_literal")
       assert_equal "search.example.com:8443",
         search_route.dig("typed_per_filter_config", "envoy.filters.http.dynamic_forward_proxy", "host_rewrite_literal")
-      assert_equal [{"key" => "x-little-ghost-facade-upstream", "value" => "api.example.com:443"}],
-        authorizer.dig("http_service", "authorization_request", "headers_to_add")
-      assert_includes authorizer.dig("disallowed_headers", "patterns"), {"exact" => "x-little-ghost-facade-upstream"}
+      assert_equal "/little-ghost/facade/api.example.com:443", authorizer.dig("http_service", "path_prefix")
       assert_includes authorizer.dig("disallowed_headers", "patterns"), {"exact" => "x-api-key"}
       assert_equal [{"exact" => "x-api-key"}], authorizer.dig("http_service", "authorization_response", "allowed_upstream_headers", "patterns")
       assert_includes clusters, "little_ghost_authorizer"
@@ -343,12 +342,11 @@ class NetworkTest < Minitest::Test
       timeouts = manager.dig("route_config", "virtual_hosts").to_h do |virtual_host|
         [virtual_host.fetch("domains").first, virtual_host.dig("routes", 0, "route", "timeout")]
       end
-      authorizer = manager.fetch("http_filters").first.fetch("typed_config")
+      authorizer = manager.fetch("http_filters").find { |filter| filter.fetch("name") == "envoy.filters.http.ext_authz" }.fetch("typed_config")
 
       assert_equal({"git.example.com" => "300s", "downloads.example.com" => "0s"}, timeouts)
       assert_equal [{"safe_regex" => {"regex" => ".*"}}], authorizer.dig("allowed_headers", "patterns")
-      assert_includes authorizer.dig("disallowed_headers", "patterns"), {"exact" => "x-little-ghost-facade-upstream"}
-      assert_nil authorizer.dig("http_service", "authorization_request", "headers_to_add")
+      assert_equal "/little-ghost/inspected", authorizer.dig("http_service", "path_prefix")
     end
   end
 
@@ -437,19 +435,15 @@ class NetworkTest < Minitest::Test
 
       assert_equal 0o660, File.stat(socket_path).mode & 0o777
       client = UNIXSocket.new(socket_path)
-      client.write(
-        "POST /v1/answers HTTP/1.1\r\nHost: 127.0.0.1:3130\r\n" \
-        "X-Little-Ghost-Facade-Upstream: api.example.com:443\r\n\r\n"
-      )
+      client.write("POST /little-ghost/facade/api.example.com:443/v1/answers HTTP/1.1\r\nHost: 127.0.0.1:3130\r\n\r\n")
       response = client.read
       request = received.pop
 
       assert_equal "api.example.com", request.host
-      refute request.headers.key?("x-little-ghost-facade-upstream")
+      assert_equal "/v1/answers", request.path
       assert_includes response, "x-api-key: trusted"
       removals = response[/^x-envoy-auth-headers-to-remove: (.*)\r$/, 1].split(", ")
       assert_includes removals, "authorization"
-      assert_includes removals, "x-little-ghost-facade-upstream"
       refute_includes removals, "x-api-key"
 
       stop_writer.write(".")
@@ -463,7 +457,235 @@ class NetworkTest < Minitest::Test
     end
   end
 
+  def test_inspected_requests_ignore_a_client_supplied_facade_upstream
+    Dir.mktmpdir do |root|
+      seen = Queue.new
+      hosts = LittleGhost::Network::HostPolicy.new do
+        host("api.example.com") { inject { {"x-api-key" => "real-key"} } }
+        host("downloads.example.com") { pass_headers "accept" }
+      end
+      authorizer = lambda do |request:|
+        seen << request
+        hosts.authorize(request)
+      end
+      policy = LittleGhost::Sandbox::NetworkPolicy.new(
+        mode: :allowlist,
+        allow: ["downloads.example.com:443"],
+        inspection: :http,
+        authorizer:,
+        forward_headers: hosts.forward_headers,
+        mutation_headers: hosts.mutation_headers,
+        facades: [{name: :answers, upstream: "api.example.com", port: 3130}]
+      )
+      config = LittleGhost::Network::EnvoyConfig.build(policy:, listener: LittleGhost::Network::EnvoyConfig.pipe_address(File.join(root, "proxy.sock")), paths: inspection_paths(root))
+      socket_path = File.join(root, "authorizer.sock")
+      server = LittleGhost::Network::AuthorizerServer.new(socket_path:, authorizer:).start
+
+      inspected = authorization_request(socket_path, config, "little_ghost_tls_interceptor",
+        "GET %{prefix}/file HTTP/1.1\r\nHost: downloads.example.com\r\nX-Little-Ghost-Facade-Upstream: api.example.com:443\r\n\r\n")
+      inspected_request = seen.pop
+      facade = authorization_request(socket_path, config, "little_ghost_facade_answers",
+        "GET %{prefix}/v1/answers HTTP/1.1\r\nHost: 127.0.0.1:3130\r\n\r\n")
+      facade_request = seen.pop
+
+      assert_equal "downloads.example.com", inspected_request.host
+      assert_equal "/file", inspected_request.path
+      refute_includes inspected, "real-key"
+      assert_equal "api.example.com", facade_request.host
+      assert_equal "/v1/answers", facade_request.path
+      assert_includes facade, "x-api-key: real-key"
+    ensure
+      server&.close
+    end
+  end
+
+  def test_authorizer_server_rejects_requests_without_a_gateway_origin
+    Dir.mktmpdir do |root|
+      socket_path = File.join(root, "authorizer.sock")
+      called = false
+      server = LittleGhost::Network::AuthorizerServer.new(
+        socket_path:,
+        authorizer: lambda do |request:|
+          called = true
+          LittleGhost::Network::Decision.allow(set_headers: {"x-api-key" => "real-key"})
+        end
+      ).start
+
+      client = UNIXSocket.new(socket_path)
+      client.write("GET /v1 HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Little-Ghost-Facade-Upstream: api.example.com:443\r\n\r\n")
+      response = client.read
+
+      assert_includes response, "HTTP/1.0 503 Service Unavailable"
+      refute_includes response, "real-key"
+      refute called
+    ensure
+      client&.close
+      server&.close
+    end
+  end
+
+  def test_upstream_tls_sends_sni_and_verifies_the_upstream_host_name
+    Dir.mktmpdir do |root|
+      policy = LittleGhost::Sandbox::NetworkPolicy.new(
+        mode: :allowlist,
+        allow: ["downloads.example.com:443"],
+        inspection: :http,
+        authorizer: ->(request:) { LittleGhost::Network::Decision.allow },
+        facades: [{name: :answers, upstream: "api.example.com", port: 3130}]
+      )
+
+      config = LittleGhost::Network::EnvoyConfig.build(policy:, listener: LittleGhost::Network::EnvoyConfig.pipe_address(File.join(root, "proxy.sock")), paths: inspection_paths(root))
+      tls_clusters = config.dig("static_resources", "clusters").select { |cluster| cluster["transport_socket"] }
+
+      assert_equal %w[little_ghost_egress little_ghost_facade_egress], tls_clusters.map { |cluster| cluster.fetch("name") }.sort
+      tls_clusters.each do |cluster|
+        options = cluster.dig("typed_extension_protocol_options", "envoy.extensions.upstreams.http.v3.HttpProtocolOptions")
+        tls = cluster.dig("transport_socket", "typed_config")
+
+        assert_equal({"auto_sni" => true, "auto_san_validation" => true}, options.fetch("upstream_http_protocol_options"), cluster.fetch("name"))
+        assert_equal "/etc/ssl/certs/ca-certificates.crt", tls.dig("common_tls_context", "validation_context", "trusted_ca", "filename")
+        refute cluster.dig("cluster_type", "typed_config").key?("allow_insecure_cluster_options")
+      end
+    end
+  end
+
+  def test_every_listener_strips_client_envoy_control_headers_first
+    Dir.mktmpdir do |root|
+      policy = LittleGhost::Sandbox::NetworkPolicy.new(
+        mode: :allowlist,
+        allow: ["downloads.example.com:443"],
+        inspection: :http,
+        authorizer: ->(request:) { LittleGhost::Network::Decision.allow },
+        facades: [{name: :answers, upstream: "api.example.com", port: 3130}]
+      )
+
+      config = LittleGhost::Network::EnvoyConfig.build(policy:, listener: LittleGhost::Network::EnvoyConfig.pipe_address(File.join(root, "proxy.sock")), paths: inspection_paths(root))
+      filters = config.dig("static_resources", "listeners").map do |listener|
+        listener.dig("filter_chains", 0, "filters", 0, "typed_config", "http_filters").first
+      end
+
+      assert_equal 3, filters.length
+      filters.each do |filter|
+        assert_equal "envoy.filters.http.header_mutation", filter.fetch("name")
+        assert_equal [{"remove_on_match" => {"key_matcher" => {"prefix" => "x-envoy-"}}}],
+          filter.dig("typed_config", "mutations", "request_mutations")
+      end
+    end
+  end
+
+  def test_write_configuration_uses_private_socket_modes
+    Dir.mktmpdir do |root|
+      hosts = LittleGhost::Network::HostPolicy.new { host("api.example.com") {} }
+      policy = hosts.network_policy(facades: [{name: :answers, upstream: "api.example.com", socket: File.join(root, "answers.sock")}])
+      path = File.join(root, "envoy.json")
+      paths = {authorizer_socket: File.join(root, "authorizer.sock"), trusted_ca: "/etc/ssl/certs/ca-certificates.crt"}
+      modes = lambda do
+        JSON.parse(File.read(path)).dig("static_resources", "listeners").map { |listener| listener.dig("address", "pipe", "mode") }
+      end
+
+      LittleGhost::Network::EnvoyGateway.write_configuration(path:, policy:, listener: File.join(root, "proxy.sock"), paths:)
+      assert_equal [0o660, 0o660], modes.call
+      LittleGhost::Network::EnvoyGateway.write_configuration(path:, policy:, listener: File.join(root, "proxy.sock"), paths:, socket_mode: 0o600)
+      assert_equal [0o600, 0o600], modes.call
+      assert_raises(LittleGhost::PolicyError) do
+        LittleGhost::Network::EnvoyGateway.write_configuration(path:, policy:, listener: File.join(root, "proxy.sock"), paths:, socket_mode: 0o666)
+      end
+    end
+  end
+
+  def test_authorizer_server_replaces_a_symbolic_link_instead_of_following_it
+    Dir.mktmpdir do |root|
+      target = File.join(root, "target")
+      File.write(target, "keep")
+      File.chmod(0o644, target)
+      socket_path = File.join(root, "authorizer.sock")
+      File.symlink(target, socket_path)
+
+      server = LittleGhost::Network::AuthorizerServer.new(socket_path:, authorizer: ->(request:) {}, mode: 0o660).start
+      stat = File.lstat(socket_path)
+
+      assert stat.socket?
+      assert_equal 0o660, stat.mode & 0o777
+      assert_equal 0o644, File.stat(target).mode & 0o777
+      assert_equal "keep", File.read(target)
+      assert_equal %w[authorizer.sock target], Dir.children(root).sort
+    ensure
+      server&.close
+    end
+  end
+
+  def test_authorizer_server_closes_connections_from_other_users
+    Dir.mktmpdir do |root|
+      socket_path = File.join(root, "authorizer.sock")
+      called = false
+      server = LittleGhost::Network::AuthorizerServer.new(
+        socket_path:,
+        authorizer: lambda do |request:|
+          called = true
+          LittleGhost::Network::Decision.allow
+        end,
+        peer_uids: [Process.euid + 1]
+      ).start
+
+      client = UNIXSocket.new(socket_path)
+      client.write("GET /little-ghost/inspected/ HTTP/1.1\r\nHost: example.com\r\n\r\n")
+
+      assert_equal "", client.read
+      refute called
+    ensure
+      client&.close
+      server&.close
+    end
+  end
+
+  def test_authorizer_server_bounds_a_slow_request_by_total_time
+    Dir.mktmpdir do |root|
+      socket_path = File.join(root, "authorizer.sock")
+      server_class = LittleGhost::Network::AuthorizerServer
+      original_timeout = server_class::READ_TIMEOUT
+      server_class.send(:remove_const, :READ_TIMEOUT)
+      server_class.const_set(:READ_TIMEOUT, 0.2)
+      server = server_class.new(socket_path:, authorizer: ->(request:) { LittleGhost::Network::Decision.allow }).start
+      client = UNIXSocket.new(socket_path)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      client.write("GET /little-ghost/inspected/ HTTP/1.1\r\nHost: exa")
+
+      response = Timeout.timeout(3) { client.read }
+
+      assert_includes response, "HTTP/1.0 503"
+      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 2
+    ensure
+      client&.close
+      server&.close
+      if original_timeout
+        server_class.send(:remove_const, :READ_TIMEOUT)
+        server_class.const_set(:READ_TIMEOUT, original_timeout)
+      end
+    end
+  end
+
   private
+
+  def inspection_paths(root)
+    {
+      interceptor_socket: File.join(root, "interceptor.sock"),
+      authorizer_socket: File.join(root, "authorizer.sock"),
+      certificate_chain: File.join(root, "leaf.crt"),
+      private_key: File.join(root, "leaf.key"),
+      trusted_ca: "/etc/ssl/certs/ca-certificates.crt"
+    }
+  end
+
+  def authorization_request(socket_path, config, listener_name, template)
+    listener = config.dig("static_resources", "listeners").find { |candidate| candidate.fetch("name") == listener_name }
+    filters = listener.dig("filter_chains", 0, "filters", 0, "typed_config", "http_filters")
+    authorizer = filters.find { |filter| filter.fetch("name") == "envoy.filters.http.ext_authz" }.fetch("typed_config")
+    client = UNIXSocket.new(socket_path)
+    client.write(format(template, prefix: authorizer.dig("http_service", "path_prefix").to_s))
+    client.read
+  ensure
+    client&.close
+  end
 
   def validate_with_envoy(path)
     envoy = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map { |directory| File.join(directory, "envoy") }

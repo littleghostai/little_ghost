@@ -41,16 +41,24 @@ module LittleGhost
       #   Optional file for one line per request with method, authority,
       #   status, and timing. Paths, query strings, and headers are not logged.
       #
+      # +socket_mode+ sets the permission bits of the Unix sockets Envoy
+      # creates for the explicit proxy and for facades with a +socket+. The
+      # default, 0660, lets a sandbox user that shares Envoy's group connect;
+      # use 0600 when the sandbox runs as Envoy's user.
+      #
       # The file is replaced atomically and created with mode 0600. Returns
       # +path+. Validate the result with <tt>envoy --mode validate</tt> before
       # starting Envoy.
-      def self.write_configuration(path:, policy:, listener:, paths: {})
+      def self.write_configuration(path:, policy:, listener:, paths: {}, socket_mode: 0o660)
+        socket_mode = Integer(socket_mode)
+        raise PolicyError, "Envoy socket mode must not grant access to other users" unless (socket_mode & ~0o660).zero?
+
         address = case listener
         when Integer then EnvoyConfig.socket_address("127.0.0.1", listener)
-        when String then EnvoyConfig.pipe_address(listener, 0o666)
+        when String then EnvoyConfig.pipe_address(listener, socket_mode)
         else raise PolicyError, "Envoy listener must be a Unix socket path or a loopback port"
         end
-        configuration = EnvoyConfig.build(policy: Sandbox::NetworkPolicy.coerce(policy), listener: address, paths:)
+        configuration = EnvoyConfig.build(policy: Sandbox::NetworkPolicy.coerce(policy), listener: address, paths:, socket_mode:)
         directory = File.dirname(path)
         temporary = File.join(directory, ".#{File.basename(path)}.#{SecureRandom.hex(8)}")
         File.open(temporary, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
@@ -181,15 +189,19 @@ module LittleGhost
         @authorizer_server = AuthorizerServer.new(
           socket_path: @authorizer_socket,
           authorizer: policy.authorizer,
-          run:
+          run:,
+          peer_uids: [Process.euid]
         ).start
       end
 
       def configuration
         listener = if @transport == :docker
           EnvoyConfig.socket_address("0.0.0.0", 3128)
-        else
+        elsif @resolved_runtime == :docker
+          # The Envoy image runs as its own user, so the sandbox's user needs other-user access inside the private directory.
           EnvoyConfig.pipe_address(@proxy_socket, 0o666)
+        else
+          EnvoyConfig.pipe_address(@proxy_socket, 0o600)
         end
         EnvoyConfig.build(
           policy:,

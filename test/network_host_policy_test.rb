@@ -72,6 +72,39 @@ class NetworkHostPolicyTest < Minitest::Test
     end
   end
 
+  def test_line_breaks_cannot_split_a_path_around_regexp_anchors
+    hosts = LittleGhost::Network::HostPolicy.new do
+      host "api.example.com" do
+        paths %r{^/v1/answers$}
+        deny_paths %r{^/v1/admin}
+      end
+    end
+
+    ["/v1/answers%0A/v1/admin", "/v1/answers%0d%0a/delete", "/v1/answers%09", "/v1/answers%7f"].each do |path|
+      decision = hosts.authorize(request(path:))
+
+      refute decision.allowed, path
+      assert_equal 400, decision.status, path
+    end
+    assert hosts.authorize(request(path: "/v1/answers")).allowed
+  end
+
+  def test_method_restrictions_reject_method_override_query_parameters
+    hosts = LittleGhost::Network::HostPolicy.new do
+      host("api.example.com") { methods :get }
+      host("open.example.com") {}
+    end
+
+    ["/items?_method=DELETE", "/items?a=1&_METHOD=put", "/items?%5Fmethod=delete", "/items?x=1;_method=post"].each do |path|
+      decision = hosts.authorize(request(path:))
+
+      refute decision.allowed, path
+      assert_equal 403, decision.status, path
+    end
+    assert hosts.authorize(request(path: "/items?method=DELETE")).allowed
+    assert hosts.authorize(request(host: "open.example.com", path: "/items?_method=DELETE")).allowed
+  end
+
   def test_requirements_must_all_pass
     leased = false
     hosts = LittleGhost::Network::HostPolicy.new do

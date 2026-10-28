@@ -351,6 +351,15 @@ without a rule, or that fail a rule, receive a 403 response. Use
 exceptions, `require` to check application state for each request, and
 `timeout` to bound slow hosts.
 
+Paths are decoded before they are matched, and a path that cannot be matched
+safely, for example one with an encoded line break or `..` segment, receives
+a 400 response. Anchor Regexp patterns with `\A` and `\z`. A rule that
+declares `methods` also rejects method overrides such as
+`x-http-method-override` headers and `_method` query parameters. The gateway
+removes client `x-envoy-*` headers before it routes a request, and it verifies
+that every upstream certificate matches the host it connects to, sending that
+host as the TLS server name.
+
 The `inject` and `require` blocks run in the Ruby process for every request,
 so they can read a credential that rotates. Keep the credential out of
 exception messages: the gateway answers a failing block with a 503 response
@@ -385,18 +394,26 @@ LittleGhost::Network::EnvoyGateway.write_configuration(
   path: "/run/egress/envoy.json",
   policy:,
   listener: "/run/egress/proxy.sock",
-  paths: {authorizer_socket: "/run/egress-private/authorizer.sock", trusted_ca: "/etc/ssl/certs/ca-certificates.crt"}
+  paths: {authorizer_socket: "/run/egress-private/authorizer.sock", trusted_ca: "/etc/ssl/certs/ca-certificates.crt"},
+  socket_mode: 0o660
 )
 
 LittleGhost::Network::AuthorizerServer.new(
   socket_path: "/run/egress-private/authorizer.sock",
   authorizer: hosts.authorizer,
-  mode: 0o660
+  mode: 0o660,
+  peer_uids: [Etc.getpwnam("envoy").uid]
 ).serve(stop_io: stop_reader)
 ```
 
 Running the authorizer as its own user keeps credentials out of both Envoy and
-the sandbox. Relay the facade socket into the sandbox as a runtime path, and
+the sandbox. `peer_uids` closes connections from any other user, and
+`socket_mode` sets the permission bits of the proxy and facade sockets Envoy
+creates; it never grants access to other users, so give the sandbox user
+Envoy's group or run it as Envoy's user with `0o600`. The authorizer answers
+only requests from listeners in this configuration: Envoy tells it whether a
+request came from an inspected host or from a facade, and a client cannot
+change which upstream the authorizer sees. Relay the facade socket into the sandbox as a runtime path, and
 expose the explicit proxy through an external gateway as described above.
 
 Test the deployed kernel and filesystem, not only the configuration object.

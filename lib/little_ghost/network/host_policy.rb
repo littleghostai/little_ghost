@@ -33,7 +33,8 @@ module LittleGhost
     #   Accepts only these HTTP methods. Without it, every method is accepted.
     # [<tt>paths(*patterns)</tt>]
     #   Accepts only matching paths. A String matches exactly, or as a prefix
-    #   when it ends in <tt>*</tt>; a Regexp matches anywhere it applies.
+    #   when it ends in <tt>*</tt>; a Regexp matches anywhere it applies, so
+    #   anchor it with <tt>\A</tt> and <tt>\z</tt> to match the whole path.
     #   Without it, every path is accepted.
     # [<tt>deny_paths(*patterns)</tt>]
     #   Rejects matching paths before +paths+ is consulted. Deny patterns also
@@ -56,11 +57,12 @@ module LittleGhost
     #
     # Paths are matched after the query string is removed and percent-encoding
     # is decoded. A path that still contains encoded characters after three
-    # rounds of decoding, a backslash, a NUL byte, an empty segment, or a
-    # <tt>.</tt> or <tt>..</tt> segment (including one followed by
-    # <tt>;</tt> parameters) is rejected with status 400. When a rule declares
-    # +methods+, method-override headers such as
-    # <tt>x-http-method-override</tt> are removed.
+    # rounds of decoding, a backslash, a control character such as a NUL byte
+    # or line break, an empty segment, or a <tt>.</tt> or <tt>..</tt> segment
+    # (including one followed by <tt>;</tt> parameters) is rejected with
+    # status 400. When a rule declares +methods+, method-override headers such
+    # as <tt>x-http-method-override</tt> are removed and a request with a
+    # <tt>_method</tt> query parameter is rejected.
     #
     # Blocks run in the authorizer's process for every matching request, so
     # they can read a credential that changes over time. They must be
@@ -73,6 +75,8 @@ module LittleGhost
       UNMANAGED_HEADER_PREFIXES = %w[x-envoy-].freeze # :nodoc:
       UNMANAGED_HEADERS = (Decision::FORBIDDEN_MUTATIONS + %w[x-request-id x-forwarded-for x-forwarded-proto]).freeze # :nodoc:
       METHOD_OVERRIDE_HEADERS = %w[x-http-method-override x-http-method x-method-override].freeze # :nodoc:
+      METHOD_OVERRIDE_PARAMETER = "_method" # :nodoc:
+      CONTROL_CHARACTER = /[\x00-\x1f\x7f]/ # :nodoc:
 
       Rule = Data.define(:http_methods, :paths, :deny_paths, :pass_headers, :injections, :inject_headers, :requirements, :timeout) # :nodoc:
 
@@ -106,6 +110,9 @@ module LittleGhost
         rule = @rules.fetch(request.host, @default)
         return Decision.deny(reason: "host is not allowed") unless rule
         return Decision.deny(reason: "method is not allowed") unless rule.http_methods.nil? || rule.http_methods.include?(request.method)
+        if rule.http_methods && method_override_parameter?(request.path)
+          return Decision.deny(reason: "method override is not allowed")
+        end
 
         path = canonical_path(request.path)
         return Decision.deny(status: 400, reason: "path is not canonical") unless path
@@ -204,12 +211,25 @@ module LittleGhost
         end
         return if URI.decode_uri_component(path) != path
         return unless path.valid_encoding? && path.start_with?("/")
-        return if path.include?("\\") || path.include?("\0") || path.include?("//")
+        return if path.include?("\\") || CONTROL_CHARACTER.match?(path) || path.include?("//")
         return if path.split("/").any? { |segment| %w[. ..].include?(segment.split(";", 2).first) }
 
         path
       rescue ArgumentError
         nil
+      end
+
+      def method_override_parameter?(raw)
+        query = raw.split("#", 2).first.to_s.split("?", 2)[1]
+        return false unless query
+
+        query.split(/[&;]/).any? do |pair|
+          name = pair.split("=", 2).first.to_s
+          3.times { name = URI.decode_uri_component(name) }
+          name.strip.downcase == METHOD_OVERRIDE_PARAMETER
+        rescue ArgumentError
+          true
+        end
       end
 
       def path_match?(pattern, path, fold: false)
