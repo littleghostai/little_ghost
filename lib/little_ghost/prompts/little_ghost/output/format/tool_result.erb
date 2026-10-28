@@ -1,0 +1,17 @@
+<%#
+# Key: output/format/tool_result
+# Purpose: Plain-text tool-result transcript.
+# Used: Sent in place of a native tool-result block when its tool call is rendered as output/format/tool_call.
+# Locals:
+# - name: Name of the Tool that produced the result, or an empty string when its call is not in the request.
+# - id: Provider call identifier of the call this result answers.
+# - error: True when the Tool reported a failure.
+# - output: Tool output text.
+# Constraints:
+# - Must render non-blank.
+# - Provider adapters render the bundled template, so application prompt overrides do not apply.
+# - This output is embedded inside a larger model-visible message.
+# - Keep the wording consistent with output/format/tool_call so calls and results pair up.
+-%>
+[Tool result<% unless name.empty? %> from <%= name %><% end %> (id: <%= id %><% if error %>, error<% end %>)]
+<%= output %>

@@ -213,6 +213,10 @@ module LittleGhost
 
     extend Support::ClassAttributes
 
+    # Input schema of a Tool that takes no arguments. Providers such as Bedrock
+    # and Anthropic require an object schema even when a Tool has no inputs.
+    EMPTY_INPUT_SCHEMA = {"type" => "object", "properties" => {}.freeze}.freeze
+
     class_attribute :tool_name_value
     class_attribute :description_value
     class_attribute :input_schema_value
@@ -252,14 +256,15 @@ module LittleGhost
       # The frozen JSON Schema subset used to validate model input.
       #
       # Setting a non-Hash schema raises ArgumentError. Keys are normalized to
-      # strings and the entire value is deeply frozen.
+      # strings and the entire value is deeply frozen. A Tool without a schema,
+      # or with an empty one, reports EMPTY_INPUT_SCHEMA.
       def input_schema(*values)
-        return input_schema_value || {}.freeze if values.empty?
+        return input_schema_value || EMPTY_INPUT_SCHEMA if values.empty?
 
         value = values.fetch(0)
         raise ArgumentError, "input_schema must be a hash" unless value.is_a?(Hash)
 
-        self.input_schema_value = deep_freeze(value)
+        self.input_schema_value = value.empty? ? EMPTY_INPUT_SCHEMA : deep_freeze(value)
       end
 
       # :call-seq:

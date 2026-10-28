@@ -167,4 +167,14 @@ class ToolTest < Minitest::Test
       Class.new(LittleGhost::Tool).input_schema([])
     end
   end
+
+  def test_a_tool_without_inputs_declares_an_empty_object_schema
+    object_schema = {"type" => "object", "properties" => {}}
+    undeclared = LittleGhost::Tool.define(name: "ping", description: "Ping") { "pong" }
+    empty = LittleGhost::Tool.define(name: "ping", description: "Ping", input_schema: {}) { "pong" }
+
+    assert_equal object_schema, undeclared.input_schema
+    assert_equal object_schema, empty.new.specification.fetch(:input_schema)
+    assert_equal "pong", undeclared.new.execute({}).content
+  end
 end
