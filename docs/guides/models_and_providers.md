@@ -50,6 +50,18 @@ Here `customer_support` is the role, `primary` is the connection, and
 `openrouter` is the adapter. You can move the role to another model or provider
 without editing the Agent.
 
+Roles can be specialized with dotted names. `customer_support.escalation` uses
+its own profile when you define one and otherwise falls back to
+`customer_support`. A profile can also name a parent with `inherits:` and
+override only what differs:
+
+```ruby
+config.models = {
+  customer_support: {target: "primary:openai/gpt-5.6-luna", settings: {temperature: 0.2}},
+  "customer_support.escalation": {inherits: "customer_support", settings: {temperature: 0.0}}
+}
+```
+
 Profile settings are defaults. An individual call can override them:
 
 ```ruby

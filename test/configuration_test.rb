@@ -287,6 +287,32 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
+  def test_catalog_refresh_interval_configures_default_and_custom_resolvers
+    Dir.mktmpdir do |root|
+      configuration = LittleGhost::Configuration.new(root:)
+      configuration.providers = {test: {adapter: :test}}
+      configuration.models = {customer_support: {target: "test:model"}}
+
+      assert_nil configuration.model_resolver.catalog_refresh_interval
+      configuration.catalog_refresh_interval = 3_600
+      assert_equal 3_600, configuration.model_resolver.catalog_refresh_interval
+
+      configuration.catalog_refresh_interval = nil
+      assert_nil configuration.model_resolver.catalog_refresh_interval
+      assert_raises(ArgumentError) { configuration.catalog_refresh_interval = 0 }
+
+      custom = LittleGhost::Configuration.new(root:)
+      custom.providers = {test: {adapter: :test}}
+      custom.model_resolver = Class.new(LittleGhost::ModelResolver) do
+        def initialize(**options)
+          super(**options, profiles: {customer_support: {target: "test:model"}})
+        end
+      end
+      custom.catalog_refresh_interval = 900
+      assert_equal 900, custom.model_resolver.catalog_refresh_interval
+    end
+  end
+
   def test_shared_runtime_allows_its_configuration_file_to_finish_loading
     Dir.mktmpdir do |root|
       path = File.join(root, "config/little_ghost.rb")

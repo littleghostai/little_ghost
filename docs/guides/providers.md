@@ -320,6 +320,19 @@ details.supported_parameters
 Pass `target:` for one model, or omit it for every configured source. On
 failure, `result[:errors]` describes the problem and previous details remain.
 
+A long-running service can refresh details on its own instead. Set an interval
+in seconds:
+
+```ruby
+LittleGhost.configure do |config|
+  config.catalog_refresh_interval = 3_600
+end
+```
+
+The resolver then refreshes a target the first time its details are needed and
+again once the interval has passed. That first use waits for the discovery
+call, and a failed refresh keeps the previous details until the next interval.
+
 Hosted adapters can combine models.dev data with their provider's model API.
 LM Studio reads its native model list. The generic compatible adapter and
 Ollama do not have built-in model discovery.
