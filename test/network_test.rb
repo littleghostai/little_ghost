@@ -628,10 +628,34 @@ class NetworkTest < Minitest::Test
       ).start
 
       client = UNIXSocket.new(socket_path)
+      response = begin
+        client.write("GET /little-ghost/inspected/ HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        Timeout.timeout(5) { client.read }
+      rescue Errno::EPIPE, Errno::ECONNRESET
+        ""
+      end
+
+      assert_equal "", response
+      refute called
+    ensure
+      client&.close
+      server&.close
+    end
+  end
+
+  def test_authorizer_server_reads_the_peer_user_of_a_connection
+    Dir.mktmpdir do |root|
+      socket_path = File.join(root, "authorizer.sock")
+      server = LittleGhost::Network::AuthorizerServer.new(
+        socket_path:,
+        authorizer: ->(request:) { LittleGhost::Network::Decision.allow },
+        peer_uids: [Process.euid]
+      ).start
+
+      client = UNIXSocket.new(socket_path)
       client.write("GET /little-ghost/inspected/ HTTP/1.1\r\nHost: example.com\r\n\r\n")
 
-      assert_equal "", client.read
-      refute called
+      assert_includes Timeout.timeout(5) { client.read }, "HTTP/1.0 200 OK"
     ensure
       client&.close
       server&.close
