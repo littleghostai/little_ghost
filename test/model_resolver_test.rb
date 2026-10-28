@@ -54,6 +54,65 @@ class ModelResolverTest < Minitest::Test
     end
   end
 
+  def test_dotted_roles_and_inheritance_resolve_through_the_nearest_defined_profile
+    received = {}
+    resolver = LittleGhost::ModelResolver.new(
+      providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
+      profiles: {
+        main: {target: "test:general", settings: {temperature: 0.2}, request: {retries: 2, read_timeout: 300}},
+        research: {target: "test:deep", settings: {max_tokens: 4_000}, request: {retries: 7}},
+        "research.helper": {inherits: "research"},
+        "main.support": {inherits: "main", settings: {temperature: 0.4}},
+        "main.support.batch": {inherits: "main.support", request: {read_timeout: 60}},
+        "main.summary": {inherits: "main.unlisted", settings: {max_tokens: 500}},
+        standalone: {target: "test:standalone"},
+        "standalone.child": {target: "test:child"}
+      },
+      provider_adapters: {"test" => lambda { |configuration:, role:, **|
+        received[role] = configuration.slice(:max_retries, :read_timeout)
+        RecordingProvider.new
+      }}
+    )
+
+    resolved = %w[
+      main.unlisted research.helper.unlisted main.support.unlisted main.support.batch main.summary standalone.child.unlisted
+    ].to_h do |role|
+      model = resolver.resolve(role)
+      [role, [model.target.to_s, model.settings, received.fetch(role)]]
+    end
+
+    assert_equal(
+      {
+        "main.unlisted" => ["test:general", {temperature: 0.2}, {max_retries: 2, read_timeout: 300}],
+        "research.helper.unlisted" => ["test:deep", {max_tokens: 4_000}, {max_retries: 7}],
+        "main.support.unlisted" => ["test:general", {temperature: 0.4}, {max_retries: 2, read_timeout: 300}],
+        "main.support.batch" => ["test:general", {temperature: 0.4}, {max_retries: 2, read_timeout: 60}],
+        "main.summary" => ["test:general", {temperature: 0.2, max_tokens: 500}, {max_retries: 2, read_timeout: 300}],
+        "standalone.child.unlisted" => ["test:child", {}, {}]
+      },
+      resolved
+    )
+  end
+
+  def test_unknown_and_circular_inheritance_raise_configuration_errors
+    resolver = LittleGhost::ModelResolver.new(
+      providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
+      profiles: {
+        orphan: {inherits: "missing"},
+        first: {inherits: "second"},
+        second: {inherits: "first"}
+      },
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }}
+    )
+
+    assert_equal "Unknown model profile: missing", assert_raises(LittleGhost::ConfigurationError) { resolver.resolve("orphan") }.message
+    assert_equal "Unknown model profile: unknown.role", assert_raises(LittleGhost::ConfigurationError) { resolver.resolve("unknown.role") }.message
+    assert_equal(
+      "Circular model profile inheritance: first -> second -> first",
+      assert_raises(LittleGhost::ConfigurationError) { resolver.resolve("first.child") }.message
+    )
+  end
+
   def test_explicit_profiles_overlay_settings
     with_configuration(
       providers: "providers:\n  test:\n    adapter: test\n",
@@ -320,6 +379,119 @@ class ModelResolverTest < Minitest::Test
     assert_equal({input: 1.0}, details.pricing)
     assert_equal 1, failed.fetch(:errors).length
     assert_equal({input: 1.0}, catalog.details("openai:gpt-5.6-terra").pricing)
+  end
+
+  def test_catalog_refresh_interval_refreshes_each_target_when_its_details_are_stale
+    now = 1_000.0
+    refreshed = []
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
+    source.define_singleton_method(:refresh) do |target:|
+      refreshed << target.to_s
+      {target.to_s => {context_window: 100 * refreshed.length}}
+    end
+    resolver = LittleGhost::ModelResolver.new(
+      providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
+      profiles: {main: {target: "test:model"}},
+      catalog_sources: [source],
+      catalog_refresh_interval: 60,
+      clock: -> { now }
+    )
+
+    first = resolver.details("test:model").context_window
+    now += 59
+    cached = resolver.details("test:model").context_window
+    resolver.details("test:other")
+    now += 1
+    stale = resolver.details("test:model").context_window
+
+    assert_equal [100, 100, 300], [first, cached, stale]
+    assert_equal %w[test:model test:other test:model], refreshed
+  end
+
+  def test_catalog_refresh_interval_applies_to_resolved_models
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
+    source.define_singleton_method(:refresh) { |target:| {target.to_s => {max_output_tokens: 300}} }
+    resolver = LittleGhost::ModelResolver.new(
+      providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
+      profiles: {main: {target: "test:model", settings: {max_tokens: 1_000}}},
+      provider_adapters: {"test" => ->(**) { RecordingProvider.new }},
+      catalog_sources: [source],
+      catalog_refresh_interval: 3_600
+    )
+
+    assert_equal 300, resolver.resolve("main").settings.fetch(:max_tokens)
+  end
+
+  def test_failed_interval_refresh_keeps_details_and_waits_for_the_next_interval
+    now = 0.0
+    attempts = 0
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
+    source.define_singleton_method(:refresh) do |target:|
+      attempts += 1
+      raise "offline" if attempts == 2
+
+      {target.to_s => {context_window: 200}}
+    end
+    resolver = LittleGhost::ModelResolver.new(
+      providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
+      profiles: {main: {target: "test:model"}},
+      catalog_sources: [source],
+      catalog_refresh_interval: 10,
+      clock: -> { now }
+    )
+
+    resolver.details("test:model")
+    now += 10
+    after_failure = resolver.details("test:model").context_window
+    now += 5
+    resolver.details("test:model")
+
+    assert_equal 200, after_failure
+    assert_equal 2, attempts
+  end
+
+  def test_concurrent_requests_for_a_stale_target_share_one_refresh
+    started = Queue.new
+    release = Queue.new
+    calls = 0
+    source = Class.new(LittleGhost::Models::Catalog::Source).new(name: "test")
+    source.define_singleton_method(:refresh) do |target:|
+      calls += 1
+      started << true
+      release.pop
+      {target.to_s => {context_window: 400}}
+    end
+    resolver = LittleGhost::ModelResolver.new(
+      providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
+      profiles: {main: {target: "test:model"}},
+      catalog_sources: [source],
+      catalog_refresh_interval: 60
+    )
+
+    first = Thread.new { resolver.details("test:model").context_window }
+    started.pop
+    second = Thread.new { resolver.details("test:model").context_window }
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+    Thread.pass until second.status == "sleep" || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+    release << true
+
+    assert_equal [400, 400], [first.value, second.value]
+    assert_equal 1, calls
+  ensure
+    release << true
+    [first, second].compact.each { |thread| thread.join(5) }
+  end
+
+  def test_rejects_an_invalid_catalog_refresh_interval
+    [0, -1, "60"].each do |interval|
+      assert_raises(ArgumentError) do
+        LittleGhost::ModelResolver.new(
+          providers: LittleGhost::Providers::Configuration.new(test: {adapter: :test}),
+          profiles: {main: {target: "test:model"}},
+          catalog_refresh_interval: interval
+        )
+      end
+    end
   end
 
   def test_bundled_catalog_has_normalized_pricing_for_representative_models
