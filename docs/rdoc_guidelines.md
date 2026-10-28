@@ -466,7 +466,7 @@ Check both content and generated metadata:
   Core Concepts, Models and Providers, Provider Support, Prompts as Views,
   Tools, MCP, Structured Results and Content, Compose Agents, Skills, Decisions,
   Embeddings, Workspaces and
-  Sandboxes, Code Mode, Integrations, and Running in Production. This
+  Sandboxes, Code Mode, Harnesses, Integrations, and Running in Production. This
   contributor guideline does not appear in reader navigation.
 - Getting Started and Core Concepts appear under Learn. Models and Providers
   and Provider Support appear under Configure. Prompts as Views, Tools, MCP,

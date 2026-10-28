@@ -1,0 +1,18 @@
+<%#
+# Key: tools/built_in/harness/description
+# Purpose: Harness delegation Tool description.
+# Used: Included in a Tool specification shown to the model as the description of a Harnesses::Tool without its own description.
+# Locals:
+# - harnesses: Array of available harness names.
+# - budget_default: Numeric US dollars used when the model does not choose a budget, or nil.
+# - budget_maximum: Numeric US dollars the model may request, or nil.
+# - timeout_default: Integer seconds used when the model does not choose a timeout.
+# - timeout_maximum: Integer seconds the model may request.
+# Constraints:
+# - Must render non-blank.
+-%>
+Delegate a fully specified, self-contained coding task to an external coding agent (<%= harnesses.join(", ") %>) that works in the configured workspace and returns its final answer. Describe the goal, the files involved, and how to verify the work. Review its changes before relying on them. Pass session_id from an earlier result to continue that session.
+<% if budget_maximum -%>
+Each task may spend up to budget_usd, at most <%= budget_maximum %> US dollars; the default is <%= budget_default %>.
+<% end -%>
+Tasks stop after timeout_seconds, up to <%= timeout_maximum %> seconds; the default is <%= timeout_default %> seconds.

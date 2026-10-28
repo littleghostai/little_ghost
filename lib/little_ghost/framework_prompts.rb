@@ -171,6 +171,7 @@ module LittleGhost
       Entry.new(key: "tools/built_in/write_todos/description", summary: "Todo-planning Tool description", required: true),
       Entry.new(key: "tools/built_in/write_todos/feedback/single_progress", summary: "Todo progress validation feedback", required: true),
       Entry.new(key: "tools/built_in/write_todos/feedback/unique_ids", summary: "Todo identifier validation feedback", required: true),
+      Entry.new(key: "tools/built_in/harness/description", summary: "Harness delegation Tool description", locals: %i[harnesses budget_default budget_maximum timeout_default timeout_maximum], required: true),
       Entry.new(key: "tools/validation/schema/type", summary: "Schema type validation feedback", locals: %i[path types], required: true),
       Entry.new(key: "tools/validation/schema/enum", summary: "Schema enum validation feedback", locals: %i[path values], required: true),
       Entry.new(key: "tools/validation/schema/minimum", summary: "Schema numeric minimum feedback", locals: %i[path minimum], required: true),

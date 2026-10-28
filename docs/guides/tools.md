@@ -195,6 +195,20 @@ end
 This controls discovery, not authorization. The Tool must still validate the
 caller identity and account permissions supplied by the application.
 
+A Tool that works for a while can report progress to whoever is streaming the
+Run. `publish_event` adds an event with your own type to the Run's stream:
+
+```ruby
+def call(input)
+  publish_event(:help_center_sync, phase: "fetching")
+  HelpCenter.sync(input.fetch("collection"))
+end
+```
+
+Events reach every consumer of the stream, so keep credentials and data the
+audience should not see out of them. [Harnesses](harnesses.md) use the same
+mechanism to report an external coding agent's progress.
+
 ## Make concurrency and retries deliberate
 
 LittleGhost may run independent Tool calls concurrently. Mark a Tool

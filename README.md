@@ -166,6 +166,7 @@ upgrading, because interfaces may change between releases.
 - [Embeddings](docs/guides/embeddings.md) explains text representations for similarity-based features.
 - [Workspaces and Sandboxes](docs/guides/sandboxing.md) gives files and child processes a deliberate place to run.
 - [Code Mode](docs/guides/code_mode.md) lets a model compose Tools in sandboxed Ruby or optional JavaScript.
+- [Harnesses](docs/guides/harnesses.md) lets an Agent delegate coding tasks to Claude Code, Codex, or OpenCode in a Sandbox.
 - [Integrations](docs/guides/integrations.md) connects Run streams to AG-UI and OpenTelemetry.
 - [Running in Production](docs/guides/production.md) covers configuration, saved conversations, supervision, and observability.
 - [API reference](rdoc-ref:LittleGhost) provides exact method signatures and ownership rules.

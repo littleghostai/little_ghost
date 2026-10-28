@@ -1,0 +1,3 @@
+{"type":"step_start","timestamp":1761670100000,"sessionID":"ses_7b2c3d4e5f6aExample","part":{"id":"prt_11","sessionID":"ses_7b2c3d4e5f6aExample","messageID":"msg_11","type":"step-start"}}
+{"type":"tool_use","timestamp":1761670100500,"sessionID":"ses_7b2c3d4e5f6aExample","part":{"id":"prt_12","sessionID":"ses_7b2c3d4e5f6aExample","messageID":"msg_11","type":"tool","callID":"call_11","tool":"read","state":{"status":"error","input":{"filePath":"/workspace/support-portal/missing.rb"},"error":"File not found: /workspace/support-portal/missing.rb","time":{"start":1761670100400,"end":1761670100450}}}}
+{"type":"error","timestamp":1761670101000,"sessionID":"ses_7b2c3d4e5f6aExample","error":{"name":"APIError","data":{"message":"Provider returned error","statusCode":429}}}

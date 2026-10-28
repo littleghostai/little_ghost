@@ -48,6 +48,7 @@ module LittleGhostDocs
     {source: "docs/guides/embeddings.md", output: "embeddings.html", title: "Embeddings", section: "Build with agents"},
     {source: "docs/guides/sandboxing.md", output: "sandboxing.html", title: "Workspaces and Sandboxes", section: "Run code"},
     {source: "docs/guides/code_mode.md", output: "code_mode.html", title: "Code Mode", section: "Run code"},
+    {source: "docs/guides/harnesses.md", output: "harnesses.html", title: "Harnesses", section: "Run code"},
     {source: "docs/guides/integrations.md", output: "integrations.html", title: "Integrations", section: "Operate"},
     {source: "docs/guides/production.md", output: "production.html", title: "Running in Production", section: "Operate"}
   ].freeze

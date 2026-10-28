@@ -64,6 +64,7 @@ class LittleGhostDocsTest < Minitest::Test
       "Embeddings",
       "Workspaces and Sandboxes",
       "Code Mode",
+      "Harnesses",
       "Integrations",
       "Running in Production"
     ], LittleGhostDocs::GUIDES.map { |guide| guide.fetch(:title) }
