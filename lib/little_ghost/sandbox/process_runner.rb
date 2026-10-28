@@ -208,7 +208,7 @@ module LittleGhost
         timed_out ? stop(wait_thread, workers, streams) : settle(workers, streams)
         (out, out_truncated), (err, err_truncated) = readers.map(&:value)
         Result.new(
-          stdout: out, stderr: err, exit_code: wait_thread.value.exitstatus, timed_out:,
+          stdout: out, stderr: err, exit_code: timed_out ? nil : wait_thread.value.exitstatus, timed_out:,
           stdout_truncated: out_truncated, stderr_truncated: err_truncated
         )
       ensure
