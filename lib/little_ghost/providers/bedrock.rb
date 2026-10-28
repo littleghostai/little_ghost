@@ -340,13 +340,17 @@ module LittleGhost
         tool_spec = {
           name: definition.fetch(:name),
           description: definition[:description],
-          input_schema: {json: bedrock_tool_schema(definition[:input_schema] || {})}
+          input_schema: {json: bedrock_tool_schema(object_schema(definition[:input_schema]))}
         }
         {
           tool_spec: {
             **tool_spec
           }
         }
+      end
+
+      def object_schema(schema)
+        (schema.nil? || schema.empty?) ? Tool::EMPTY_INPUT_SCHEMA : schema
       end
 
       def bedrock_tool_choice(choice)

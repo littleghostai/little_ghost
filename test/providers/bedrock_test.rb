@@ -855,6 +855,20 @@ class BedrockTest < Minitest::Test
     assert_includes result, "Unknown Tool: tools.bash"
   end
 
+  def test_sends_an_object_schema_for_tools_without_inputs
+    client = FakeClient.new([{message_stop: {stop_reason: "end_turn"}}])
+    provider = LittleGhost::Providers::Bedrock.new(model: "anthropic.test", client:)
+    ping = LittleGhost::Tool.define(name: "ping", description: "Ping") { "pong" }.new.specification
+
+    provider.stream(LittleGhost::ModelRequest.new(
+      messages: [{role: :user, content: "Ping"}],
+      tools: [ping, {name: "status", description: "Status"}]
+    )).to_a
+
+    schemas = client.parameters.dig(:tool_config, :tools).map { |tool| tool.dig(:tool_spec, :input_schema, :json) }
+    assert_equal [{"type" => "object", "properties" => {}}] * 2, schemas
+  end
+
   def test_tool_result_transcripts_distinguish_errors_from_successes
     transcripts = %i[success error].map do |status|
       client = ConverseValidatingClient.new

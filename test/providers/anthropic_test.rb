@@ -68,6 +68,18 @@ class AnthropicTest < Minitest::Test
     assert_equal "tool_result", native_body.dig("messages", 2, "content", 0, "type")
   end
 
+  def test_sends_an_object_schema_for_tools_without_inputs
+    transport = Transport.new(completed_frames)
+    provider = LittleGhost::Providers::Anthropic.new(api_key: "secret", model: "claude", transport:)
+
+    provider.stream(LittleGhost::ModelRequest.new(
+      messages: [LittleGhost::Message.new(role: :user, content: "Ping")],
+      tools: [{name: "status", description: "Status"}]
+    )).to_a
+
+    assert_equal({"type" => "object", "properties" => {}}, JSON.parse(transport.arguments.fetch(:body)).dig("tools", 0, "input_schema"))
+  end
+
   private
 
   def completed_frames

@@ -117,7 +117,9 @@ module LittleGhost
 
       def anthropic_tool(tool)
         value = tool.is_a?(Hash) ? tool.transform_keys(&:to_sym) : {name: tool.name, description: tool.description, input_schema: tool.input_schema}
-        {name: value.fetch(:name), description: value[:description], input_schema: value[:input_schema] || {}}
+        schema = value[:input_schema]
+        schema = Tool::EMPTY_INPUT_SCHEMA if schema.nil? || schema.empty?
+        {name: value.fetch(:name), description: value[:description], input_schema: schema}
       end
 
       class Normalizer # :nodoc:

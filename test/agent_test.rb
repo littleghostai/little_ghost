@@ -1033,7 +1033,7 @@ class AgentTest < Minitest::Test
     tool_start = telemetry.assoc(:tool_start).last
     tool_definition = JSON.parse(tool_start.fetch(:diagnostic_tool_definitions)).first
     assert_equal "Echo", tool_definition.fetch("description")
-    assert_equal({}, tool_definition.fetch("input_schema"))
+    assert_equal({"type" => "object", "properties" => {}}, tool_definition.fetch("input_schema"))
     tool_output = JSON.parse(telemetry.assoc(:tool_stop).last.fetch(:diagnostic_output))
     assert_equal "found", tool_output
     final_output = JSON.parse(telemetry.filter_map { |name, value| value if name == :model_stop }.last.fetch(:diagnostic_output))
