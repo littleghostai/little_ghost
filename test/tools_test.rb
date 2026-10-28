@@ -91,7 +91,158 @@ class ToolsTest < Minitest::Test
     end
   end
 
+  def test_shell_defaults_to_an_argument_vector_with_a_fixed_timeout
+    schema = LittleGhost::Tools::Shell.input_schema
+
+    assert_equal "array", schema.dig("properties", "command", "type")
+    refute schema.fetch("properties").key?("timeout_seconds")
+    assert_includes LittleGhost::Tools::Shell.description, "30"
+  end
+
+  def test_string_mode_runs_the_command_through_the_shell
+    Dir.mktmpdir do |directory|
+      tool_class = Class.new(LittleGhost::Tools::Shell) { command_mode :string }
+      registry = shell_registry(tool_class, unrestricted_sandbox(directory))
+
+      result = registry.fetch("shell").execute({"command" => "printf ghost | tr g G"})
+
+      assert result.success?
+      assert_equal "Ghost", JSON.parse(result.content).fetch("stdout")
+      assert_equal "string", tool_class.input_schema.dig("properties", "command", "type")
+      refute_equal LittleGhost::Tools::Shell.description, tool_class.description
+    end
+  end
+
+  def test_configured_timeout_lets_the_model_choose_within_the_maximum
+    tool_class = Class.new(LittleGhost::Tools::Shell) { timeout default: 120, maximum: 900 }
+
+    timeout_schema = tool_class.input_schema.dig("properties", "timeout_seconds")
+
+    assert_equal 900, timeout_schema.fetch("maximum")
+    assert_includes tool_class.description, "900"
+  end
+
+  def test_requested_timeout_is_passed_to_the_sandbox_and_null_uses_the_default
+    tool_class = Class.new(LittleGhost::Tools::Shell) { timeout default: 120, maximum: 900 }
+    sandbox = RecordingSandbox.new
+    registry = shell_registry(tool_class, sandbox)
+
+    registry.fetch("shell").execute({"command" => ["true"], "timeout_seconds" => 600})
+    registry.fetch("shell").execute({"command" => ["true"], "timeout_seconds" => nil})
+    over_limit = registry.fetch("shell").execute({"command" => ["true"], "timeout_seconds" => 901})
+
+    assert_equal [600, 120], sandbox.timeouts
+    assert over_limit.error?
+  end
+
+  def test_timeout_seconds_is_rejected_when_the_timeout_is_fixed
+    sandbox = RecordingSandbox.new
+    registry = shell_registry(LittleGhost::Tools::Shell, sandbox)
+
+    result = registry.fetch("shell").execute({"command" => ["true"], "timeout_seconds" => 5})
+
+    assert result.error?
+    assert_empty sandbox.timeouts
+  end
+
+  def test_sandbox_execution_errors_are_reported_without_their_detail
+    sandbox = RecordingSandbox.new(error: Errno::EACCES.new("/srv/private/token"))
+    registry = shell_registry(LittleGhost::Tools::Shell, sandbox)
+
+    output = JSON.parse(registry.fetch("shell").execute({"command" => ["true"]}).content)
+
+    assert_includes output.fetch("error"), "Errno::EACCES"
+    refute_includes output.fetch("error"), "/srv/private/token"
+    refute output.fetch("success")
+  end
+
+  def test_string_mode_forwards_the_timeout_and_output_limit
+    tool_class = Class.new(LittleGhost::Tools::Shell) do
+      command_mode :string
+      timeout default: 120, maximum: 900
+      max_output_bytes 4096
+    end
+    sandbox = RecordingSandbox.new
+    registry = shell_registry(tool_class, sandbox)
+
+    registry.fetch("shell").execute({"command" => "ls | wc -l", "timeout_seconds" => 600})
+
+    assert_equal [{command: "ls | wc -l", timeout: 600, max_output_bytes: 4096}], sandbox.commands
+  end
+
+  def test_unvalidated_timeout_values_fall_back_to_the_default
+    tool_class = Class.new(LittleGhost::Tools::Shell) do
+      timeout default: 120, maximum: 900
+      self.validate_input_schema_value = false
+    end
+    sandbox = RecordingSandbox.new
+    registry = shell_registry(tool_class, sandbox)
+
+    ["soon", -5, 2.5, 5000].each do |requested|
+      registry.fetch("shell").execute({"command" => ["true"], "timeout_seconds" => requested})
+    end
+
+    assert_equal [120, 120, 2, 900], sandbox.timeouts
+  end
+
+  def test_an_empty_command_is_rejected_before_it_reaches_the_sandbox
+    sandbox = RecordingSandbox.new
+    registry = shell_registry(LittleGhost::Tools::Shell, sandbox)
+
+    result = registry.fetch("shell").execute({"command" => []})
+
+    assert result.error?
+    assert_empty sandbox.timeouts
+  end
+
+  def test_invalid_shell_configuration_is_rejected
+    assert_raises(ArgumentError) { Class.new(LittleGhost::Tools::Shell) { command_mode :bash } }
+    assert_raises(ArgumentError) { Class.new(LittleGhost::Tools::Shell) { timeout default: 0 } }
+    assert_raises(ArgumentError) { Class.new(LittleGhost::Tools::Shell) { timeout default: 60, maximum: 30 } }
+    assert_raises(ArgumentError) { Class.new(LittleGhost::Tools::Shell) { max_output_bytes(-1) } }
+  end
+
+  def test_subclass_configuration_does_not_change_the_base_tool
+    Class.new(LittleGhost::Tools::Shell) do
+      command_mode :string
+      timeout default: 60, maximum: 120
+    end
+
+    assert_equal :argv, LittleGhost::Tools::Shell.command_mode
+    assert_nil LittleGhost::Tools::Shell.timeout_maximum_value
+  end
+
   private
+
+  class RecordingSandbox
+    attr_reader :timeouts, :commands
+
+    def initialize(error: nil)
+      @error = error
+      @timeouts = []
+      @commands = []
+    end
+
+    def execute(command, timeout:, max_output_bytes:, **)
+      @commands << {command:, timeout:, max_output_bytes:}
+      execution
+    end
+
+    def execute_program(_command, timeout:, **)
+      @timeouts << timeout
+      execution
+    end
+
+    private
+
+    def execution
+      LittleGhost::Sandbox::Execution.new(stdout: "", stderr: "", exit_code: @error ? nil : 0, error: @error)
+    end
+  end
+
+  def shell_registry(tool_class, sandbox)
+    LittleGhost::ToolRegistry.new([tool_class], binding: LittleGhost::Tool::Binding.new(sandbox:))
+  end
 
   def filesystem_registry(sandbox, provider = LittleGhost::Tools::Filesystem)
     LittleGhost::ToolRegistry.new([provider], binding: LittleGhost::Tool::Binding.new(sandbox:))
