@@ -90,6 +90,7 @@ module LittleGhost
   # delegation, concurrency, and code mode.
   class Tool
     UNSET_RESULT_VALUE = Object.new.freeze # :nodoc:
+    RESERVED_EVENT_TYPES = %i[agent_stream subagent model_retry context_compaction run_start run_stop run_error trace_context].freeze # :nodoc:
 
     # Supply run-scoped collaborators when tools are instantiated outside an agent.
     # A binding can be copied with selected collaborators replaced.
@@ -417,6 +418,31 @@ module LittleGhost
       failure(content, error:)
     rescue => error
       failure(framework_prompt("tools/errors/unexpected_failure", error_class: error.class.name), error:)
+    end
+
+    # Publishes a StreamEvent of +type+ to the bound Run while the tool works
+    # and returns it, or returns nil when the tool is not bound to a Run.
+    #
+    # Applications streaming the Run receive the event in order with the
+    # Run's other events, which lets a long-running tool report progress:
+    #
+    #   def call(input)
+    #     publish_event(:help_center_sync, phase: "fetching", article_count: 12)
+    #     HelpCenter.sync(input.fetch("collection"))
+    #   end
+    #
+    # Choose a type that describes your tool. Raises ArgumentError for types
+    # the framework itself publishes, such as +:agent_stream+, +:subagent+,
+    # +:model_retry+, Run lifecycle, and +:assembly_+ events. +data+ is
+    # delivered as given; keep credentials and data the audience should not
+    # see out of it.
+    def publish_event(type, **data)
+      type = type.to_sym
+      if RESERVED_EVENT_TYPES.include?(type) || type.start_with?("assembly_")
+        raise ArgumentError, "tool events cannot use the framework event type #{type.inspect}"
+      end
+
+      run&.publish(type, **data)
     end
 
     # Implements the model-requested operation.

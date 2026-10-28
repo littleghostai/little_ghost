@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"0199a214-02d4-7c31-9f7e-5b2a9c4e1d08"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/5"}
+not json from a progress spinner
+{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized"}}

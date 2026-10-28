@@ -186,6 +186,7 @@ class LittleGhostSiteChecker
     "docs/skills.html",
     "docs/sandboxing.html",
     "docs/code_mode.html",
+    "docs/harnesses.html",
     "docs/integrations.html",
     "docs/production.html"
   ].freeze
