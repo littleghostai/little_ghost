@@ -776,6 +776,30 @@ class SubagentManagerTest < Minitest::Test
     manager&.close
   end
 
+  def test_wait_returns_promptly_when_the_parent_has_a_pending_interjection
+    gate = Gate.new
+    agent = ControlledAgent.new(gate: gate)
+    manager = manager_for(->(_id) { agent }, wait_timeout: 30)
+    manager.spawn(kind: "explore", task_name: "explore", task: "slow", mode: "async")
+    agent.started.pop
+    pending = false
+    context = LittleGhost::RunContext.new
+    context.watch_interjections(-> { pending })
+    waiter = Thread.new { manager.wait(context: context.child) }
+    wait_until { waiter.status == "sleep" }
+
+    pending = true
+    joined = waiter.join(0.5)
+
+    assert joined, "wait did not return for the pending interjection"
+    assert_equal "still_working", waiter.value[:status]
+    assert_equal "running", waiter.value.dig(:subagents, 0, :status)
+  ensure
+    gate&.open
+    waiter&.join(1)
+    manager&.close
+  end
+
   def test_wait_responds_promptly_to_external_cancellation
     gate = Gate.new
     agent = ControlledAgent.new(gate: gate)

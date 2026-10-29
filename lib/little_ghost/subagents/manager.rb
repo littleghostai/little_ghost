@@ -476,7 +476,7 @@ module LittleGhost
 
       # Long-polls selected identities, or all identities when omitted.
       # +still_working+ is an ordinary timeout result and does not cancel work.
-      def wait(subagent_ids: nil)
+      def wait(subagent_ids: nil, context: nil)
         identities = @mutex.synchronize do
           ensure_open!
           selected_identities(subagent_ids)
@@ -494,6 +494,7 @@ module LittleGhost
             remaining = deadline - monotonic_time
             remaining = [remaining, @deadline - Time.now].min if @deadline
             break unless remaining.positive?
+            break if context&.interjection_pending?
 
             @condition.wait(@mutex, [remaining, CANCELLATION_POLL_INTERVAL].min)
           end
@@ -667,7 +668,7 @@ module LittleGhost
               },
               additionalProperties: false
             }
-          ) { |input| manager.wait(subagent_ids: input["subagent_ids"]) }.tap do |tool|
+          ) { |input, context: nil| manager.wait(subagent_ids: input["subagent_ids"], context:) }.tap do |tool|
             tool.framework_prompts(
               description: FrameworkPrompts.reference("subagents/tools/wait/description"), manager:,
               schema: {

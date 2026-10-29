@@ -235,7 +235,7 @@ module LittleGhost
             raise_call_error!
             expire_program(generation) if monotonic_time >= @deadline
             raise_program_error!(generation)
-            if monotonic_time >= slice_deadline
+            if monotonic_time >= slice_deadline || context&.interjection_pending?
               return ProgramResult.new(output: drain_output(max_output_tokens), status: :still_working)
             end
 

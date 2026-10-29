@@ -105,6 +105,35 @@ class AgentInterjectionTest < Minitest::Test
     agent&.close
   end
 
+  def test_a_waiting_tool_sees_the_agents_pending_interjection
+    waiting = Queue.new
+    watch = LittleGhost::Tool.define(name: "watch", description: "Wait for news.") do |_input, context: nil|
+      waiting << true
+      Timeout.timeout(5) { sleep 0.01 until context.interjection_pending? }
+      "news arrived"
+    end
+    model = SequencedModel.new(
+      model_response([tool_use("watch-call", "watch")], stop_reason: :tool_use),
+      lambda do |request|
+        assert_includes request.messages.last.text, "Check the staging database too"
+        model_response("Checking it")
+      end
+    )
+    agent = LittleGhost::Agent.new(model:, tools: [watch])
+    runner = Thread.new { agent.ask("Investigate").text }
+
+    waiting.pop
+    interjected = Thread.new { agent.interject("Check the staging database too") }
+
+    assert runner.join(5), "the waiting tool did not return for the interjection"
+    assert_equal "Checking it", runner.value
+    assert_equal "Checking it", interjected.value.text
+  ensure
+    runner&.kill
+    interjected&.kill
+    agent&.close
+  end
+
   def test_text_only_interject_naturally_finishes_the_run
     started = Queue.new
     release = Queue.new
