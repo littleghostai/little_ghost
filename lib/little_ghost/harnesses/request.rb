@@ -121,6 +121,7 @@ module LittleGhost
       def server_url(value)
         uri = URI(String(value))
         raise ArgumentError, "harness MCP server URLs must be HTTP URLs" unless %w[http https].include?(uri.scheme) && uri.host
+        raise ArgumentError, "harness MCP server URLs must not contain credentials" if uri.userinfo
 
         uri.to_s.freeze
       rescue URI::InvalidURIError

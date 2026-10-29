@@ -262,6 +262,10 @@ Coding-agent tools reach MCP servers over TCP, so the application makes `url`
 lead to `socket` inside the Sandbox, for example with a relay that the
 Sandbox's command wrapper starts, and mounts the socket's directory into the
 Sandbox. Any process that can reach the socket can call every served tool.
+Served calls run each tool directly, without Agent callbacks such as
+`before_tool`, so serve only tools that enforce their own safeguards. A call
+fails while another Run's server is listening on the same socket, so Runs that
+can overlap need separate sockets.
 
 ## Add another tool
 

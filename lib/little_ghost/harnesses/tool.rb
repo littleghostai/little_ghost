@@ -127,7 +127,9 @@ module LittleGhost
         # per run. The ToolServer listens on +socket+, an absolute host path,
         # and the harness connects to +url+ as MCP server +name+, so the
         # application relays +url+ to +socket+ inside the Sandbox. Every tool
-        # served this way runs with the Run's credentials.
+        # served this way runs with the Run's credentials, without Agent
+        # callbacks such as +:before_tool+; see ToolServer. Concurrent Runs
+        # need separate sockets: a call fails while another serves +socket+.
         def serve_tools(*tools, socket:, url:, name: "tools")
           raise ArgumentError, "serve_tools socket must be an absolute path" unless String(socket).start_with?("/")
 

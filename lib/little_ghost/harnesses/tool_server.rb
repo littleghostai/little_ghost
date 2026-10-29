@@ -26,8 +26,14 @@ module LittleGhost
     # +tools/list+, and +tools/call+ with JSON responses and accepts
     # notifications; it does not open server-to-client streams.
     #
+    # Calls run Tool#execute directly: Agent callbacks such as +:before_tool+,
+    # tool instrumentation, and the exclusive-tool lock, which the delegating
+    # Harnesses::Tool already holds, do not apply. Serve only tools whose
+    # safeguards live in the tool itself.
+    #
     # Anyone who can connect to the socket can call every served tool, so keep
-    # +socket_path+ in a directory that only the harness can reach.
+    # +socket_path+ in a directory that only the harness can reach. #start
+    # raises ToolError when another server is already listening there.
     # Harnesses::Tool#serve_tools starts one server per delegated task.
     class ToolServer
       ENDPOINT = "/mcp"
@@ -35,7 +41,7 @@ module LittleGhost
       MAX_HEADER_BYTES = 32_768 # :nodoc:
       MAX_BODY_BYTES = 4 * 1024 * 1024 # :nodoc:
       MAX_CLIENTS = 32 # :nodoc:
-      READ_TIMEOUT = 30 # :nodoc:
+      READ_TIMEOUT = 10 # :nodoc:
       SHUTDOWN_TIMEOUT = 1 # :nodoc:
       POLL_INTERVAL = 0.2 # :nodoc:
 
@@ -72,6 +78,7 @@ module LittleGhost
       def close
         @stopping = true
         @server&.close unless @server&.closed?
+        @thread&.join unless @thread == Thread.current
         clients, workers = @mutex.synchronize { [@clients.dup, @workers.dup] }
         clients.each { |client| client.close unless client.closed? }
         workers.each do |worker|
@@ -80,7 +87,6 @@ module LittleGhost
           worker.kill
           worker.join
         end
-        @thread&.join unless @thread == Thread.current
         remove_socket if @bound
         @bound = false
         nil
@@ -91,6 +97,8 @@ module LittleGhost
       # The socket is created in a private directory with its final mode and
       # then renamed, so it is never reachable with wider permissions.
       def bind
+        raise ToolError, "Another harness is already using the tool socket #{socket_path}." if listening?
+
         staging = File.join(File.dirname(socket_path), ".#{SecureRandom.hex(4)}")
         Dir.mkdir(staging, 0o700)
         staged = File.join(staging, "s")
@@ -99,6 +107,11 @@ module LittleGhost
         File.chmod(@mode, staged)
         File.rename(staged, socket_path)
         @bound = true
+        stat = File.lstat(socket_path)
+        unless stat.socket? && stat.uid == Process.euid && (stat.mode & 0o7777) == @mode
+          raise PolicyError, "tool server socket #{socket_path} was replaced while it was created"
+        end
+        @inode = [stat.dev, stat.ino]
       rescue
         @server&.close
         @server = nil
@@ -107,9 +120,16 @@ module LittleGhost
         FileUtils.remove_entry_secure(staging) if staging && File.exist?(staging)
       end
 
+      def listening?
+        UNIXSocket.open(socket_path).close
+        true
+      rescue SystemCallError
+        false
+      end
+
       def remove_socket
         stat = File.lstat(socket_path)
-        File.unlink(socket_path) if stat.socket? && stat.uid == Process.euid
+        File.unlink(socket_path) if stat.socket? && [stat.dev, stat.ino] == @inode
       rescue Errno::ENOENT
         nil
       end
@@ -125,13 +145,16 @@ module LittleGhost
           next if client == :wait_readable
 
           accepted = @mutex.synchronize do
-            next false if @clients.length >= MAX_CLIENTS
+            next false if @stopping || @clients.length >= MAX_CLIENTS
 
             @clients << client
             @workers << Thread.new(client) { |connection| handle(connection) }
             true
           end
-          client.close unless accepted
+          unless accepted
+            respond(client, 503)
+            client.close
+          end
         rescue IOError, Errno::EBADF
           break if @stopping
           raise
@@ -158,6 +181,8 @@ module LittleGhost
         respond(client, 400)
       rescue IOError, SystemCallError
         nil
+      rescue
+        respond(client, 500)
       ensure
         client.close unless client.closed?
         @mutex.synchronize do
@@ -184,7 +209,10 @@ module LittleGhost
         when "initialize" then initialize_result(params)
         when "ping" then {}
         when "tools/list" then {tools: @tools.values.map { |tool| definition(tool) }}
-        when "tools/call" then call_tool(params)
+        when "tools/call"
+          raise ToolError, "The tool server is closing." if @stopping
+
+          call_tool(params)
         else return {jsonrpc: "2.0", id:, error: {code: -32_601, message: "Method not found"}}
         end
         {jsonrpc: "2.0", id:, result:}
@@ -208,7 +236,7 @@ module LittleGhost
       end
 
       def call_tool(params)
-        tool = @tools.fetch(params["name"].to_s) { raise ToolError, "Unknown tool: #{params["name"]}" }
+        tool = @tools.fetch(params["name"].to_s) { raise ToolError, "Unknown tool: #{params["name"].to_s.scrub[0, 64]}" }
         arguments = params.fetch("arguments", nil) || {}
         raise ToolError, "Tool arguments must be an object" unless arguments.is_a?(Hash)
 
@@ -265,7 +293,12 @@ module LittleGhost
       end
 
       def respond(client, status, body: nil, headers: {})
-        reason = {200 => "OK", 202 => "Accepted", 400 => "Bad Request", 404 => "Not Found", 405 => "Method Not Allowed"}
+        return if client.closed?
+
+        reason = {
+          200 => "OK", 202 => "Accepted", 400 => "Bad Request", 404 => "Not Found", 405 => "Method Not Allowed",
+          500 => "Internal Server Error", 503 => "Service Unavailable"
+        }
         payload = body ? JSON.generate(body) : ""
         client.write(
           "HTTP/1.1 #{status} #{reason.fetch(status)}\r\n",
@@ -274,6 +307,8 @@ module LittleGhost
           "content-length: #{payload.bytesize}\r\nconnection: close\r\n\r\n",
           payload
         )
+      rescue IOError, SystemCallError
+        nil
       end
 
       def monotonic_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)

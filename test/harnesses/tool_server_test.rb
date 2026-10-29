@@ -98,6 +98,25 @@ class HarnessToolServerTest < Minitest::Test
     refute File.exist?(@socket_path)
   end
 
+  def test_a_second_server_cannot_take_over_a_socket_in_use
+    second = LittleGhost::Harnesses::ToolServer.new(tools: [PolicyLookupTool.new], socket_path: @socket_path)
+
+    assert_raises(LittleGhost::ToolError) { second.start }
+    second.close
+
+    assert_equal %w[policy_lookup wait_for_cancellation], rpc("tools/list").fetch("tools").map { |tool| tool.fetch("name") }
+  end
+
+  def test_close_leaves_a_socket_that_replaced_its_own
+    @server.close
+    replacement = LittleGhost::Harnesses::ToolServer.new(tools: [PolicyLookupTool.new], socket_path: @socket_path).start
+    @server.close
+
+    assert File.socket?(@socket_path)
+  ensure
+    replacement&.close
+  end
+
   private
 
   def rpc(method, **params)

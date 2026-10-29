@@ -368,6 +368,7 @@ class HarnessBaseTest < Minitest::Test
     assert_raises(ArgumentError) { LittleGhost::Harnesses::Request.new(prompt: " ") }
     assert_raises(ArgumentError) { request(mcp_servers: {"bad name" => "http://127.0.0.1:3133/mcp"}) }
     assert_raises(ArgumentError) { request(mcp_servers: {"company" => "file:///tmp/tools.sock"}) }
+    assert_raises(ArgumentError) { request(mcp_servers: {"company" => "http://user:secret@127.0.0.1:3133/mcp"}) }
   end
 
   def test_mode_follows_the_sandbox_and_isolated_mode_requires_isolation
