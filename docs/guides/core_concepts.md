@@ -138,6 +138,11 @@ end
 
 Use a subagent when delegation is part of one model's decision-making. Use a Workflow when application code must guarantee that a step happens.
 
+While subagents work, the parent calls `wait_for_subagents`, which returns when
+they finish, when its check-in window (`subagent_long_poll_duration`) ends, or
+when someone interjects with a new message for the parent. A long window keeps the
+parent from spending model turns on checks without delaying new messages.
+
 ### Workflows make Ruby the coordinator
 
 A **Workflow** coordinates work with ordinary Ruby. Its `perform` method can call an Agent or another Assembly, read a result, choose a branch, or run independent steps together.

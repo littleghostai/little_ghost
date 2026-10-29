@@ -148,7 +148,13 @@ The built-in engines give each program a total lifetime of one hour by default.
 That deadline begins at `exec` and does not reset when the model calls `wait`.
 The engine ends and cleans up an expired program even if the model never checks
 on it again. Applications can configure a shorter total lifetime with
-`wall_seconds`; the one-minute observation window remains fixed.
+`wall_seconds`.
+
+Each `exec` or `wait` observes the program for at most `observation_seconds`
+(60 by default) before returning `still_working`. It returns sooner when the
+program finishes or when someone interjects with a new message for the Agent, so
+the model reads the message without waiting for the window to end. A longer
+window means fewer model turns spent checking on long-running work.
 
 A code-mode session owns the engine's active child process and related
 resources. It accepts only one `exec`, `wait`, or `stop` operation at a time.

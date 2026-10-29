@@ -7,4 +7,4 @@
 # Constraints:
 # - Must render non-blank.
 -%>
-Wait briefly for selected subagents, or all subagents when omitted. A still_working response is expected when work exceeds this check-in window. Call again to keep waiting; timeout is not an error and does not cancel work. A settled successful turn is returned as response. During newer queued, running, persisting, failed, or cancelled work, the latest successful result may appear as previous_response only for context. Inspect each status and keep waiting while selected work is active.
+Wait for selected subagents, or all subagents when omitted, until they finish, this check-in window ends, or a new user message arrives. A still_working response is expected when work exceeds the window or a message arrived; read any new message, then call again to keep waiting. A timeout is not an error and does not cancel work. A settled successful turn is returned as response. During newer queued, running, persisting, failed, or cancelled work, the latest successful result may appear as previous_response only for context. Inspect each status and keep waiting while selected work is active.

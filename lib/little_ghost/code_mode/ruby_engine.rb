@@ -22,6 +22,7 @@ module LittleGhost
         output_bytes: 1_000_000,
         memory_bytes: 64 * 1024 * 1024,
         wall_seconds: 3_600,
+        observation_seconds: 60,
         cpu_seconds: 10,
         file_bytes: 1_000_000,
         programs: 8,
@@ -42,11 +43,13 @@ module LittleGhost
       # Opens a Ruby Session with engine defaults merged with +limits+.
       # Unsupported limit keys raise ArgumentError.
       def open_session(broker:, sandbox_factory:, limits: {}, framework_prompt_scope: {})
+        configured_limits = normalize_limits(limits, defaults: DEFAULT_LIMITS)
         Ruby::Session.new(
           broker:,
           sandbox_factory:,
           subprocess_policy: method(:allow_subprocesses_for),
-          limits: normalize_limits(limits, defaults: DEFAULT_LIMITS),
+          limits: configured_limits.except(:observation_seconds),
+          observation_seconds: configured_limits.fetch(:observation_seconds),
           framework_prompt_scope:
         )
       end

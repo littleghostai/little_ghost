@@ -242,6 +242,26 @@ class CodeModeTest < Minitest::Test
     assert_includes error.message, ":processes"
   end
 
+  def test_ruby_engine_applies_a_configured_observation_window
+    registry = LittleGhost::ToolRegistry.new([])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    factory = lambda do |workspace:, required_runtime_paths:|
+      LittleGhost::Sandboxes::Unrestricted.new(workspace:, policy: {files: {root: :read_write}, network: :inherit})
+    end
+    session = LittleGhost::CodeMode::RubyEngine.new.open_session(
+      broker:, sandbox_factory: factory, limits: {observation_seconds: 0.05, memory_bytes: 128 * 1024 * 1024}
+    )
+
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result = session.execute(source: "sleep 5", catalog: [])
+
+    assert_predicate result, :still_working?
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at, :<, 3
+  ensure
+    session&.close
+    registry&.close
+  end
+
   def test_ruby_engine_brokers_tools_and_returns_the_final_expression
     calls = []
     tool = LittleGhost::Tool.define(
@@ -451,6 +471,40 @@ class CodeModeTest < Minitest::Test
     assert_equal 7, completed.value
   ensure
     release << true if release && release.empty?
+    session&.close
+    registry&.close
+  end
+
+  def test_observation_returns_early_for_a_pending_interjection
+    entered = Queue.new
+    release = Queue.new
+    tool = LittleGhost::Tool.define(name: "pause", description: "Wait for release.") do
+      entered << true
+      release.pop
+      nil
+    end
+    registry = LittleGhost::ToolRegistry.new([tool])
+    broker = LittleGhost::CodeMode::Broker.new(registry:)
+    session = ruby_session(broker:, observation_seconds: 30)
+    pending = false
+    context = LittleGhost::RunContext.new
+    context.watch_interjections(-> { pending })
+    observation = Thread.new { session.execute(source: "tools.pause; 7", catalog: broker.catalog, context:) }
+    Timeout.timeout(5) { entered.pop }
+
+    pending = true
+    joined = observation.join(1)
+
+    assert joined, "the observation did not return for the pending interjection"
+    assert_equal :still_working, observation.value.status
+    release << true
+    pending = false
+    completed = observation.value
+    Timeout.timeout(5) { completed = session.wait(context:) while completed.still_working? }
+    assert_equal 7, completed.value
+  ensure
+    release << true if release && release.empty?
+    observation&.join(1)
     session&.close
     registry&.close
   end

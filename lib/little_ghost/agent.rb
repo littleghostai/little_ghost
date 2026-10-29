@@ -794,6 +794,7 @@ module LittleGhost
             interjection_metadata:,
             interjection_ids:
           )
+          run_context.watch_interjections(interjections.method(:pending?))
           with_invocation(run_context) do
             execute(
               input,

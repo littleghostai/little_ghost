@@ -7,4 +7,4 @@
 # Constraints:
 # - Must render non-blank.
 -%>
-Run one fresh code-mode program to orchestrate available tools. The program is observed for up to one minute. If it finishes, use the result directly. If it returns still_working, call wait to observe the same program.
+Run one fresh code-mode program to orchestrate available tools. The program is observed until it finishes, its observation window ends, or a new user message arrives. If it finishes, use the result directly. If it returns still_working, read any new message, then call wait to observe the same program.

@@ -42,6 +42,7 @@ module LittleGhost
         cpu_seconds: 30,
         file_bytes: 1024 * 1024,
         wall_seconds: 3_600,
+        observation_seconds: 60,
         max_concurrency: 8
       }.freeze
 
@@ -93,6 +94,7 @@ module LittleGhost
           broker:, client:, sandbox:, workspace:,
           max_concurrency: configured_limits.fetch(:max_concurrency),
           wall_seconds: configured_limits.fetch(:wall_seconds),
+          observation_seconds: configured_limits.fetch(:observation_seconds),
           framework_prompt_scope:
         )
       rescue

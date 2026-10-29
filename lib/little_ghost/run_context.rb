@@ -61,6 +61,7 @@ module LittleGhost
       @interjection_mutex = Mutex.new
       @interjection_metadata = interjection_metadata&.to_h
       @interjection_ids = Array(interjection_ids).map { |id| String(id).dup.freeze }.freeze
+      @interjection_probe = nil
     end
 
     # Raises LittleGhost::CancelledError or LittleGhost::DeadlineExceededError
@@ -88,6 +89,7 @@ module LittleGhost
       context.instance_variable_set(:@usage, @usage)
       context.instance_variable_set(:@usage_mutex, @usage_mutex)
       context.instance_variable_set(:@agent_operation_id, agent_operation_id)
+      context.instance_variable_set(:@interjection_probe, @interjection_probe)
       context
     end
 
@@ -149,6 +151,14 @@ module LittleGhost
 
     def interjection_ids # :nodoc:
       @interjection_mutex.synchronize { @interjection_ids }
+    end
+
+    # Whether the agent that owns this context has an interjection waiting for
+    # its next model turn. Long waits return early so the agent can read it.
+    def interjection_pending? = !!@interjection_probe&.call
+
+    def watch_interjections(probe) # :nodoc:
+      @interjection_probe = probe
     end
 
     def activate_interjection(metadata:, ids:) # :nodoc:

@@ -120,7 +120,7 @@ module LittleGhost
           @mutex.synchronize do
             loop do
               context&.check!
-              break if @terminal || monotonic >= deadline
+              break if @terminal || monotonic >= deadline || context&.interjection_pending?
 
               @condition.wait(@mutex, [deadline - monotonic, 0.05].min)
             end
