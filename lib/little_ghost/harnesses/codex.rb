@@ -77,9 +77,10 @@ module LittleGhost
       end
 
       # Returns Codex's home and, in +:isolated+ mode, its credential
-      # placeholder.
+      # placeholder. Codex exits at startup when +CODEX_HOME+ does not exist,
+      # so it is the harness home itself, which every run creates.
       def environment(request)
-        values = {"CODEX_HOME" => File.join(home, ".codex")}
+        values = {"CODEX_HOME" => home}
         values["OPENAI_API_KEY"] = api_key if isolated?
         values
       end

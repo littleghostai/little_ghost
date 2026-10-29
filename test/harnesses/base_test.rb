@@ -318,7 +318,7 @@ class HarnessBaseTest < Minitest::Test
       "resume", "0199a213-81c0-7800-8aa1-bbab2a035a53",
       "Do not commit.\n\nAdd a test for the refund policy lookup."
     ], harness.command(request(session_id: "0199a213-81c0-7800-8aa1-bbab2a035a53", instructions: "Do not commit."))
-    assert_equal({"CODEX_HOME" => "/home/agent/.codex", "OPENAI_API_KEY" => "little-ghost-placeholder"},
+    assert_equal({"CODEX_HOME" => "/home/agent", "OPENAI_API_KEY" => "little-ghost-placeholder"},
       harness.environment(request))
   end
 
@@ -477,6 +477,24 @@ class HarnessBaseTest < Minitest::Test
       assert_equal [], Dir.children(File.join(directory, "scratch"))
       assert_nil harness.home
       assert_includes sandbox.command, File.join(homes.last, "last-message.md")
+    end
+  end
+
+  def test_codex_home_exists_when_codex_starts
+    Dir.mktmpdir do |directory|
+      workspace = LittleGhost::Workspace.new(root: directory, paths: {scratch: "scratch"}).open
+      sandbox = FakeSandbox.new(FakeSession.new(chunks: []), workspace:, runtime_paths: {scratch: :read_write})
+      codex_homes = []
+      sandbox.define_singleton_method(:start_program) do |command, **options|
+        codex_home = options.dig(:environment, "CODEX_HOME")
+        codex_homes << [codex_home, File.directory?(codex_home)]
+        HarnessBaseTest::FakeSession.new(chunks: [File.read(File.join(HarnessBaseTest::FIXTURES, "codex/success.jsonl"))])
+      end
+
+      LittleGhost::Harnesses::Codex.new(sandbox:).run(request)
+
+      assert_equal 1, codex_homes.length
+      assert codex_homes.first.last, "CODEX_HOME #{codex_homes.first.first} does not exist"
     end
   end
 
