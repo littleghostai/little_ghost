@@ -11,9 +11,9 @@ module LittleGhost
     # OpenCode may read and edit files in the working directory, every other
     # permission, including shell commands, web access, and directories
     # outside the working directory, is denied, and OpenCode authenticates
-    # from the inherited environment. Project
-    # configuration in the working directory is ignored, automatic updates and
-    # sharing are disabled, the harness adds no MCP servers, and OpenCode's XDG
+    # from the inherited environment. Project configuration in the working
+    # directory is ignored, automatic updates and sharing are disabled, the
+    # harness adds only the request's +mcp_servers+, and OpenCode's XDG
     # directories live under +home+. OpenCode merges this configuration over
     # its global configuration, so MCP servers or other settings in a
     # persistent home still apply.
@@ -107,7 +107,7 @@ module LittleGhost
           "$schema" => "https://opencode.ai/config.json",
           "autoupdate" => false,
           "share" => "disabled",
-          "mcp" => {}
+          "mcp" => request.mcp_servers.transform_values { |url| {"type" => "remote", "url" => url, "enabled" => true} }
         }
         provider = defaults[:provider]
         if provider && (defaults[:base_url] || (isolated? && defaults.key?(:api_key)))

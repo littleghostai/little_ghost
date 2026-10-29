@@ -9,9 +9,9 @@ module LittleGhost
     #
     # The command uses <tt>--bare</tt>, so the tool ignores hooks, skills, and
     # settings found in the working directory, and
-    # <tt>--strict-mcp-config</tt> with an empty server list, so it starts
-    # with no MCP servers. Automatic updates and nonessential traffic are
-    # disabled, and configuration lives under +home+.
+    # <tt>--strict-mcp-config</tt>, so it starts with only the request's
+    # +mcp_servers+, whose tools are allowed. Automatic updates and
+    # nonessential traffic are disabled, and configuration lives under +home+.
     #
     # In +:isolated+ mode the allowed tools run without permission prompts
     # and +ANTHROPIC_API_KEY+ is the placeholder. In +:native_guards+ mode the
@@ -54,10 +54,10 @@ module LittleGhost
       def command(request)
         arguments = [
           executable, "-p", "--bare",
-          "--allowedTools", Array(defaults.fetch(:allowed_tools, isolated? ? ALLOWED_TOOLS : NATIVE_ALLOWED_TOOLS)).join(","),
+          "--allowedTools", allowed_tools(request).join(","),
           "--disallowedTools", Array(defaults.fetch(:disallowed_tools, isolated? ? DISALLOWED_TOOLS : NATIVE_DISALLOWED_TOOLS)).join(","),
           *(isolated? ? ["--permission-prompts", "none"] : ["--permission-mode", "dontAsk"]),
-          "--strict-mcp-config", "--mcp-config", JSON.generate({mcpServers: {}})
+          "--strict-mcp-config", "--mcp-config", JSON.generate({mcpServers: request.mcp_servers.transform_values { |url| {type: "http", url:} }})
         ]
         arguments.push("--max-budget-usd", request.budget_usd.to_s) if request.budget_usd
         arguments.push("--max-turns", request.max_turns.to_s) if request.max_turns
@@ -99,6 +99,11 @@ module LittleGhost
       end
 
       private
+
+      def allowed_tools(request)
+        Array(defaults.fetch(:allowed_tools, isolated? ? ALLOWED_TOOLS : NATIVE_ALLOWED_TOOLS)) +
+          request.mcp_servers.keys.map { |name| "mcp__#{name}" }
+      end
 
       def system_events(data, state)
         return [] unless data["subtype"] == "init"

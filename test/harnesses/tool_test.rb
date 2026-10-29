@@ -183,7 +183,38 @@ class HarnessToolTest < Minitest::Test
     assert_includes invalid.content, "session_id"
   end
 
+  def test_served_tools_are_reachable_only_while_the_harness_works
+    lookup = Class.new(LittleGhost::Tool) do
+      tool_name "policy_lookup"
+      description "Looks up a policy."
+      define_method(:call) { |_input| "Refunds take five days." }
+    end
+    Dir.mktmpdir("lg", "/tmp") do |directory|
+      socket = File.join(directory, "tools.sock")
+      serving = Class.new(DelegateCodingTask) { serve_tools lookup, socket:, url: "http://127.0.0.1:3133/mcp", name: "support" }
+      sandbox = FixtureSandbox.new
+      listed = nil
+      sandbox.define_singleton_method(:start_program) do |command, **options|
+        listed = UNIXSocket.open(socket) do |client|
+          body = JSON.generate({jsonrpc: "2.0", id: 1, method: "tools/list"})
+          client.write("POST /mcp HTTP/1.1\r\ncontent-length: #{body.bytesize}\r\n\r\n#{body}")
+          JSON.parse(client.read.split("\r\n\r\n", 2).last).dig("result", "tools").map { |tool| tool.fetch("name") }
+        end
+        super(command, **options)
+      end
+      tool, = bound(serving, sandbox:)
+
+      assert tool.execute({"task" => "Show the current commit."}).success?
+      assert_equal ["policy_lookup"], listed
+      assert_equal({"mcpServers" => {"support" => {"type" => "http", "url" => "http://127.0.0.1:3133/mcp"}}},
+        JSON.parse(sandbox.command[sandbox.command.index("--mcp-config") + 1]))
+      refute File.exist?(socket)
+    end
+  end
+
   def test_configuration_is_validated
+    assert_raises(ArgumentError) { Class.new(LittleGhost::Harnesses::Tool) { serve_tools socket: "tools.sock", url: "http://127.0.0.1:3133/mcp" } }
+    assert_raises(ArgumentError) { Class.new(LittleGhost::Harnesses::Tool) { serve_tools socket: "/run/tools.sock", url: "unix:/run/tools.sock" } }
     assert_raises(LittleGhost::ConfigurationError) { Class.new(LittleGhost::Harnesses::Tool) { harnesses :unknown } }
     assert_raises(ArgumentError) { Class.new(LittleGhost::Harnesses::Tool) { budget default: 20, maximum: 10 } }
     assert_raises(ArgumentError) { Class.new(LittleGhost::Harnesses::Tool) { timeout default: 0, maximum: 10 } }

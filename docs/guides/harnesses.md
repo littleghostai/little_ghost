@@ -234,6 +234,39 @@ gateway process, never in the tool's environment or files. A harness rejects an
 > change and network access to the hosts it needs, and review its changes
 > before you commit or publish them.
 
+## Let the harness call your tools
+
+`serve_tools` gives the harness the application's own tools while it works.
+Each call starts a `Harnesses::ToolServer`, a Model Context Protocol server on
+a Unix socket, and passes it to the tool as an HTTP MCP server; the server
+closes when the call returns:
+
+```ruby
+class DelegateCodingTask < LittleGhost::Harnesses::Tool
+  harnesses claude_code: {executable: "/opt/harnesses/bin/claude", home_root: :scratch}
+  serve_tools HelpCenterLookupTool, RefundPolicyTools,
+    socket: "/run/harness-tools/tools.sock",
+    url: "http://127.0.0.1:3133/mcp",
+    name: "support"
+end
+```
+
+Entries are declared as in `Agent.tools` and bound to the delegating tool's
+binding, so they run with the same Run, credentials, cancellation, and
+deadline as the Agent's own calls. Override `served_tools` to choose them per
+Run. The harness connects to `url` and sees each tool as `support` server
+tools; Claude Code allows `mcp__support`, Codex receives it in
+`mcp_servers`, and OpenCode in its `mcp` configuration.
+
+Coding-agent tools reach MCP servers over TCP, so the application makes `url`
+lead to `socket` inside the Sandbox, for example with a relay that the
+Sandbox's command wrapper starts, and mounts the socket's directory into the
+Sandbox. Any process that can reach the socket can call every served tool.
+Served calls run each tool directly, without Agent callbacks such as
+`before_tool`, so serve only tools that enforce their own safeguards. A call
+fails while another Run's server is listening on the same socket, so Runs that
+can overlap need separate sockets.
+
 ## Add another tool
 
 Subclass `Harnesses::Base` and implement `command`, `environment`, and

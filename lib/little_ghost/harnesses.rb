@@ -67,6 +67,7 @@ require_relative "harnesses/base"
 require_relative "harnesses/claude_code"
 require_relative "harnesses/codex"
 require_relative "harnesses/open_code"
+require_relative "harnesses/tool_server"
 require_relative "harnesses/tool"
 
 LittleGhost::Harnesses.register(:claude_code, LittleGhost::Harnesses::ClaudeCode)

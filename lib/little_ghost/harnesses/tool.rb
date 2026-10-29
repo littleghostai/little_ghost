@@ -39,6 +39,9 @@ module LittleGhost
     # removed when the Run closes. The model may resume only sessions that an
     # earlier call in the same Run started.
     #
+    # #serve_tools lets the harness call tools of the application's own while
+    # it works, through a ToolServer that lives only for that call.
+    #
     # Override #build_harness to choose settings per run, and #build_request
     # to add instructions, a working directory, or a turn limit.
     class Tool < LittleGhost::Tool
@@ -51,6 +54,7 @@ module LittleGhost
       class_attribute :budget_maximum_value
       class_attribute :timeout_default_value, default: DEFAULT_TIMEOUT
       class_attribute :timeout_maximum_value, default: DEFAULT_TIMEOUT
+      class_attribute :tool_server_value
 
       tool_name "delegate_to_harness"
       exclusive true
@@ -112,6 +116,25 @@ module LittleGhost
 
           self.timeout_maximum_value = maximum
           self.timeout_default_value = default
+        end
+
+        # :call-seq:
+        #   serve_tools(*tools, socket:, url:, name: "tools") -> Hash
+        #
+        # Serves +tools+ to the harness during each call. Entries are Tool
+        # classes, Tool instances, or provider classes, as for Agent.tools,
+        # bound to this Tool's binding; override #served_tools to choose them
+        # per run. The ToolServer listens on +socket+, an absolute host path,
+        # and the harness connects to +url+ as MCP server +name+, so the
+        # application relays +url+ to +socket+ inside the Sandbox. Every tool
+        # served this way runs with the Run's credentials, without Agent
+        # callbacks such as +:before_tool+; see ToolServer. Concurrent Runs
+        # need separate sockets: a call fails while another serves +socket+.
+        def serve_tools(*tools, socket:, url:, name: "tools")
+          raise ArgumentError, "serve_tools socket must be an absolute path" unless String(socket).start_with?("/")
+
+          Request.new(prompt: "check", mcp_servers: {name => url})
+          self.tool_server_value = {tools: tools.flatten.freeze, socket: String(socket).freeze, url: String(url).freeze, name: String(name).freeze}.freeze
         end
 
         def description(*values) # :nodoc:
@@ -188,9 +211,11 @@ module LittleGhost
           raise ToolError, "Only sessions started earlier in this run can be resumed."
         end
         harness = build_harness(name)
-        result = harness.run(request, context:) do |event|
-          data = harness_event_data(event)
-          run&.publish(:harness, **data) if data
+        result = with_tool_server(request) do |served_request|
+          harness.run(served_request, context:) do |event|
+            data = harness_event_data(event)
+            run&.publish(:harness, **data) if data
+          end
         end
         session_ledger.record(name, result.session_id)
         result_value(result)
@@ -246,6 +271,13 @@ module LittleGhost
         )
       end
 
+      # Returns the tool declarations served to the harness for this call.
+      # Override to choose them per run; the default is the list given to
+      # ::serve_tools.
+      def served_tools # :doc:
+        self.class.tool_server_value&.fetch(:tools) || []
+      end
+
       # Converts a Harnesses::Result into the value returned to the model.
       def result_value(result) # :doc:
         value = result.to_h.except(:stderr_tail)
@@ -255,6 +287,20 @@ module LittleGhost
         end
         value[:stderr_tail] = result.stderr_tail unless result.completed? || result.stderr_tail.empty?
         value
+      end
+
+      def with_tool_server(request)
+        settings = self.class.tool_server_value
+        return yield(request) unless settings
+
+        registry = ToolRegistry.new(served_tools, binding:)
+        return yield(request) if registry.names.empty?
+
+        server = ToolServer.new(tools: registry, socket_path: settings.fetch(:socket), context:, name: settings.fetch(:name)).start
+        yield Request.new(**request.to_h, mcp_servers: request.mcp_servers.merge(settings.fetch(:name) => settings.fetch(:url)))
+      ensure
+        server&.close
+        registry&.close
       end
 
       def run_home(name, harness)
