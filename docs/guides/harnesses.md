@@ -113,6 +113,15 @@ end
 
 A block passed to `Harness#run` receives every event unfiltered.
 
+`Harnesses::Tool` also records the harness's work in
+[Instrumentation](integrations.md#trace-runs-with-opentelemetry): each tool call the harness makes is a `:tool`
+operation beneath the delegating tool call, and the harness's start and
+messages are `:harness_start` and `:harness_text` events on it. A tool call
+that fails finishes with error type `harness_tool_failed`; one the harness
+never answers finishes with `harness_tool_incomplete`. Tool inputs, outputs,
+and message text follow the Instrumentation content policy, not
+`harness_event_data`, so they appear in traces only when content capture is on.
+
 Any Tool can publish its own progress the same way with
 `publish_event(type, **data)`.
 
