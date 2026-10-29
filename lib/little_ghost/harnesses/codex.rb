@@ -16,9 +16,9 @@ module LittleGhost
     #
     # Approval prompts are disabled in both modes, so a command that needs
     # more access than Codex's sandbox allows fails instead of asking. The
-    # update check is off, MCP servers and
-    # notification commands are cleared on the command line, and
-    # configuration lives under +home+. Other settings in a persistent home's
+    # update check is off, MCP servers are replaced by the request's
+    # +mcp_servers+, notification commands are cleared on the command line,
+    # and configuration lives under +home+. Other settings in a persistent home's
     # <tt>config.toml</tt> still apply.
     #
     # +defaults+ accepts:
@@ -51,7 +51,7 @@ module LittleGhost
           *sandbox_arguments,
           "-c", 'approval_policy="never"',
           "-c", "check_for_update_on_startup=false",
-          "-c", "mcp_servers={}",
+          "-c", "mcp_servers=#{mcp_servers(request)}",
           "-c", "notify=[]",
           "--skip-git-repo-check",
           "-o", File.join(home, "last-message.md")
@@ -157,6 +157,11 @@ module LittleGhost
           cache_read_tokens: cached
         )
         [{kind: :usage, **state.usage.to_h}]
+      end
+
+      def mcp_servers(request)
+        entries = request.mcp_servers.map { |name, url| "#{name}={url=#{toml(url)}}" }
+        "{#{entries.join(",")}}"
       end
 
       def sandbox_arguments

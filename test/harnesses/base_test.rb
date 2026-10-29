@@ -344,6 +344,20 @@ class HarnessBaseTest < Minitest::Test
       configuration.dig("provider", "openrouter", "options"))
   end
 
+  def test_mcp_servers_reach_each_harness_configuration
+    request = request(mcp_servers: {"company" => "http://127.0.0.1:3133/mcp"})
+    claude = LittleGhost::Harnesses::ClaudeCode.new(sandbox: FakeSandbox.new(nil), home: "/home/agent").command(request)
+    codex = LittleGhost::Harnesses::Codex.new(sandbox: FakeSandbox.new(nil), home: "/home/agent").command(request)
+    open_code = LittleGhost::Harnesses::OpenCode.new(sandbox: FakeSandbox.new(nil), home: "/home/agent").environment(request)
+
+    assert_equal({"mcpServers" => {"company" => {"type" => "http", "url" => "http://127.0.0.1:3133/mcp"}}},
+      JSON.parse(claude[claude.index("--mcp-config") + 1]))
+    assert_equal "Bash,Read,Edit,Write,Glob,Grep,Agent,mcp__company", claude[claude.index("--allowedTools") + 1]
+    assert_includes codex, 'mcp_servers={company={url="http://127.0.0.1:3133/mcp"}}'
+    assert_equal({"company" => {"type" => "remote", "url" => "http://127.0.0.1:3133/mcp", "enabled" => true}},
+      JSON.parse(open_code.fetch("OPENCODE_CONFIG_CONTENT")).fetch("mcp"))
+  end
+
   def test_requests_reject_values_that_could_become_options
     assert_raises(ArgumentError) { request(session_id: "--dangerously-skip-permissions") }
     assert_raises(ArgumentError) { request(model: "-x") }
@@ -352,6 +366,8 @@ class HarnessBaseTest < Minitest::Test
     assert_raises(ArgumentError) { request(max_turns: 1.5) }
     assert_raises(ArgumentError) { request(timeout: -1) }
     assert_raises(ArgumentError) { LittleGhost::Harnesses::Request.new(prompt: " ") }
+    assert_raises(ArgumentError) { request(mcp_servers: {"bad name" => "http://127.0.0.1:3133/mcp"}) }
+    assert_raises(ArgumentError) { request(mcp_servers: {"company" => "file:///tmp/tools.sock"}) }
   end
 
   def test_mode_follows_the_sandbox_and_isolated_mode_requires_isolation
