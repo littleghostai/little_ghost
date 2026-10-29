@@ -139,6 +139,11 @@ result = harness.run(request) { |event| logger.info(event.data[:event]) }
 result.status # => :completed
 ```
 
+A request may also name a `model` and a reasoning `effort` such as `"medium"`;
+each falls back to the harness's `defaults` of the same name. Claude Code
+receives the effort as `--effort` and Codex as `model_reasoning_effort`;
+OpenCode has no effort option and ignores it.
+
 `Harnesses::Result#status` is `:completed`, `:failed`, `:timed_out`,
 `:budget_exceeded`, or `:turns_exceeded`. Pass a Tool's `context:` to `run`
 so cancelling the Run stops the process; `run` then raises instead of

@@ -15,9 +15,11 @@ module LittleGhost
     #   )
     #
     # +cwd+ is a Workspace path for the process's working directory.
-    # +session_id+ resumes an earlier session of the same harness. +model+ and
-    # +instructions+ (text added to the tool's system prompt, or placed before
-    # the task when the tool has no such option) are optional. +add_dirs+ lists
+    # +session_id+ resumes an earlier session of the same harness. +model+,
+    # +effort+ (a reasoning effort level such as <tt>medium</tt>, for harnesses
+    # that support one), and +instructions+ (text added to the tool's system
+    # prompt, or placed before the task when the tool has no such option) are
+    # optional. +add_dirs+ lists
     # extra absolute directories a tool may read. +budget_usd+ and +max_turns+
     # bound the work; +timeout+ bounds wall-clock seconds. +environment+ adds
     # child-process variables and takes precedence over harness defaults.
@@ -28,12 +30,13 @@ module LittleGhost
     # Values that reach the command line are checked so they cannot be read as
     # options.
     class Request < Data.define(
-      :prompt, :cwd, :session_id, :model, :instructions, :add_dirs, :budget_usd, :max_turns, :timeout, :environment,
-      :mcp_servers
+      :prompt, :cwd, :session_id, :model, :effort, :instructions, :add_dirs, :budget_usd, :max_turns, :timeout,
+      :environment, :mcp_servers
     )
       IDENTIFIER = %r{\A[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}\z} # :nodoc:
       DEFAULT_TIMEOUT = 600 # :nodoc:
       SERVER_NAME = /\A[A-Za-z0-9_-]{1,64}\z/ # :nodoc:
+      EFFORT = /\A[a-z]{1,16}\z/ # :nodoc:
 
       ##
       # :attr_reader: prompt
@@ -50,6 +53,10 @@ module LittleGhost
       ##
       # :attr_reader: model
       # Model name passed to the harness, or nil for its default.
+
+      ##
+      # :attr_reader: effort
+      # Reasoning effort level passed to the harness, or nil for its default.
 
       ##
       # :attr_reader: instructions
@@ -80,7 +87,7 @@ module LittleGhost
       # Frozen Hash of MCP server names to HTTP URLs.
 
       # Builds a validated request. Raises ArgumentError for invalid values.
-      def initialize(prompt:, cwd: nil, session_id: nil, model: nil, instructions: nil, add_dirs: [],
+      def initialize(prompt:, cwd: nil, session_id: nil, model: nil, effort: nil, instructions: nil, add_dirs: [],
         budget_usd: nil, max_turns: nil, timeout: DEFAULT_TIMEOUT, environment: {}, mcp_servers: {})
         prompt = String(prompt)
         raise ArgumentError, "harness prompt must not be empty" if prompt.strip.empty?
@@ -90,6 +97,7 @@ module LittleGhost
           cwd: cwd&.to_s&.dup&.freeze,
           session_id: identifier(session_id, "session_id"),
           model: identifier(model, "model"),
+          effort: effort_level(effort),
           instructions: instructions && String(instructions).dup.freeze,
           add_dirs: Array(add_dirs).map { |path| directory(path) }.freeze,
           budget_usd: budget_usd && positive_number(budget_usd, "budget_usd"),
@@ -107,6 +115,15 @@ module LittleGhost
 
         value = String(value)
         raise ArgumentError, "harness #{name} contains unsupported characters" unless IDENTIFIER.match?(value)
+
+        value.dup.freeze
+      end
+
+      def effort_level(value)
+        return if value.nil?
+
+        value = String(value)
+        raise ArgumentError, "harness effort must be a lowercase level name" unless EFFORT.match?(value)
 
         value.dup.freeze
       end

@@ -31,6 +31,8 @@ module LittleGhost
     #   Placeholder sent as +OPENAI_API_KEY+. A gateway replaces it.
     # [+:model+]
     #   Model used when the request does not name one.
+    # [+:effort+]
+    #   Reasoning effort used when the request does not name one.
     #
     # Codex reports token usage but not cost, so +budget_usd+ cannot stop it.
     # One <tt>exec</tt> usually completes a single turn that contains every
@@ -67,6 +69,8 @@ module LittleGhost
         end
         model = request.model || defaults[:model]
         arguments.push("-m", model.to_s) if model
+        effort = request.effort || defaults[:effort]
+        arguments.push("-c", "model_reasoning_effort=#{toml(effort.to_s)}") if effort
         request.add_dirs.each { |directory| arguments.push("--add-dir", directory) }
         arguments.push("resume", request.session_id) if request.session_id
         arguments.concat(positional(prompt_with_instructions(request)))

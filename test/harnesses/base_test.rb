@@ -322,6 +322,17 @@ class HarnessBaseTest < Minitest::Test
       harness.environment(request))
   end
 
+  def test_effort_reaches_each_harness_that_supports_it
+    claude = LittleGhost::Harnesses::ClaudeCode.new(sandbox: FakeSandbox.new(nil), home: "/home/agent", defaults: {effort: "high"})
+    codex = LittleGhost::Harnesses::Codex.new(sandbox: FakeSandbox.new(nil), home: "/home/agent")
+
+    assert_equal ["--effort", "high"], claude.command(request).each_cons(2).find { |flag, _| flag == "--effort" }
+    assert_equal ["--effort", "medium"], claude.command(request(effort: "medium")).each_cons(2).find { |flag, _| flag == "--effort" }
+    assert_includes codex.command(request(effort: "medium")).each_cons(2).to_a, ["-c", 'model_reasoning_effort="medium"']
+    refute_includes codex.command(request).join(" "), "model_reasoning_effort"
+    assert_raises(ArgumentError) { request(effort: "--high") }
+  end
+
   def test_open_code_command_line_and_configuration
     harness = LittleGhost::Harnesses::OpenCode.new(
       sandbox: FakeSandbox.new(nil),
