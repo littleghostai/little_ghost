@@ -29,6 +29,8 @@ module LittleGhost
     # +:native_guards+ mode when the Tool has no Sandbox, and publishes each
     # +:harness+ StreamEvent to the Run while the harness works; by default
     # tool-call inputs and tool outputs are left out (see #harness_event_data).
+    # The harness's tool calls also become +:tool+ Instrumentation operations
+    # beneath this call, so traces show the harness's work step by step.
     # It returns a JSON object with the Result's status, final text (shortened
     # to 16,000 characters), session, cost, turns, and usage, plus the end of
     # standard error when the task did not complete. Calls are exclusive, so
@@ -211,14 +213,18 @@ module LittleGhost
           raise ToolError, "Only sessions started earlier in this run can be resumed."
         end
         harness = build_harness(name)
+        trace = Trace.new(harness: name, parent_operation_id: trace_parent_operation_id)
         result = with_tool_server(request) do |served_request|
           harness.run(served_request, context:) do |event|
+            trace.record(event)
             data = harness_event_data(event)
             run&.publish(:harness, **data) if data
           end
         end
         session_ledger.record(name, result.session_id)
         result_value(result)
+      ensure
+        trace&.close
       end
 
       def description # :nodoc:
@@ -243,6 +249,10 @@ module LittleGhost
         harness = harness_class.new(**options)
         home = settings[:home] || run_home(name, harness)
         home ? harness_class.new(**options, home:) : harness
+      end
+
+      def trace_parent_operation_id
+        ExecutionState[:tool_execution]&.operation_id || Instrumentation.current&.operation_id
       end
 
       # Returns the data published to the Run for one +:harness+ StreamEvent,

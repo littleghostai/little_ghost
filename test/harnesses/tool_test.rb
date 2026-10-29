@@ -109,6 +109,48 @@ class HarnessToolTest < Minitest::Test
     assert_includes run.events[2].data.dig(:event, :input), "git rev-parse"
   end
 
+  def test_harness_tool_calls_are_traced_beneath_the_delegating_operation
+    LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    recorded = TestInstrumentationSubscriber.new
+    LittleGhost::Instrumentation.subscribe(recorded)
+    tool, = bound(DelegateCodingTask)
+
+    parent = LittleGhost::Instrumentation.start(:tool, tool_name: "delegate_coding_task")
+    tool.execute({"task" => "Show the current commit."})
+    parent.finish
+
+    started, finished = %i[start finish].map do |phase|
+      recorded.events.find { |event_phase, name, attributes| event_phase == phase && name == :tool && attributes[:tool_name] == "Bash" }.last
+    end
+    assert_equal parent.operation_id, started.fetch(:parent_operation_id)
+    assert_equal "toolu_01Example", started.fetch(:tool_call_id)
+    assert_equal "claude_code", started.fetch(:harness)
+    assert_includes started.fetch(:diagnostic_input), "git rev-parse"
+    assert_includes finished.fetch(:diagnostic_output), "3f9c2ab"
+    refute finished.key?(:error_type)
+    emitted = recorded.events.select { |phase, *| phase == :emit }.map { |_, name, attributes| [name, attributes] }
+    assert_equal [:harness_start, :harness_text, :harness_text], emitted.map(&:first)
+    assert_equal "claude-sonnet-4-5", emitted.first.last.fetch(:model)
+    assert(emitted.all? { |_, attributes| attributes.fetch(:operation_id) == parent.operation_id })
+  end
+
+  def test_a_tool_call_without_a_result_is_traced_as_incomplete
+    unanswered = File.readlines(FIXTURE).reject { |line| line.include?("\"tool_result\"") }.join
+    sandbox = FixtureSandbox.new
+    sandbox.define_singleton_method(:start_program) { |*, **| FixtureSession.new(unanswered) }
+    recorded = TestInstrumentationSubscriber.new
+    LittleGhost::Instrumentation.subscribe(recorded)
+    tool, = bound(DelegateCodingTask, sandbox:)
+
+    tool.execute({"task" => "Show the current commit."})
+
+    finished = recorded.events.find { |phase, name, *| phase == :finish && name == :tool }.last
+    assert_equal "Bash", finished.fetch(:tool_name)
+    assert_equal LittleGhost::Harnesses::Trace::INCOMPLETE, finished.fetch(:error_type)
+  end
+
   def test_only_sessions_started_in_this_run_can_be_resumed
     tool, sandbox, = bound(DelegateCodingTask)
     session_id = "7f0c2b8e-4a1d-4b9e-9c35-2f6d1e8a9b10"
