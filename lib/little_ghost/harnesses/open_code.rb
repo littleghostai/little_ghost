@@ -34,6 +34,9 @@ module LittleGhost
     #   Additional OpenCode configuration merged into the generated
     #   configuration.
     #
+    # OpenCode has no reasoning effort option, so it ignores a request's
+    # +effort+.
+    #
     # OpenCode reports cost and token usage after each step, so #run stops it
     # when cost exceeds +budget_usd+. Each finished step counts toward
     # +max_turns+.

@@ -30,6 +30,8 @@ module LittleGhost
     #   gateway replaces it.
     # [+:model+]
     #   Model used when the request does not name one.
+    # [+:effort+]
+    #   Effort level used when the request does not name one.
     # [+:allowed_tools+, +:disallowed_tools+]
     #   Claude Code tool names. In +:isolated+ mode the defaults allow file,
     #   search, shell, and subagent tools and disallow web access.
@@ -64,6 +66,8 @@ module LittleGhost
         request.add_dirs.each { |directory| arguments.push("--add-dir", directory) }
         model = request.model || defaults[:model]
         arguments.push("--model", model.to_s) if model
+        effort = request.effort || defaults[:effort]
+        arguments.push("--effort", effort.to_s) if effort
         arguments.push("--append-system-prompt", request.instructions) if request.instructions
         arguments.push("--resume", request.session_id) if request.session_id
         arguments.push("--output-format", "stream-json", "--verbose")
