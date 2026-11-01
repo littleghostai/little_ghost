@@ -11,6 +11,8 @@ module LittleGhost
       INSPECTED_AUTHORIZATION_PREFIX = "/little-ghost/inspected"
       FACADE_AUTHORIZATION_PREFIX = "/little-ghost/facade/"
       DOMAIN = /\A(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\z/
+      WILDCARD_PREFIX = "*."
+      WILDCARD_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
       BLOCKED_DESTINATIONS = [
         ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
         ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
@@ -49,10 +51,22 @@ module LittleGhost
 
         host = match[1]
         port = Integer(match[2], 10)
-        unless DOMAIN.match?(host) && host == host.downcase && !ip_address?(host) && port.between?(1, 65_535)
-          raise PolicyError, "network allowlist entries must use exact lowercase DNS names and valid ports"
+        name = host.delete_prefix(WILDCARD_PREFIX)
+        unless DOMAIN.match?(name) && name == name.downcase && !ip_address?(name) && port.between?(1, 65_535)
+          raise PolicyError, "network allowlist entries must use lowercase DNS names, at most one leading *. label, and valid ports"
         end
         [host.freeze, port].freeze
+      end
+
+      def wildcard?(host) = host.start_with?(WILDCARD_PREFIX)
+
+      # A wildcard destination covers exactly one DNS label, as a certificate wildcard does.
+      def authority_match(host, port, optional_port: false)
+        return {"exact" => "#{host}:#{port}"} unless wildcard?(host)
+
+        suffix = Regexp.escape(host.delete_prefix(WILDCARD_PREFIX))
+        port_pattern = optional_port ? "(?::#{port})?" : ":#{port}"
+        {"safe_regex" => {"regex" => "#{WILDCARD_LABEL}\\.#{suffix}#{port_pattern}"}}
       end
 
       def build_connect(endpoints:, listener:, access_log: nil)
@@ -60,7 +74,7 @@ module LittleGhost
           {
             "match" => {
               "connect_matcher" => {},
-              "headers" => [{"name" => ":authority", "string_match" => {"exact" => "#{host}:#{port}"}}]
+              "headers" => [{"name" => ":authority", "string_match" => authority_match(host, port)}]
             },
             "route" => {
               "cluster" => "little_ghost_egress",
@@ -100,7 +114,7 @@ module LittleGhost
           {
             "match" => {
               "connect_matcher" => {},
-              "headers" => [{"name" => ":authority", "string_match" => {"exact" => "#{host}:#{port}"}}]
+              "headers" => [{"name" => ":authority", "string_match" => authority_match(host, port)}]
             },
             "route" => {
               "cluster" => "little_ghost_tls_interceptor",
@@ -113,19 +127,9 @@ module LittleGhost
         outer_routes << {"match" => {"prefix" => "/"}, "direct_response" => {"status" => 403}}
         inner_virtual_hosts = endpoints.map do |host, port|
           {
-            "name" => "host_#{host.tr(".-", "__")}",
+            "name" => "host_#{host.sub(WILDCARD_PREFIX, "wildcard.").tr(".-", "__")}",
             "domains" => [host, "#{host}:#{port}"],
-            "routes" => [{
-              "match" => {"prefix" => "/"},
-              "route" => {"cluster" => "little_ghost_egress", "timeout" => duration(policy.timeouts.fetch(host, 0))},
-              "typed_per_filter_config" => {
-                "envoy.filters.http.dynamic_forward_proxy" => typed(
-                  "envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig",
-                  host_rewrite_literal: host
-                )
-              },
-              "response_headers_to_remove" => ["set-cookie", "set-cookie2"]
-            }]
+            "routes" => inner_routes(host, port, timeout: policy.timeouts.fetch(host, 0))
           }
         end
         interceptor_listener = {
@@ -176,6 +180,29 @@ module LittleGhost
               dynamic_forward_proxy_cluster(tls: true, trusted_ca: paths.fetch(:trusted_ca))
             ]
           }
+        }
+      end
+
+      # An exact host pins the upstream by rewrite. A wildcard host's virtual domain also matches deeper subdomains,
+      # so its route admits only one-label authorities and the upstream follows the request's own host.
+      def inner_routes(host, port, timeout:)
+        route = {
+          "match" => {"prefix" => "/"},
+          "route" => {"cluster" => "little_ghost_egress", "timeout" => duration(timeout)},
+          "response_headers_to_remove" => ["set-cookie", "set-cookie2"]
+        }
+        return [route.merge("typed_per_filter_config" => host_rewrite(host))] unless wildcard?(host)
+
+        route["match"]["headers"] = [{"name" => ":authority", "string_match" => authority_match(host, port, optional_port: true)}]
+        [route, {"match" => {"prefix" => "/"}, "direct_response" => {"status" => 403}}]
+      end
+
+      def host_rewrite(host)
+        {
+          "envoy.filters.http.dynamic_forward_proxy" => typed(
+            "envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig",
+            host_rewrite_literal: host
+          )
         }
       end
 

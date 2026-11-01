@@ -351,6 +351,11 @@ without a rule, or that fail a rule, receive a 403 response. Use
 exceptions, `require` to check application state for each request, and
 `timeout` to bound slow hosts.
 
+An allowlist entry may begin with `*.` to admit one label of subdomains, for
+example `*.blob.core.windows.net:443`. The gateway still resolves and verifies
+each host it connects to, and the certificate it presents to the child covers
+those hosts with a wildcard name.
+
 Paths are decoded before they are matched, and a path that cannot be matched
 safely, for example one with an encoded line break or `..` segment, receives
 a 400 response. Anchor Regexp patterns with `\A` and `\z`. A rule that
