@@ -14,10 +14,10 @@ require "little_ghost/network/envoy_config"
 require "little_ghost/network/envoy_gateway"
 
 class NetworkTest < Minitest::Test
-  def test_envoy_connect_config_allows_only_exact_authorities
+  def test_envoy_connect_config_allows_only_exact_or_one_label_wildcard_authorities
     policy = LittleGhost::Sandbox::NetworkPolicy.new(
       mode: :allowlist,
-      allow: ["rubygems.org:443", "registry.npmjs.org:443"]
+      allow: ["rubygems.org:443", "registry.npmjs.org:443", "*.blob.example.net:443"]
     )
 
     config = LittleGhost::Network::EnvoyConfig.build(
@@ -25,16 +25,20 @@ class NetworkTest < Minitest::Test
       listener: LittleGhost::Network::EnvoyConfig.pipe_address("/tmp/proxy.sock")
     )
     serialized = JSON.generate(config)
+    routes = config.dig("static_resources", "listeners", 0, "filter_chains", 0, "filters", 0, "typed_config", "route_config", "virtual_hosts", 0, "routes")
+    wildcard = routes.find { |route| route.dig("match", "headers", 0, "string_match", "safe_regex") }
 
     assert_includes serialized, '"exact":"rubygems.org:443"'
     assert_includes serialized, '"exact":"registry.npmjs.org:443"'
+    assert_equal "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.blob\\.example\\.net:443", wildcard.dig("match", "headers", 0, "string_match", "safe_regex", "regex")
     assert_includes serialized, '"status":403'
     assert_includes serialized, '"resolved_address_filter"'
     refute_includes serialized, "ext_authz"
   end
 
   def test_envoy_config_rejects_ambiguous_or_unsafe_destinations
-    ["*.example.com:443", "127.0.0.1:443", "example.com", "example.com:0"].each do |destination|
+    ["*.com:443", "a.*.example.com:443", "*example.com:443", "**.example.com:443", "*.127.0.0.1:443",
+      "127.0.0.1:443", "example.com", "example.com:0"].each do |destination|
       policy = LittleGhost::Sandbox::NetworkPolicy.new(mode: :allowlist, allow: [destination])
 
       assert_raises(LittleGhost::PolicyError) do
@@ -521,6 +525,32 @@ class NetworkTest < Minitest::Test
     ensure
       client&.close
       server&.close
+    end
+  end
+
+  def test_inspected_wildcard_hosts_follow_the_request_host_for_one_label_only
+    Dir.mktmpdir do |root|
+      policy = LittleGhost::Sandbox::NetworkPolicy.new(
+        mode: :allowlist,
+        allow: ["downloads.example.com:443", "*.blob.example.net:443"],
+        inspection: :http,
+        authorizer: ->(request:) { LittleGhost::Network::Decision.allow },
+        timeouts: {"*.blob.example.net" => 120}
+      )
+
+      config = LittleGhost::Network::EnvoyConfig.build(policy:, listener: LittleGhost::Network::EnvoyConfig.pipe_address(File.join(root, "proxy.sock")), paths: inspection_paths(root))
+      interceptor = config.dig("static_resources", "listeners").find { |listener| listener.fetch("name") == "little_ghost_tls_interceptor" }
+      virtual_hosts = interceptor.dig("filter_chains", 0, "filters", 0, "typed_config", "route_config", "virtual_hosts").to_h { |host| [host.fetch("name"), host] }
+      exact = virtual_hosts.fetch("host_downloads_example_com")
+      wildcard = virtual_hosts.fetch("host_wildcard_blob_example_net")
+      forward, denied = wildcard.fetch("routes")
+
+      assert_equal "downloads.example.com", exact.dig("routes", 0, "typed_per_filter_config", "envoy.filters.http.dynamic_forward_proxy", "host_rewrite_literal")
+      assert_equal ["*.blob.example.net", "*.blob.example.net:443"], wildcard.fetch("domains")
+      assert_equal "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.blob\\.example\\.net(?::443)?", forward.dig("match", "headers", 0, "string_match", "safe_regex", "regex")
+      assert_equal "120s", forward.dig("route", "timeout")
+      refute forward.key?("typed_per_filter_config")
+      assert_equal({"match" => {"prefix" => "/"}, "direct_response" => {"status" => 403}}, denied)
     end
   end
 

@@ -255,6 +255,7 @@ module LittleGhost
           rule = RuleBuilder.build(&)
           names.flatten.each do |name|
             host, = EnvoyConfig.parse_endpoint("#{String(name).downcase}:443")
+            raise PolicyError, "network host rules name exact hosts; wildcard hosts use the default rule" if EnvoyConfig.wildcard?(host)
             raise PolicyError, "network host #{host} is declared more than once" if @rules.key?(host)
 
             @rules[host.freeze] = rule
