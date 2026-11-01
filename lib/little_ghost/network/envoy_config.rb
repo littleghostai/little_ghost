@@ -12,7 +12,8 @@ module LittleGhost
       FACADE_AUTHORIZATION_PREFIX = "/little-ghost/facade/"
       DOMAIN = /\A(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\z/
       WILDCARD_PREFIX = "*."
-      WILDCARD_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+      # Envoy caps RE2 program size at 100, so the label stays a plain character class rather than a full DNS label rule.
+      WILDCARD_LABEL = "[a-z0-9-]+"
       BLOCKED_DESTINATIONS = [
         ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
         ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],

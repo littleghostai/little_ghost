@@ -30,7 +30,7 @@ class NetworkTest < Minitest::Test
 
     assert_includes serialized, '"exact":"rubygems.org:443"'
     assert_includes serialized, '"exact":"registry.npmjs.org:443"'
-    assert_equal "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.blob\\.example\\.net:443", wildcard.dig("match", "headers", 0, "string_match", "safe_regex", "regex")
+    assert_equal "[a-z0-9-]+\\.blob\\.example\\.net:443", wildcard.dig("match", "headers", 0, "string_match", "safe_regex", "regex")
     assert_includes serialized, '"status":403'
     assert_includes serialized, '"resolved_address_filter"'
     refute_includes serialized, "ext_authz"
@@ -547,7 +547,7 @@ class NetworkTest < Minitest::Test
 
       assert_equal "downloads.example.com", exact.dig("routes", 0, "typed_per_filter_config", "envoy.filters.http.dynamic_forward_proxy", "host_rewrite_literal")
       assert_equal ["*.blob.example.net", "*.blob.example.net:443"], wildcard.fetch("domains")
-      assert_equal "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.blob\\.example\\.net(?::443)?", forward.dig("match", "headers", 0, "string_match", "safe_regex", "regex")
+      assert_equal "[a-z0-9-]+\\.blob\\.example\\.net(?::443)?", forward.dig("match", "headers", 0, "string_match", "safe_regex", "regex")
       assert_equal "120s", forward.dig("route", "timeout")
       refute forward.key?("typed_per_filter_config")
       assert_equal({"match" => {"prefix" => "/"}, "direct_response" => {"status" => 403}}, denied)
