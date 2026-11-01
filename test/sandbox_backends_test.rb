@@ -112,6 +112,22 @@ class SandboxBackendsTest < Minitest::Test
     end
   end
 
+  def test_bubblewrap_passes_d0_to_the_egress_relay
+    Dir.mktmpdir do |root|
+      workspace = LittleGhost::Workspace.new(root:).open
+      sandbox = ProbeBubblewrap.new(workspace:, bubblewrap: "/missing/bwrap", platform: "x86_64-linux")
+      sandbox.instance_variable_set(:@gateway, Struct.new(:proxy_mount_path).new("/run/proxy.sock"))
+
+      command = sandbox.send(:gateway_command, ["curl", "https://example.com"])
+
+      assert_equal ["/bin/sh", "-c"], command.first(2)
+      assert_includes command[2], %("$relay" -d0 TCP-LISTEN:3128)
+      assert_equal ["little-ghost-egress", "/usr/bin/socat", "/run/proxy.sock", "curl", "https://example.com"], command[3..]
+    ensure
+      workspace&.close
+    end
+  end
+
   def test_bubblewrap_reports_owned_subprocess_support
     capabilities = LittleGhost::Sandboxes::Bubblewrap.backend_capabilities
 

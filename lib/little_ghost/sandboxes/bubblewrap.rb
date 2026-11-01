@@ -330,13 +330,14 @@ module LittleGhost
         File.expand_path(cwd)
       end
 
+      # The forking relay logs every normal connection close as an error on the command's stderr; -d0 keeps only fatal ones.
       def gateway_command(command)
         script = <<~SH
           set -eu
           relay="$1"
           socket="$2"
           shift 2
-          "$relay" TCP-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork "UNIX-CONNECT:$socket" &
+          "$relay" -d0 TCP-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork "UNIX-CONNECT:$socket" &
           relay_pid=$!
           trap 'kill "$relay_pid" 2>/dev/null || true' EXIT INT TERM
           sleep 0.05
