@@ -19,15 +19,30 @@ module LittleGhost
     # These tools do not add isolation. The configured sandbox must enforce path
     # containment, permissions, size limits, and cancellation.
     class Filesystem
-      # Reads one UTF-8 text file through the configured sandbox.
+      # Reads one UTF-8 text file, or shows the model one PNG, JPEG, GIF, or
+      # WebP image, through the configured sandbox.
       class ReadFile < Tool
         tool_name "read_file"
         description FrameworkPrompts.new.render("tools/built_in/read_file/description")
         input_schema type: "object", properties: {path: {type: "string"}}, required: ["path"], additionalProperties: false
 
         # Returns the UTF-8 text at <tt>input["path"]</tt> through the sandbox.
+        # An image is shown to the model on its next turn instead, and the
+        # Tool result names its media type and size.
         def call(input)
-          sandbox.read(input.fetch("path"), context:)
+          path = input.fetch("path")
+          image = sandbox.read_image(path, context:)
+          return sandbox.read(path, context:) unless image
+
+          Tool::ExecutionResult.new(
+            status: :success,
+            content: framework_prompt(
+              "tools/built_in/read_file/image_shown",
+              media_type: image.media_type,
+              bytes: image.data.bytesize
+            ),
+            presentation_content: [image]
+          )
         end
 
         def description = framework_prompt("tools/built_in/read_file/description")

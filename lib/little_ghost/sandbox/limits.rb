@@ -6,6 +6,7 @@ module LittleGhost
     class Limits
       DEFAULTS = {
         read_bytes: 1_000_000,
+        image_bytes: 5_000_000,
         write_bytes: 1_000_000,
         list_entries: 10_000,
         output_bytes: 1_000_000
@@ -37,6 +38,8 @@ module LittleGhost
 
       # Maximum bytes returned by one filesystem read.
       attr_reader :read_bytes
+      # Maximum bytes of one image read for model viewing.
+      attr_reader :image_bytes
       # Maximum bytes accepted by one filesystem write.
       attr_reader :write_bytes
       # Maximum entries returned by one directory listing.

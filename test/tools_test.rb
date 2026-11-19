@@ -27,6 +27,137 @@ class ToolsTest < Minitest::Test
     end
   end
 
+  def test_read_file_shows_an_image_to_the_model
+    Dir.mktmpdir do |directory|
+      png = "\x89PNG\r\n\x1A\n".b + "image-bytes".b
+      File.binwrite(File.join(directory, "receipt"), png)
+
+      result = filesystem_registry(unrestricted_sandbox(directory)).fetch("read_file").execute({"path" => "receipt"})
+
+      assert result.success?
+      assert_includes result.content, "image/png"
+      assert_includes result.content, "#{png.bytesize} bytes"
+      image = result.presentation_content.fetch(0)
+      assert_kind_of LittleGhost::Content::Image, image
+      assert_equal png, image.data
+      assert_equal "image/png", image.media_type
+      assert_equal "receipt", image.name
+    end
+  end
+
+  def test_read_file_detects_jpeg_gif_and_webp_images
+    Dir.mktmpdir do |directory|
+      images = {
+        "photo" => ["\xFF\xD8\xFF\xE0".b + "jpeg".b, "image/jpeg"],
+        "animation" => ["GIF89a".b + "gif".b, "image/gif"],
+        "sticker" => ["RIFF".b + "\x10\x00\x00\x00".b + "WEBPVP8 ".b, "image/webp"]
+      }
+      images.each { |name, (data, _)| File.binwrite(File.join(directory, name), data) }
+      read_file = filesystem_registry(unrestricted_sandbox(directory)).fetch("read_file")
+
+      images.each do |name, (data, media_type)|
+        image = read_file.execute({"path" => name}).presentation_content.fetch(0)
+
+        assert_equal media_type, image.media_type
+        assert_equal data, image.data
+      end
+    end
+  end
+
+  def test_read_file_returns_text_from_a_file_named_like_an_image
+    Dir.mktmpdir do |directory|
+      File.write(File.join(directory, "notes.png"), "plain text")
+
+      result = filesystem_registry(unrestricted_sandbox(directory)).fetch("read_file").execute({"path" => "notes.png"})
+
+      assert_equal "plain text", result.content
+      assert_empty result.presentation_content
+    end
+  end
+
+  def test_read_file_still_rejects_binary_files_that_are_not_images
+    Dir.mktmpdir do |directory|
+      File.binwrite(File.join(directory, "archive.zip"), "PK\x03\x04\xFF\xFE".b)
+
+      result = filesystem_registry(unrestricted_sandbox(directory)).fetch("read_file").execute({"path" => "archive.zip"})
+
+      assert result.error?
+      assert_equal "File is not valid UTF-8 text", result.content
+      assert_empty result.presentation_content
+    end
+  end
+
+  def test_read_file_enforces_the_image_read_limit
+    Dir.mktmpdir do |directory|
+      File.binwrite(File.join(directory, "large.png"), "\x89PNG\r\n\x1A\n".b + ("x" * 32))
+      sandbox = unrestricted_sandbox(directory, limits: {image_bytes: 32})
+
+      result = filesystem_registry(sandbox).fetch("read_file").execute({"path" => "large.png"})
+
+      assert result.error?
+      assert_equal "Image exceeds the read limit", result.content
+    end
+  end
+
+  def test_read_file_reports_the_image_limit_when_the_limit_is_smaller_than_the_header
+    Dir.mktmpdir do |directory|
+      File.binwrite(File.join(directory, "tiny.png"), "\x89PNG\r\n\x1A\n".b + "data".b)
+      sandbox = unrestricted_sandbox(directory, limits: {image_bytes: 4})
+
+      result = filesystem_registry(sandbox).fetch("read_file").execute({"path" => "tiny.png"})
+
+      assert result.error?
+      assert_equal "Image exceeds the read limit", result.content
+    end
+  end
+
+  def test_read_file_accepts_an_image_exactly_at_the_limit
+    Dir.mktmpdir do |directory|
+      png = "\x89PNG\r\n\x1A\n".b + ("x" * 8)
+      File.binwrite(File.join(directory, "exact.png"), png)
+      sandbox = unrestricted_sandbox(directory, limits: {image_bytes: png.bytesize})
+
+      result = filesystem_registry(sandbox).fetch("read_file").execute({"path" => "exact.png"})
+
+      assert_equal png, result.presentation_content.fetch(0).data
+    end
+  end
+
+  def test_read_file_reads_short_and_empty_files_as_text
+    Dir.mktmpdir do |directory|
+      File.write(File.join(directory, "short.txt"), "RIFF")
+      File.write(File.join(directory, "empty.txt"), "")
+      read_file = filesystem_registry(unrestricted_sandbox(directory)).fetch("read_file")
+
+      assert_equal "RIFF", read_file.execute({"path" => "short.txt"}).content
+      assert_equal "", read_file.execute({"path" => "empty.txt"}).content
+    end
+  end
+
+  def test_scoped_image_reads_require_filesystem_read
+    Dir.mktmpdir do |directory|
+      File.binwrite(File.join(directory, "screenshot.png"), "\x89PNG\r\n\x1A\n".b)
+      scope = unrestricted_sandbox(directory).scope(capabilities: [:filesystem_list])
+
+      error = assert_raises(LittleGhost::ToolError) { scope.read_image("screenshot.png") }
+
+      assert_includes error.message, "filesystem read"
+    end
+  end
+
+  def test_read_file_shows_images_larger_than_the_text_read_limit
+    Dir.mktmpdir do |directory|
+      png = "\x89PNG\r\n\x1A\n".b + ("x" * 64)
+      File.binwrite(File.join(directory, "screenshot.png"), png)
+      sandbox = unrestricted_sandbox(directory, limits: {read_bytes: 16})
+
+      result = filesystem_registry(sandbox).fetch("read_file").execute({"path" => "screenshot.png"})
+
+      assert result.success?
+      assert_equal png, result.presentation_content.fetch(0).data
+    end
+  end
+
   def test_filesystem_provider_rejects_paths_outside_the_root
     Dir.mktmpdir do |directory|
       result = filesystem_registry(unrestricted_sandbox(directory)).fetch("read_file").execute({"path" => "../secret"})

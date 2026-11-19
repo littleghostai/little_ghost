@@ -20,6 +20,7 @@ module LittleGhost
       end
 
       def read(path, context: nil) = default_scope.read(path, context:)
+      def read_image(path, context: nil) = default_scope.read_image(path, context:)
       def list(path = ".", context: nil) = default_scope.list(path, context:)
       def write(path, content, context: nil) = default_scope.write(path, content, context:)
       def replace(path, old_text, new_text, context: nil) = default_scope.replace(path, old_text, new_text, context:)

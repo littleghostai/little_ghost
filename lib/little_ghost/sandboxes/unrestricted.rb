@@ -75,6 +75,10 @@ module LittleGhost
       # Reads a bounded UTF-8 file within the workspace.
       def read(path, context: nil) = default_scope.read(path, context:)
 
+      # Reads a bounded PNG, JPEG, GIF, or WebP image within the workspace, or
+      # returns +nil+ when the file is not one.
+      def read_image(path, context: nil) = default_scope.read_image(path, context:)
+
       # Produces a newline-delimited, sorted directory listing. Directories end in
       # +/+.
       def list(path = ".", context: nil) = default_scope.list(path, context:)
