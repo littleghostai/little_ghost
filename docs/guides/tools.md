@@ -138,6 +138,10 @@ Some Tools deliberately delegate a smaller operation to the Sandbox:
 
 - `LittleGhost::Tools::Filesystem` reads and changes paths through the bound
   Sandbox. It exposes mutation Tools only when that Sandbox is writable.
+  `read_file` returns UTF-8 text, and shows the model a PNG, JPEG, GIF, or
+  WebP image instead. It recognizes images by their leading bytes and bounds
+  them with the Sandbox's `image_bytes` limit. The file's bytes, including any
+  embedded metadata, go to the model provider unchanged.
 - `LittleGhost::Tools::Shell` runs one argument vector through the bound
   Sandbox. It does not interpret shell syntax. A subclass can accept a shell
   command string with `command_mode :string`, which runs it with
@@ -321,9 +325,9 @@ Once enabled, artifact handling covers three cases:
 - Input images and documents are stored so filesystem Tools and code mode can
   read the same bytes. The model still receives only the original image or
   document.
-- Tool artifacts are stored and returned to the model as images or documents.
-  The stored reference is shown only when the media cannot be included in the
-  model request.
+- Tool artifacts are stored and returned to the model as images or documents
+  for its next turn only. `read_file` on the stored reference shows an image
+  again on a later turn.
 - Oversized successful Tool values are stored automatically. The model receives
   a short preview and a reference instead of the complete value.
 
@@ -352,8 +356,8 @@ end
 Declaring the named Workspace path does not grant model access. When the Agent
 should read artifact references, grant the Sandbox read access to the
 `:artifacts` path and include a filesystem Tool. The model can list that path
-when a task genuinely needs a stored file; ordinary multimodal work does not
-need a second reference to media already in the conversation.
+when a task genuinely needs a stored file, and read a stored image to view it
+again after the turn that showed it.
 
 ## Let code mode compose the same capabilities
 

@@ -40,6 +40,7 @@ module LittleGhost
           mounts: (@mounts + @tool_deny_mounts).uniq,
           relative_root: sandbox.workspace.root,
           max_read_bytes: sandbox.limits.read_bytes,
+          max_image_bytes: sandbox.limits.image_bytes,
           max_write_bytes: sandbox.limits.write_bytes,
           max_list_entries: sandbox.limits.list_entries
         )
@@ -81,6 +82,13 @@ module LittleGhost
       def read(path, context: nil)
         require_capability!(:filesystem_read)
         @filesystem.read(logical_path(path), context:)
+      end
+
+      # Reads a bounded PNG, JPEG, GIF, or WebP image through the scoped
+      # filesystem, or returns +nil+ when the file is not one.
+      def read_image(path, context: nil)
+        require_capability!(:filesystem_read)
+        @filesystem.read_image(logical_path(path), context:)
       end
 
       # Lists one directory through the scoped filesystem.

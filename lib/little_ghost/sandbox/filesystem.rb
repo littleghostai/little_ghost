@@ -23,16 +23,20 @@ module LittleGhost
         )
       end
 
+      IMAGE_HEADER_BYTES = 12
+
       def initialize(
         mounts:,
         relative_root:,
         max_read_bytes: 1_000_000,
+        max_image_bytes: 5_000_000,
         max_write_bytes: 1_000_000,
         max_list_entries: 10_000
       )
         @mounts = Array(mounts).sort_by { |mount| -mount.target.length }.freeze
         @relative_root = Mount.send(:normalize_virtual_path, relative_root)
         @max_read_bytes = positive_integer(max_read_bytes, "read limit")
+        @max_image_bytes = positive_integer(max_image_bytes, "image read limit")
         @max_write_bytes = positive_integer(max_write_bytes, "write limit")
         @max_list_entries = positive_integer(max_list_entries, "listing limit")
         @mount_identities = @mounts.to_h do |mount|
@@ -62,7 +66,7 @@ module LittleGhost
         with_file(mount, relative, flags: read_flags, mode: "r") do |file|
           validate_regular_file!(file)
 
-          content = file.read(@max_read_bytes + 1)
+          content = file.read(@max_read_bytes + 1) || +""
           if content.bytesize > @max_read_bytes
             raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/file_read_limit")
           end
@@ -73,6 +77,29 @@ module LittleGhost
         end
       rescue Encoding::InvalidByteSequenceError, Encoding::UndefinedConversionError
         raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/invalid_utf8")
+      rescue Errno::ELOOP
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/symlink_path")
+      rescue Errno::ENOENT, Errno::ENOTDIR
+        raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/path_missing")
+      end
+
+      def read_image(path, context: nil)
+        context&.check!
+        mount, relative = resolve(path)
+        with_file(mount, relative, flags: read_flags, mode: "rb") do |file|
+          validate_regular_file!(file)
+
+          header = file.read(IMAGE_HEADER_BYTES).to_s
+          media_type = image_media_type(header)
+          next unless media_type
+
+          data = header + file.read([@max_image_bytes + 1 - header.bytesize, 0].max).to_s
+          if data.bytesize > @max_image_bytes
+            raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/image_read_limit")
+          end
+
+          Content::Image.new(data:, media_type:, name: File.basename(relative))
+        end
       rescue Errno::ELOOP
         raise ToolError, FrameworkPrompts.reference("sandbox/filesystem/feedback/symlink_path")
       rescue Errno::ENOENT, Errno::ENOTDIR
@@ -350,6 +377,18 @@ module LittleGhost
           child = mount.target.delete_prefix(prefix).split(File::SEPARATOR).first
           "#{child}/" if child
         end.uniq.sort
+      end
+
+      def image_media_type(header)
+        if header.start_with?("\x89PNG\r\n\x1A\n".b)
+          "image/png"
+        elsif header.start_with?("\xFF\xD8\xFF".b)
+          "image/jpeg"
+        elsif header.start_with?("GIF87a".b, "GIF89a".b)
+          "image/gif"
+        elsif header.byteslice(0, 4) == "RIFF".b && header.byteslice(8, 4) == "WEBP".b
+          "image/webp"
+        end
       end
 
       def read_flags

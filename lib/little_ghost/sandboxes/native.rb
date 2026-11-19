@@ -38,6 +38,7 @@ module LittleGhost
       def open(run: nil) = @backend.open(run:)
       def close = @backend.close
       def read(...) = @backend.read(...)
+      def read_image(...) = @backend.read_image(...)
       def list(...) = @backend.list(...)
       def write(...) = @backend.write(...)
       def replace(...) = @backend.replace(...)

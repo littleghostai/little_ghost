@@ -1,0 +1,11 @@
+<%#
+# Key: tools/built_in/read_file/image_shown
+# Purpose: Read-file Tool image result.
+# Used: Returned to the model as the read-file Tool result when the file is an image presented in the next message.
+# Locals:
+# - media_type: Detected image MIME type.
+# - bytes: Image size in bytes.
+# Constraints:
+# - Must render non-blank.
+-%>
+Image (<%= media_type %>, <%= bytes %> bytes). It follows in the next message unless this turn's media limit was reached; if it is missing, read the file again on a later turn.

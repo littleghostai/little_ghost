@@ -192,6 +192,15 @@ module LittleGhost
       raise AbstractMethodError, "#{self.class} does not support filesystem reads"
     end
 
+    # Reads a PNG, JPEG, GIF, or WebP image at a workspace-relative or absolute
+    # virtual +path+ and returns it as a Content::Image. The format comes from
+    # the file's leading bytes, not its name. Returns +nil+ when the file is
+    # not one of those images; backends that cannot read images always return
+    # +nil+, which keeps the read-file Tool on text.
+    def read_image(path, context: nil)
+      nil
+    end
+
     # Lists entries at a workspace-relative or absolute virtual directory +path+.
     def list(path = ".", context: nil)
       raise AbstractMethodError, "#{self.class} does not support filesystem listings"
