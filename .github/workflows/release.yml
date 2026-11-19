@@ -23,9 +23,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1
+      - uses: ruby/setup-ruby@f9c4492e86def3e644ab32a0ef185eda5b0c20d0 # v1
         with:
-          ruby-version: 4.0.9
+          ruby-version: 4.0.10
           bundler-cache: true
       - name: Verify release tag
         id: release_tag
@@ -69,9 +69,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1
+      - uses: ruby/setup-ruby@f9c4492e86def3e644ab32a0ef185eda5b0c20d0 # v1
         with:
-          ruby-version: 4.0.9
+          ruby-version: 4.0.10
           bundler-cache: true
       - name: Reverify immutable release tag
         env:
