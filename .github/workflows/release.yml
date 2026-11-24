@@ -23,7 +23,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ruby/setup-ruby@f9c4492e86def3e644ab32a0ef185eda5b0c20d0 # v1
+      - uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1
         with:
           ruby-version: 4.0.10
           bundler-cache: true
@@ -69,7 +69,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ruby/setup-ruby@f9c4492e86def3e644ab32a0ef185eda5b0c20d0 # v1
+      - uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1
         with:
           ruby-version: 4.0.10
           bundler-cache: true
@@ -122,7 +122,7 @@ jobs:
           RUBY
       - name: Publish gem
         if: steps.publication.outputs.published != 'true'
-        uses: rubygems/release-gem@7f9650160c1a4e7989fdc9855807bdbd421d8b6b # v1
+        uses: rubygems/release-gem@5c53f5308233b7c0f47411f0471b3faae6fa57b2 # v1
         env:
           LITTLEGHOST_TRUSTED_PUBLISHING: "true"
         with:
