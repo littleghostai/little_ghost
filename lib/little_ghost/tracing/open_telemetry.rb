@@ -24,6 +24,11 @@ module LittleGhost
     # omitted by default. They appear only when Instrumentation has an explicit,
     # scrubbed Support::ContentCapture policy.
     #
+    # With content capture enabled, a failed provider request's exception event
+    # also carries the provider's bounded response body as
+    # <tt>little_ghost.provider.response</tt>, so a rejected request records
+    # why the provider rejected it rather than only its HTTP status.
+    #
     # === Adding attributes and limiting payloads
     #
     # +enrich+ adds application attributes, such as a span kind your tracing
@@ -317,6 +322,11 @@ module LittleGhost
           event_attributes["exception.message"] = attribute_value(:exception_message, captured["message"])
           stacktrace = captured["stacktrace"]
           event_attributes["exception.stacktrace"] = String(stacktrace).slice(0, 64_000) if stacktrace
+          provider_response = captured["provider_response"]
+          if provider_response
+            provider_response = JSON.generate(provider_response) unless provider_response.is_a?(String)
+            event_attributes["little_ghost.provider.response"] = provider_response.slice(0, 64_000)
+          end
         end
         description = [error_type, event_attributes["exception.message"]].compact.join(": ")
         span.status = ::OpenTelemetry::Trace::Status.error(description)

@@ -801,12 +801,6 @@ module LittleGhost
       end
     end
 
-    def diagnostic_exception(error)
-      {
-        type: error.class.name,
-        message: error.message,
-        stacktrace: Array(error.backtrace).join("\n")
-      }
-    end
+    def diagnostic_exception(error) = Support.diagnostic_exception(error)
   end
 end

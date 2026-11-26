@@ -687,6 +687,19 @@ class OpenAICompatibleTest < Minitest::Test
     assert_equal "The model context window was exceeded", error.message
   end
 
+  def test_normalizes_an_upstream_prompt_length_error_wrapped_by_a_router
+    upstream = JSON.generate(type: "error", error: {type: "invalid_request_error", message: "prompt is too long: 1000042 tokens > 1000000 maximum"})
+    failure = LittleGhost::Providers::HTTPError.new(
+      "Provider failed with HTTP 400",
+      status: 400,
+      body: JSON.generate(error: {message: "Provider returned error", code: 400, metadata: {raw: upstream}})
+    )
+
+    assert_raises(LittleGhost::ContextWindowOverflowError) do
+      provider(transport: FakeTransport.new(failure)).stream(request).to_a
+    end
+  end
+
   def test_invalid_tool_json_raises_protocol_error
     events = [
       {type: "response.output_item.added", output_index: 0, item: {type: "function_call", call_id: "x", name: "bad"}},

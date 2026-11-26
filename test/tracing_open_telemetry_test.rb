@@ -302,6 +302,34 @@ class TracingOpenTelemetryTest < Minitest::Test
     tracing&.shutdown
   end
 
+  def test_records_the_captured_provider_response_on_the_exception_event
+    tracer = Tracer.new
+    tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)
+
+    tracing.start(:model, {operation_id: "model", model_id: "model"})
+    tracing.finish(
+      :model,
+      {
+        operation_id: "model",
+        outcome: :error,
+        error_type: "LittleGhost::Providers::HTTPError",
+        http_response_status_code: 400,
+        diagnostic_exception: JSON.generate(
+          type: "LittleGhost::Providers::HTTPError",
+          message: "Provider failed with HTTP 400",
+          provider_response: {error: {message: "prompt is too long"}}
+        )
+      }
+    )
+
+    span = tracer.started.first.last
+    _name, attributes = span.events.one? ? span.events.first : flunk("expected one exception event")
+    assert_equal '{"error":{"message":"prompt is too long"}}', attributes.fetch("little_ghost.provider.response")
+    assert_equal 400, span.attributes.fetch("http.response.status_code")
+  ensure
+    tracing&.shutdown
+  end
+
   def test_records_scrubbed_exception_details
     tracer = Tracer.new
     tracing = LittleGhost::Tracing::OpenTelemetry.new(tracer:)

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module LittleGhost
   # Support collects small building blocks for LittleGhost extensions. They are
   # available to applications that need the same cancellation, loading,
@@ -32,6 +34,31 @@ module LittleGhost
       end
     ensure
       ancestors.delete(identity) if identity
+    end
+
+    # Describes +error+ for diagnostic content capture: its class, message,
+    # backtrace, and, when +error+ or its cause is a Providers::HTTPError with
+    # a body, the bounded provider response. A JSON response is parsed so key-based redaction
+    # applies to its fields. The response can repeat request details, so pass
+    # this value only through a Support::ContentCapture policy.
+    def diagnostic_exception(error)
+      {
+        type: error.class.name,
+        message: error.message,
+        provider_response: diagnostic_provider_response(error),
+        stacktrace: Array(error.backtrace).join("\n")
+      }.compact
+    end
+
+    def diagnostic_provider_response(error) # :nodoc:
+      error = error.cause unless error.is_a?(Providers::HTTPError)
+      return unless error.is_a?(Providers::HTTPError) && !error.body.to_s.empty?
+
+      body = error.body.dup.force_encoding(Encoding::UTF_8).scrub
+      parsed = JSON.parse(body)
+      (parsed.is_a?(Hash) || parsed.is_a?(Array)) ? parsed : body
+    rescue JSON::ParserError
+      body
     end
   end
 end

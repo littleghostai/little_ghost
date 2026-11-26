@@ -777,6 +777,17 @@ class BedrockTest < Minitest::Test
     assert_equal "The model context window was exceeded", error.message
   end
 
+  def test_normalizes_prompt_length_errors_for_agent_recovery
+    client = Class.new do
+      def converse_stream(**)
+        raise BedrockTest::NetworkingError, "prompt is too long: 1000042 tokens > 1000000 maximum"
+      end
+    end.new
+    provider = LittleGhost::Providers::Bedrock.new(model: "test", client:)
+
+    assert_raises(LittleGhost::ContextWindowOverflowError) { provider.stream(request).to_a }
+  end
+
   def test_maps_bedrock_media_formats
     client = FakeClient.new([{message_stop: {stop_reason: "end_turn"}}])
     provider = LittleGhost::Providers::Bedrock.new(model: "test", client:)

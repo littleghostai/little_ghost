@@ -42,7 +42,7 @@ module LittleGhost
       ].freeze # :nodoc:
       CONTEXT_OVERFLOW_MARKERS = [
         "context_length_exceeded", "context window", "maximum context length",
-        "max context length", "input is too long", "too many input tokens"
+        "max context length", "input is too long", "prompt is too long", "too many input tokens"
       ].freeze # :nodoc:
 
       # Represents a structured error received inside an otherwise successful

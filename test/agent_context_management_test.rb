@@ -95,6 +95,32 @@ class AgentContextManagementTest < Minitest::Test
       remaining.any? { |message| message.content.any? { |block| block.is_a?(LittleGhost::Content::ToolUse) } }
   end
 
+  def test_compacts_from_reported_input_usage_when_the_estimate_is_low
+    model = ScriptedModel.new(
+      tool_use_response("call-1", usage: LittleGhost::Usage.new(input_tokens: 40, cache_read_tokens: 500, cache_write_tokens: 60)),
+      response("summary"),
+      tool_use_response("call-2", usage: LittleGhost::Usage.new(input_tokens: 120)),
+      response("done")
+    )
+    agent_class = Class.new(LittleGhost::Agent) do
+      manage_context context_window_tokens: 1_000, compression_threshold: 0.5,
+        summary_ratio: 0.5, preserve_recent_messages: 2
+    end
+    lookup = LittleGhost::Tool.define(name: "lookup", description: "Look up an order") { "found" }
+    history = 8.times.map do |index|
+      LittleGhost::Message.new(role: index.even? ? :user : :assistant, content: "message-#{index}")
+    end
+
+    result = agent_class.new(model:, tools: [lookup]).call("Refund order 42", history:)
+
+    assert_equal "done", result.text
+    assert_equal 4, model.requests.length
+    summary_requests = model.requests.select { |request| request.tools.empty? }
+    assert_equal [model.requests[1]], summary_requests
+    assert_includes model.requests[2].messages.map(&:text), "summary"
+    refute_includes model.requests[2].messages.map(&:text), "message-0"
+  end
+
   def test_validates_context_management_configuration
     assert_raises(ArgumentError) { Class.new(LittleGhost::Agent) { manage_context context_window_tokens: 0 } }
     assert_raises(ArgumentError) { Class.new(LittleGhost::Agent) { manage_context compression_threshold: 2 } }
@@ -423,14 +449,14 @@ class AgentContextManagementTest < Minitest::Test
     )
   end
 
-  def tool_use_response(id)
+  def tool_use_response(id, usage: LittleGhost::Usage.new)
     LittleGhost::ModelResponse.new(
       message: LittleGhost::Message.new(
         role: :assistant,
         content: LittleGhost::Content::ToolUse.new(id:, name: "lookup", input: {})
       ),
       stop_reason: :tool_use,
-      usage: LittleGhost::Usage.new
+      usage:
     )
   end
 end

@@ -47,7 +47,7 @@ module LittleGhost
       ].freeze # :nodoc:
       CONTEXT_OVERFLOW_MARKERS = [
         "context window", "maximum context length", "max context length",
-        "input is too long", "too many input tokens"
+        "input is too long", "prompt is too long", "too many input tokens"
       ].freeze # :nodoc:
 
       # Represents an error event returned inside a Bedrock stream.
