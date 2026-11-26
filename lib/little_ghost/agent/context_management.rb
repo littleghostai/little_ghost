@@ -35,6 +35,13 @@ module LittleGhost
     # it advertises a positive context-window size. Compaction uses the current
     # model with the request's settings, cancellation token, and deadline.
     #
+    # Request size is estimated at four characters per token. Once the
+    # provider reports input usage, including cache reads and writes, a request
+    # that extends the measured one is sized from that report plus an estimate
+    # for the added messages, whichever is larger. Dense content such as
+    # identifiers, numbers, and escaped JSON then still compacts before the
+    # provider rejects it.
+    #
     # Proactive compaction failures leave the original request unchanged and emit
     # diagnostic instrumentation. A provider context-overflow error triggers one
     # compaction replacement through the model-error callback; cancellation,
@@ -95,6 +102,7 @@ module LittleGhost
           }
           before_invocation :pin_invocation_request
           before_model :compact_model_context
+          after_model :record_reported_context_tokens
           after_model_error :compact_context_after_overflow
         end
 
@@ -123,7 +131,7 @@ module LittleGhost
         configuration = self.class.context_management_configuration
         limit = model_context_window_tokens(configuration)
         threshold = limit * configuration.fetch(:compression_threshold)
-        return Support::Callbacks.continue if estimated_request_tokens(request) < threshold
+        return Support::Callbacks.continue if context_tokens(request) < threshold
 
         compacted = compact_context(
           request,
@@ -137,6 +145,13 @@ module LittleGhost
         raise
       rescue => error
         Instrumentation.publish(:context_compaction, outcome: :error, error_class: error.class.name)
+        Support::Callbacks.continue
+      end
+
+      def record_reported_context_tokens(payload, context: nil)
+        usage = payload.fetch(:response).usage
+        tokens = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens
+        @_little_ghost_reported_context = {messages: payload.fetch(:request).messages, tokens:} if tokens.positive?
         Support::Callbacks.continue
       end
 
@@ -194,7 +209,7 @@ module LittleGhost
           :context_compaction,
           reason:,
           removed_messages: request.messages.length - compacted.messages.length,
-          estimated_tokens: estimated_request_tokens(request),
+          estimated_tokens: context_tokens(request),
           context_window_tokens:
         )
         compacted
@@ -328,9 +343,32 @@ module LittleGhost
         configuration.fetch(:context_window_tokens)
       end
 
+      def context_tokens(request)
+        estimate = estimated_request_tokens(request)
+        reported = @_little_ghost_reported_context
+        return estimate unless reported && extends_messages?(request.messages, reported.fetch(:messages))
+
+        added = request.messages.drop(reported.fetch(:messages).length)
+        [estimate, reported.fetch(:tokens) + estimated_message_tokens(added)].max
+      end
+
+      def extends_messages?(messages, prefix)
+        prefix.length <= messages.length && prefix.each_with_index.all? { |message, index| messages[index].equal?(message) }
+      end
+
+      def estimated_message_tokens(messages)
+        (JSON.generate(messages.map { |message| estimation_message(message) }).length.to_f / ESTIMATED_CHARS_PER_TOKEN).ceil
+      rescue JSON::GeneratorError
+        messages.sum { |message| message.text.length } / ESTIMATED_CHARS_PER_TOKEN
+      end
+
+      def estimation_message(message)
+        message.to_h.merge("metadata" => message.metadata.to_h.except(SUMMARIZED_METADATA_KEY))
+      end
+
       def estimated_request_tokens(request)
         characters = JSON.generate(
-          messages: request.messages.map { |message| message.to_h.merge("metadata" => message.metadata.to_h.except(SUMMARIZED_METADATA_KEY)) },
+          messages: request.messages.map { |message| estimation_message(message) },
           tools: request.tools,
           output_schema: request.output_schema,
           tool_choice: request.tool_choice

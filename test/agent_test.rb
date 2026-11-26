@@ -1211,6 +1211,104 @@ class AgentTest < Minitest::Test
     agent&.close
   end
 
+  def test_model_failure_diagnostics_include_the_provider_response
+    telemetry = []
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(TestTelemetryRecorder.new(telemetry))
+    failure = LittleGhost::Providers::HTTPError.new(
+      "Provider failed with HTTP 400",
+      status: 400,
+      body: '{"error":{"message":"tool_use ids must be unique","api_key":"provider-secret"}}'
+    )
+    agent = LittleGhost::Agent.new(model: ScriptedModel.new(failure))
+
+    assert_raises(LittleGhost::Providers::HTTPError) { agent.call("go") }
+
+    stop = telemetry.assoc(:model_stop).last
+    assert_equal 400, stop.fetch(:http_response_status_code)
+    exception = JSON.parse(stop.fetch(:diagnostic_exception))
+    assert_equal "Provider failed with HTTP 400", exception.fetch("message")
+    assert_equal(
+      {"error" => {"message" => "tool_use ids must be unique", "api_key" => "[REDACTED]"}},
+      exception.fetch("provider_response")
+    )
+  ensure
+    agent&.close
+  end
+
+  def test_model_failure_diagnostics_keep_a_non_json_provider_response_as_valid_text
+    telemetry = []
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(TestTelemetryRecorder.new(telemetry))
+    failure = LittleGhost::Providers::HTTPError.new(
+      "Provider failed with HTTP 502",
+      status: 502,
+      body: "upstream unavailable \xE2\x82".b
+    )
+    agent = LittleGhost::Agent.new(model: ScriptedModel.new(failure))
+
+    assert_raises(LittleGhost::Providers::HTTPError) { agent.call("go") }
+
+    exception = JSON.parse(telemetry.assoc(:model_stop).last.fetch(:diagnostic_exception))
+    assert_equal "upstream unavailable \uFFFD", exception.fetch("provider_response")
+  ensure
+    agent&.close
+  end
+
+  def test_context_overflow_diagnostics_include_the_provider_response_that_caused_it
+    telemetry = []
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(TestTelemetryRecorder.new(telemetry))
+    overflow = begin
+      begin
+        raise LittleGhost::Providers::HTTPError.new(
+          "Provider failed with HTTP 400",
+          status: 400,
+          body: '{"error":{"message":"prompt is too long: 1000042 tokens > 1000000 maximum"}}'
+        )
+      rescue LittleGhost::Providers::HTTPError
+        raise LittleGhost::ContextWindowOverflowError, "The model context window was exceeded"
+      end
+    rescue LittleGhost::ContextWindowOverflowError => error
+      error
+    end
+    agent = LittleGhost::Agent.new(model: ScriptedModel.new(overflow))
+
+    assert_raises(LittleGhost::ContextWindowOverflowError) { agent.call("go") }
+
+    exception = JSON.parse(telemetry.assoc(:model_stop).last.fetch(:diagnostic_exception))
+    assert_equal "The model context window was exceeded", exception.fetch("message")
+    assert_equal(
+      {"error" => {"message" => "prompt is too long: 1000042 tokens > 1000000 maximum"}},
+      exception.fetch("provider_response")
+    )
+  ensure
+    agent&.close
+  end
+
+  def test_model_failure_diagnostics_omit_an_empty_provider_response
+    telemetry = []
+    instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(
+      content_capture: LittleGhost::Support::ContentCapture.new(enabled: true)
+    )
+    instrumentation.subscribe(TestTelemetryRecorder.new(telemetry))
+    failure = LittleGhost::Providers::HTTPError.new("Provider failed (Errno::ECONNRESET)")
+    agent = LittleGhost::Agent.new(model: ScriptedModel.new(failure))
+
+    assert_raises(LittleGhost::Providers::HTTPError) { agent.call("go") }
+
+    exception = JSON.parse(telemetry.assoc(:model_stop).last.fetch(:diagnostic_exception))
+    refute exception.key?("provider_response")
+  ensure
+    agent&.close
+  end
+
   def test_tool_failure_diagnostics_bound_the_exception_message
     telemetry = []
     instrumentation = LittleGhost::Instrumentation.notifier = LittleGhost::Instrumentation::Bus.new(

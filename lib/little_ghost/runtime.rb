@@ -544,13 +544,9 @@ module LittleGhost
       Events.info("little_ghost.runtime.startup", payload)
     end
 
-    def diagnostic_exception(error)
-      {
-        type: error.class.name,
-        message: error.message,
-        stacktrace: Array(error.backtrace).join("\n")
-      }
-    end
+    # Startup diagnostics are published without a content-capture policy, so
+    # they omit the provider response.
+    def diagnostic_exception(error) = Support.diagnostic_exception(error).except(:provider_response)
 
     def startup_duration_ms
       ((monotonic_time - @startup_started_at) * 1_000).round(3)

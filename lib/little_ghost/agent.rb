@@ -2451,13 +2451,7 @@ module LittleGhost
       diagnostic_exception(error).merge(message: truncated_tool_result(error.message))
     end
 
-    def diagnostic_exception(error)
-      {
-        type: error.class.name,
-        message: error.message,
-        stacktrace: Array(error.backtrace).join("\n")
-      }
-    end
+    def diagnostic_exception(error) = Support.diagnostic_exception(error)
 
     def truncated_tool_result(content)
       Support::OutputTruncation.truncate_middle_with_token_budget(
